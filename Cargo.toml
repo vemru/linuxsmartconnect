@@ -1,0 +1,56 @@
+[package]
+name = "smartconnect-linux"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "smartconnectd: unofficial Linux peer for the Motorola Smart Connect phone app (pairing, sessions, notifications, clipboard, SMS, control socket for the helpers)"
+
+# The daemon is the root package. Each helper and front-end is a member crate with its own binary;
+# `cargo build --release --workspace` builds them all into one target directory, next to each other,
+# which is where the daemon and the GTK app look for them first (see src/helpers.rs).
+[workspace]
+members = ["mirror", "crosscontrol", "display", "webcam", "gui", "files", "fex"]
+resolver = "3"
+
+[dependencies]
+anyhow = "1.0.104"
+aes-gcm = "0.10.3"
+base64 = "0.23.1"
+bluer = { version = "0.17.4", features = ["bluetoothd"] }
+clap = { version = "4.6.7", features = ["derive"] }
+futures-util = { version = "0.3.34", default-features = false, features = ["sink", "std"] }
+gethostname = "1.1.0"
+hex = "0.4.3"
+if-addrs = "0.15.0"
+libc = "0.2"
+qrcode = { version = "0.14.1", default-features = false, features = ["svg"] }
+rand = "0.8"
+# The fex client (app icons from the service 17 offer); also a member crate with its own CLI.
+smartconnect-fex = { path = "fex" }
+rcgen = { version = "0.14.10", default-features = false, features = ["ring", "pem"] }
+rsa = { version = "0.9.10", features = ["pem"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+sha2 = "0.11.1"
+tokio = { version = "1.54.0", features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "io-util", "fs", "process"] }
+tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring", "tls12", "logging"] }
+tokio-tungstenite = { version = "0.30.0", default-features = false, features = ["handshake"] }
+# 5.19+: the tokio and async-io backends are additive (the workspace also builds display/ with async-io).
+zbus = { version = "5.19", default-features = false, features = ["tokio"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
+
+[lib]
+name = "smartconnect"
+path = "src/lib.rs"
+
+[[bin]]
+name = "smartconnectd"
+path = "src/main.rs"
+
+# Profiles apply to the whole workspace and may only be set here.
+[profile.dev.package.rsa]
+opt-level = 3
+
+[profile.release.package.smartconnect-gui]
+strip = true

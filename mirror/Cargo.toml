@@ -1,0 +1,17 @@
+[package]
+name = "smartconnect-mirror"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Phone-screen mirror viewer for smartconnectd (GStreamer webrtcbin answerer)"
+
+[dependencies]
+anyhow = "1"
+base64 = "0.23.1"
+gst = { package = "gstreamer", version = "0.24" }
+gst-webrtc = { package = "gstreamer-webrtc", version = "0.24" }
+gst-sdp = { package = "gstreamer-sdp", version = "0.24" }
+gst-video = { package = "gstreamer-video", version = "0.24", features = ["v1_22"] }
+serde_json = "1"
+gst-gl = { package = "gstreamer-gl", version = "0.24" }
+x11rb = "0.13"

@@ -1,0 +1,35 @@
+[package]
+name = "smartconnect-files"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Mount the phone's storage over NFSv3-on-mutual-TLS (Smart Connect File Station) as a FUSE filesystem"
+
+[dependencies]
+anyhow = "1"
+libc = "0.2"
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# Self-signed client cert + its SHA-256 fingerprint for the File Station handshake.
+rcgen = "0.14"
+sha2 = "0.10"
+# Mutual TLS to the phone's NFS port, peer pinned by cert fingerprint.
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "macros", "sync", "time", "signal"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+rustls-pki-types = "1"
+# Verify the phone's handshake signature against its (fingerprint-pinned) cert, which webpki rejects.
+ring = "0.17"
+x509-parser = "0.16"
+# NFSv3 client, driven over our own TLS transport via a custom connector (phone→PC mount).
+nfs3_client = { version = "0.9", default-features = false, features = ["tokio"] }
+nfs3_types = "0.5"
+# NFSv3 server core (PC→phone sharing): `__test_reexports` exposes the stream-generic
+# `process_socket` + `RPCContext` so we can drive it over our own TLS stream; `fs_util` provides the
+# std-metadata → fattr3 helper for the local-directory VFS.
+nfs3_server = { version = "0.11", default-features = false, features = ["__test_reexports", "fs_util"] }
+# Fallback for this PC's LAN IP when the daemon reports no pcAddress.
+if-addrs = "0.15"
+# Expose the mounted phone as a FUSE filesystem.
+fuser = { version = "0.18", default-features = false }

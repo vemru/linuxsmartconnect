@@ -1,0 +1,29 @@
+/target
+**/target/
+
+# Local, machine-specific agent notes
+CLAUDE.local.md
+/.cargo/config.toml
+
+# Never commit research material or secrets
+*.pcap
+*.pcapng
+*.etl
+*.KEEP-PRIVATE*
+config.json
+*.apk
+*.dll
+*.log
+
+# Python bytecode
+__pycache__/
+*.pyc
+
+# Noctalia keeps a plugin's per-user settings in the plugin directory, so a linked
+# (install.sh --link) plugin writes them into the checkout
+/noctalia-plugin/smart-connect/settings.json
+
+# makepkg output (packaging/arch)
+/packaging/arch/src/
+/packaging/arch/pkg/
+/packaging/arch/*.pkg.tar*

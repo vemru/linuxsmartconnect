@@ -1,0 +1,35 @@
+{
+  "id": "smart-connect",
+  "name": "Smart Connect",
+  "version": "0.1.0",
+  "minNoctaliaVersion": "4.4.0",
+  "author": "Rudra",
+  "official": false,
+  "license": "MIT",
+  "repository": "",
+  "description": "Motorola Smart Connect on Linux: phone status, connect/disconnect, pairing, notifications, mirroring, Cross Control and the phone as a display, via the smartconnectd daemon",
+  "tags": [
+    "Bar",
+    "Panel",
+    "Utility",
+    "System"
+  ],
+  "entryPoints": {
+    "main": "Main.qml",
+    "barWidget": "BarWidget.qml",
+    "controlCenterWidget": "ControlCenterWidget.qml",
+    "panel": "Panel.qml",
+    "settings": "Settings.qml"
+  },
+  "dependencies": {
+    "plugins": []
+  },
+  "metadata": {
+    "defaultSettings": {
+      "hideWhenDisconnected": false,
+      "crossEdge": "right",
+      "mirrorBinary": "smartconnect-mirror",
+      "displayBinary": "smartconnect-display"
+    }
+  }
+}

@@ -1,0 +1,85 @@
+# Maintainer: the smartconnect-linux contributors
+#
+# Arch Linux package built from the checkout this file lives in (nothing is downloaded but the
+# crates cargo needs), so it is for a local checkout only, not for the AUR:
+#   cd packaging/arch && makepkg -si
+# Set CARGO_TARGET_DIR to reuse an existing build directory.
+
+pkgname=smartconnect-linux
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='Unofficial Linux peer for the Motorola Smart Connect phone app'
+# Set once the repository is public: url='https://github.com/<owner>/smartconnect-linux'
+arch=('x86_64')
+license=('MIT')
+depends=('avahi' 'dbus' 'glib2' 'glibc' 'gst-plugins-bad' 'gst-plugins-bad-libs'
+         'gst-plugins-base-libs' 'gst-plugins-good' 'gstreamer' 'gtk4' 'hicolor-icon-theme'
+         'libadwaita' 'libgcc' 'libnice' 'pango')
+makedepends=('cargo' 'pkgconf')
+optdepends=('gst-plugin-va: hardware H.264 decoding and encoding (video needs this or gst-libav)'
+            'gst-libav: software H.264 decoding'
+            'gst-plugins-ugly: software H.264 encoding for the phone as a display'
+            'gst-plugin-pipewire: screen capture for the phone as a display, webcam fallback'
+            'wl-clipboard: clipboard sync'
+            "fuse3: browsing the phone's files (smartconnect-files mount)"
+            'bluez: Bluetooth LE wake'
+            'quickshell: quick-reply window (Noctalia Shell ships its own)'
+            'networkmanager: Hotspot tile'
+            'v4l2loopback-dkms: the phone as a webcam every app sees'
+            'wvkbd: keyboard button on the phone display (AUR)'
+            'noctalia-shell: the Smart Connect panel plugin (AUR)')
+install=smartconnect-linux.install
+# makepkg's default lto option compiles ring's C code as GCC LTO bitcode, which the Rust link
+# cannot resolve (undefined ring_core_* symbols in smartconnect-fex and smartconnect-files).
+options=('!lto')
+
+_root="$(cd "$startdir/../.." && pwd)"
+_bins=(smartconnectd smartconnect-mirror smartconnect-crosscontrol smartconnect-display
+       smartconnect-webcam smartconnect-files smartconnect-fex smartconnect-gui)
+
+_target() { printf '%s\n' "${CARGO_TARGET_DIR:-$srcdir/target}"; }
+
+prepare() {
+  cd "$_root"
+  export RUSTUP_TOOLCHAIN=stable
+  cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+  cd "$_root"
+  export RUSTUP_TOOLCHAIN=stable CARGO_TARGET_DIR="$(_target)"
+  cargo build --frozen --release --workspace
+}
+
+check() {
+  cd "$_root"
+  export RUSTUP_TOOLCHAIN=stable CARGO_TARGET_DIR="$(_target)"
+  cargo test --frozen --release --workspace
+}
+
+package() {
+  local rel b
+  rel="$(_target)/release"
+  for b in "${_bins[@]}"; do
+    install -Dm755 "$rel/$b" "$pkgdir/usr/bin/$b"
+  done
+
+  # The unit in the repository runs ~/.local/bin/smartconnectd; here it is /usr/bin.
+  install -d "$pkgdir/usr/lib/systemd/user"
+  sed -e 's|%h/\.local/bin/|/usr/bin/|' -e "s|%h/\\.local/share/doc/smartconnect-linux/|/usr/share/doc/$pkgname/|" \
+    "$_root/packaging/systemd/smartconnectd.service" >"$pkgdir/usr/lib/systemd/user/smartconnectd.service"
+  chmod 644 "$pkgdir/usr/lib/systemd/user/smartconnectd.service"
+
+  install -Dm644 "$_root/packaging/dev.smartconnect.Linux.desktop" \
+    "$pkgdir/usr/share/applications/dev.smartconnect.Linux.desktop"
+  install -Dm644 "$_root/packaging/dev.smartconnect.Linux.svg" \
+    "$pkgdir/usr/share/icons/hicolor/scalable/apps/dev.smartconnect.Linux.svg"
+  install -Dm644 "$_root/packaging/README.md" "$pkgdir/usr/share/doc/$pkgname/README.md"
+  install -Dm644 "$_root/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+
+  # Noctalia looks for plugins per user; smartconnect-linux.install says how to link this copy.
+  local plugin="$pkgdir/usr/share/$pkgname/noctalia-plugin/smart-connect" f
+  while IFS= read -r -d '' f; do
+    install -Dm644 "$_root/noctalia-plugin/smart-connect/$f" "$plugin/$f"
+  done < <(cd "$_root/noctalia-plugin/smart-connect" && find . -type f ! -name settings.json -printf '%P\0')
+}

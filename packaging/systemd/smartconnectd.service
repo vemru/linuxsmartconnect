@@ -1,0 +1,19 @@
+[Unit]
+Description=Smart Connect for Linux (Motorola phone link daemon)
+Documentation=file://%h/.local/share/doc/smartconnect-linux/README.md
+After=graphical-session.target
+PartOf=graphical-session.target
+# BlueZ / avahi are system services; we only talk to them over D-Bus/CLI, so no hard deps.
+
+[Service]
+Type=simple
+Environment=RUST_LOG=info
+# WAYLAND_DISPLAY comes from the user manager's environment (niri imports it, or run
+# `systemctl --user import-environment WAYLAND_DISPLAY`). Without it the daemon still runs;
+# clipboard sync is simply disabled.
+ExecStart=%h/.local/bin/smartconnectd --token-ttl 600 --no-ble --name "Linux PC"
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=graphical-session.target

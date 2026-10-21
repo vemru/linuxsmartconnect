@@ -1,0 +1,14 @@
+[package]
+name = "smartconnect-webcam"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Use the phone's camera as a Linux webcam (Smart Connect svc 3: WebRTC H.264 -> v4l2loopback or a PipeWire camera node)"
+
+[dependencies]
+anyhow = "1"
+gst = { package = "gstreamer", version = "0.24" }
+gst-webrtc = { package = "gstreamer-webrtc", version = "0.24" }
+gst-sdp = { package = "gstreamer-sdp", version = "0.24" }
+libc = "0.2"
+serde_json = "1"

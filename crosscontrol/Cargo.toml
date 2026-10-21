@@ -1,0 +1,18 @@
+[package]
+name = "smartconnect-crosscontrol"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Cross Control (svc 26): glide the PC mouse+keyboard onto a Smart Connect phone (Wayland layer-shell + pointer lock)"
+
+[[bin]]
+name = "smartconnect-crosscontrol"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+serde_json = "1"
+libc = "0.2"
+smithay-client-toolkit = { version = "0.19", default-features = false }
+wayland-client = "0.31"
+wayland-protocols = { version = "0.32", features = ["client", "unstable", "staging"] }

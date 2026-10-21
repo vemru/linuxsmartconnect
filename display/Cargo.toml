@@ -1,0 +1,28 @@
+[package]
+name = "smartconnect-display"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Phone as a display for this PC (Smart Connect svc 202): screen capture streamed over WebRTC, touch and keyboard input back"
+
+[[bin]]
+name = "smartconnect-display"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+libc = "0.2"
+ashpd = { version = "0.13", default-features = false, features = ["async-io", "screencast"] }
+pollster = "0.4"
+serde_json = "1"
+gst = { package = "gstreamer", version = "0.24" }
+gst-webrtc = { package = "gstreamer-webrtc", version = "0.24", features = ["v1_22"] }
+gst-sdp = { package = "gstreamer-sdp", version = "0.24" }
+wayland-client = "0.31"
+wayland-protocols = { version = "0.32", features = ["client", "unstable"] }
+wayland-protocols-wlr = { version = "0.3", features = ["client"] }
+wayland-protocols-misc = { version = "0.3", features = ["client"] }
+# 5.19+: in a workspace build zbus also gets the daemon's tokio feature; from 5.19 on it still
+# uses async-io when no tokio runtime is running, as here.
+zbus = { version = "5.19", default-features = false, features = ["async-io", "blocking-api"] }
+
