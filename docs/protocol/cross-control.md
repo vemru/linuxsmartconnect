@@ -5,9 +5,11 @@ request and reports its screen size, absolute pointer moves are applied on the p
 works in both directions. Keyboard handling and the feel of the pointer (gain, edge return) are
 implemented but less tested. Drag and drop (service 24) is not implemented.
 
-**Implementation:** [`crosscontrol/src/main.rs`](../../crosscontrol/src/main.rs)
-(`smartconnect-crosscontrol`, a Wayland client that captures the pointer at a screen edge). The
-daemon starts it when the phone asks to be controlled ([`src/helpers.rs`](../../src/helpers.rs)).
+**Implementation:** [`crosscontrol/src/`](../../crosscontrol/src/) (`smartconnect-crosscontrol`:
+`core.rs` holds the session and input forwarding; `layer.rs` captures the pointer at a screen edge
+with wlr-layer-shell, `portal.rs` with the InputCapture portal on GNOME). The daemon starts it when
+the phone asks to be controlled ([`src/helpers.rs`](../../src/helpers.rs)). The portal backend is
+verified on GNOME 51.
 
 ## Overview
 
@@ -139,6 +141,37 @@ exclusive keyboard focus, the pointer is locked (pointer-constraints), relative 
 the relative-pointer protocol, and compositor shortcuts are inhibited. Wayland clients cannot warp
 the pointer, so the return position is set with the lock's cursor-position hint.
 
+On desktops without wlr-layer-shell (GNOME), the xdg-desktop-portal InputCapture interface does the
+same job (OBSERVED in this project, GNOME 51): the PC asks the portal for a pointer barrier on the
+chosen edge of each monitor (barriers between two monitors are refused, which leaves the outer
+edge). Pushing into it activates the capture: the desktop stops seeing the mouse and keyboard and
+sends every event to the client over libei instead. Returning control is a portal `Release` with a
+cursor position just inside the edge. The first start shows the desktop's permission prompt; with
+portal version 2 the session is persistent and its restore token is kept, so later starts don't ask.
+
+Where the phone sits is PC-side only (the phone gets no position): this project keeps a side and
+the part of that edge the phone touches (`crosscontrol.json`, edited by dragging the phone in the
+GTK app). Only that part of the edge leads to the phone, and it maps onto the phone's whole side.
+
+## Tile on the phone: Cross Control or the PC display
+
+The phone draws one Cross Control tile for both service 26 and service 202 (this PC's screen on the
+phone, see [phone-as-display.md](phone-as-display.md)) (OBSERVED in the phone app). Tapping it
+relaunches whichever of the two connected last for this PC: the phone stores the service id each
+time a 26 or 202 session connects, whoever started it, and defaults to 26. It only uses 202 when
+`"202"` is in the PC's service 25 `cap` map; otherwise it always falls back to 26. For 202 the tap
+sends service 202 `cmd 50` with the share type the phone last used with this PC (`"extend"` by
+default, or `"mirror"`).
+
+This project leaves `"202"` out of its `cap` map on purpose (OBSERVED on a device): with it, a tap
+after any display session went straight to Extend, with no way to choose. Without it the tile
+always sends service 26 `cmd 0`; the daemon arms shared mouse and keyboard and the GTK app comes
+forward on its Display tab, where Duplicate and Extend can be picked.
+
+The Windows app offers the three modes on the PC side: shared keyboard and mouse (service 26),
+duplicate screen and extended screen (service 202, `mirror` and `extend`). The phone has no picker
+of its own.
+
 ## Drag and drop (service 24)
 
 Not implemented here; described for completeness (OBSERVED in the phone app). The phone's drag and
@@ -174,4 +207,6 @@ File drags in either direction use the file-transfer service, which is out of sc
 
 - The `cap["26"]` value Windows reports while a session is active (bit 8 or bit 4).
 - Whether a pointer lock is always granted on a layer-shell surface by every compositor.
+- Whether GNOME's InputCapture keeps the cursor hidden while captured, and how its own release
+  shortcut (if any) interacts with the edge return.
 - Service 21 versus 24 for drag and drop.

@@ -670,21 +670,31 @@ impl Session {
     }
 }
 
-/// Raises (focuses) a window by title. niri only for now; other desktops: no-op.
+/// Raises (focuses) a window by title on niri, Hyprland and sway; other desktops: no-op.
 fn raise_window(title: String) {
     std::thread::spawn(move || {
-        let Ok(out) = std::process::Command::new("niri").args(["msg", "--json", "windows"]).output() else { return };
-        let Ok(list) = serde_json::from_slice::<Value>(&out.stdout) else { return };
-        let id = list
-            .as_array()
-            .into_iter()
-            .flatten()
-            .find(|w| w["title"].as_str() == Some(&title))
-            .and_then(|w| w["id"].as_u64());
-        if let Some(id) = id {
-            let _ = std::process::Command::new("niri")
-                .args(["msg", "action", "focus-window", "--id", &id.to_string()])
-                .status();
+        let has = |k: &str| std::env::var_os(k).is_some_and(|v| !v.is_empty());
+        let run = |argv: &[&str]| {
+            let _ = std::process::Command::new(argv[0]).args(&argv[1..]).stdout(std::process::Stdio::null()).status();
+        };
+        if has("HYPRLAND_INSTANCE_SIGNATURE") {
+            let Ok(out) = std::process::Command::new("hyprctl").args(["-j", "clients"]).output() else { return };
+            let Ok(list) = serde_json::from_slice::<Value>(&out.stdout) else { return };
+            let addr = list.as_array().into_iter().flatten().find(|w| w["title"].as_str() == Some(&title)).and_then(|w| w["address"].as_str());
+            if let Some(addr) = addr {
+                run(&["hyprctl", "dispatch", "focuswindow", &format!("address:{addr}")]);
+            }
+        } else if has("SWAYSOCK") {
+            // sway criteria take a regex: match the title literally.
+            let quoted: String = title.chars().flat_map(|c| if "\\^$.|?*+()[]{}\"".contains(c) { vec!['\\', c] } else { vec![c] }).collect();
+            run(&["swaymsg", &format!("[title=\"^{quoted}$\"] focus")]);
+        } else {
+            let Ok(out) = std::process::Command::new("niri").args(["msg", "--json", "windows"]).output() else { return };
+            let Ok(list) = serde_json::from_slice::<Value>(&out.stdout) else { return };
+            let id = list.as_array().into_iter().flatten().find(|w| w["title"].as_str() == Some(&title)).and_then(|w| w["id"].as_u64());
+            if let Some(id) = id {
+                run(&["niri", "msg", "action", "focus-window", "--id", &id.to_string()]);
+            }
         }
     });
 }

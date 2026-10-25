@@ -1,4 +1,4 @@
-//! Reads the zip that `/download` returns.
+//! Reads the zip that `/download` returns, and writes one for our own sends ([`write_stored`]).
 //!
 //! The phone's library writes it in streaming mode (general-purpose flag bit 3: sizes and CRC in a
 //! data descriptor after each entry, zeros in the local headers), so entries are located through
@@ -131,9 +131,71 @@ pub fn read_all(archive: &[u8]) -> Result<Vec<Entry>> {
     Ok(out)
 }
 
+/// A zip of `entries` (name, bytes), all stored uncompressed (images are compressed already), with
+/// sizes and CRCs in the local headers, as any reader accepts. Names are UTF-8 (flag bit 11).
+pub fn write_stored(entries: &[(&str, &[u8])]) -> Vec<u8> {
+    const FLAG_UTF8: u16 = 1 << 11;
+    // 1980-01-01 00:00, the zip epoch: the phone doesn't look at dates.
+    const DOS_DATE: u16 = (1 << 5) | 1;
+    let mut out = Vec::new();
+    let mut central = Vec::new();
+    for (name, data) in entries {
+        let offset = out.len() as u32;
+        let crc = crc32(data);
+        let (len, name_len) = (data.len() as u32, name.len() as u16);
+        let header = |out: &mut Vec<u8>, central_entry: bool| {
+            out.extend_from_slice(&(if central_entry { CDH_SIG } else { LFH_SIG }).to_le_bytes());
+            if central_entry {
+                out.extend_from_slice(&20u16.to_le_bytes()); // version made by
+            }
+            out.extend_from_slice(&20u16.to_le_bytes()); // version needed
+            out.extend_from_slice(&FLAG_UTF8.to_le_bytes());
+            out.extend_from_slice(&METHOD_STORE.to_le_bytes());
+            out.extend_from_slice(&0u16.to_le_bytes()); // time
+            out.extend_from_slice(&DOS_DATE.to_le_bytes());
+            out.extend_from_slice(&crc.to_le_bytes());
+            out.extend_from_slice(&len.to_le_bytes()); // compressed
+            out.extend_from_slice(&len.to_le_bytes()); // uncompressed
+            out.extend_from_slice(&name_len.to_le_bytes());
+            out.extend_from_slice(&0u16.to_le_bytes()); // extra
+            if central_entry {
+                out.extend_from_slice(&0u16.to_le_bytes()); // comment
+                out.extend_from_slice(&0u16.to_le_bytes()); // disk
+                out.extend_from_slice(&0u16.to_le_bytes()); // internal attributes
+                out.extend_from_slice(&0u32.to_le_bytes()); // external attributes
+                out.extend_from_slice(&offset.to_le_bytes());
+            }
+            out.extend_from_slice(name.as_bytes());
+        };
+        header(&mut out, false);
+        out.extend_from_slice(data);
+        header(&mut central, true);
+    }
+    let cd_offset = out.len() as u32;
+    out.extend_from_slice(&central);
+    out.extend_from_slice(&EOCD_SIG.to_le_bytes());
+    out.extend_from_slice(&[0, 0, 0, 0]); // disk numbers
+    let count = entries.len() as u16;
+    out.extend_from_slice(&count.to_le_bytes());
+    out.extend_from_slice(&count.to_le_bytes());
+    out.extend_from_slice(&(central.len() as u32).to_le_bytes());
+    out.extend_from_slice(&cd_offset.to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes()); // comment
+    out
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    fn stored_zips_round_trip() {
+        let zip = write_stored(&[("Screenshot 1.png", b"\x89PNG fake"), ("b.txt", b"")]);
+        let back = read_all(&zip).unwrap();
+        assert_eq!(back.len(), 2);
+        assert_eq!((back[0].name.as_str(), back[0].data.as_slice()), ("Screenshot 1.png", &b"\x89PNG fake"[..]));
+        assert_eq!(back[1].data, b"");
+    }
 
     /// Builds a streaming-mode zip like the phone's (flag bit 3, zeros in the local headers, a data
     /// descriptor after each entry). `deflate` stores each entry as one raw Deflate block.

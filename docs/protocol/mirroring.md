@@ -4,8 +4,8 @@
 (verified on a device). Keyboard input is implemented but not separately verified. The mirror is
 started from the PC (verified). Views started on the phone (service 1 `cmd 0`: the Screen share
 and Mobile desktop tiles) and a PC-started Ready For desktop (`smartconnect-mirror --desktop`) are
-answered by the stream host but are **untested on a device**; the tiles only appear with the
-daemon's `--extra-tiles 1`. The answer is restricted to H.264, so an offer without H.264 is not
+answered by the stream host; Mobile desktop has been started from the phone, the rest is less
+tested. The tiles are advertised by default. The answer is restricted to H.264, so an offer without H.264 is not
 decoded.
 
 **Implementation:** [`mirror/src/main.rs`](../../mirror/src/main.rs) (`smartconnect-mirror`, a

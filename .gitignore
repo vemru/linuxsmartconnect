@@ -1,4 +1,5 @@
 /target
+/dist
 **/target/
 
 # Local, machine-specific agent notes

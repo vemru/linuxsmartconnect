@@ -119,6 +119,13 @@ impl Notifier {
         Ok(me)
     }
 
+    /// Shows a plain notification from the daemon itself (not one mirrored from the phone).
+    pub async fn notify_local(&self, summary: &str, body: &str) {
+        if let Err(e) = self.proxy.notify("Smart Connect", 0, "dialog-warning", summary, body, &[], HashMap::new(), -1).await {
+            debug!("notifications: local notification failed: {e}");
+        }
+    }
+
     /// Handles one svc 5/37 frame from the phone.
     pub async fn handle(self: &Arc<Self>, service_id: i64, n: &Value) {
         let Some(key) = n.get("key").and_then(Value::as_str) else { return };

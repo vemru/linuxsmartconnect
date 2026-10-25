@@ -6,7 +6,7 @@
 //!   `smartconnect-display` (so a start from the phone uses them) and with the Noctalia plugin.
 //!   It is read on top of `gui.json`, so a change made elsewhere wins, and written on every change:
 //!   `{"mode":"extend"|"mirror","size":"native"|"requested"|"WxH","displayScale":2.0,"oskHeight":45,
-//!     "output":null|"NAME","audio":false,"followRotation":false}`
+//!     "output":null|"NAME","audio":false,"followRotation":false,"bitrate":8000,"fps":60}`
 //!
 //! Unknown or missing fields fall back to defaults, so both files survive other versions.
 
@@ -32,6 +32,14 @@ pub struct FilesPrefs {
     pub mount_dir: String,
     /// Mount the phone's storage automatically once the phone connects.
     pub auto_mount: bool,
+    /// Share a PC folder with the phone (`smartconnect-files serve`) while the phone is connected.
+    pub share: bool,
+    /// The folder shared with the phone. Empty means the default, your home folder; `~/…` is expanded.
+    pub share_dir: String,
+    /// Also show hidden (dot) files and folders to the phone.
+    pub share_hidden: bool,
+    /// Refuse deletions from the phone (by default they move the files to the Trash).
+    pub share_read_only: bool,
 }
 
 /// Remembered choices on the Apps page.
@@ -48,6 +56,16 @@ impl FilesPrefs {
         let dir = self.mount_dir.trim();
         if dir.is_empty() {
             default_mount_dir()
+        } else {
+            expand_tilde(dir)
+        }
+    }
+
+    /// The folder shared with the phone: the configured one (`~/` expanded), else your home folder.
+    pub fn share_path(&self) -> PathBuf {
+        let dir = self.share_dir.trim();
+        if dir.is_empty() {
+            home_dir()
         } else {
             expand_tilde(dir)
         }
@@ -98,6 +116,10 @@ pub struct DisplayPrefs {
     pub audio: bool,
     /// Experimental: turn the phone's monitor when the phone is turned.
     pub follow_rotation: bool,
+    /// Stream quality: video bitrate in kbit/s (`--bitrate`).
+    pub bitrate: u32,
+    /// Most frames per second sent (`--fps`).
+    pub fps: u32,
 }
 
 /// Range offered for a custom stream size (either orientation).
@@ -107,6 +129,13 @@ pub const MAX_SIDE: u32 = 3840;
 pub const OSK_MIN: u32 = 15;
 pub const OSK_MAX: u32 = 80;
 pub const OSK_DEFAULT: u32 = 45;
+/// `--bitrate` range and default (kbit/s) and `--fps` range and default.
+pub const BITRATE_MIN: u32 = 500;
+pub const BITRATE_MAX: u32 = 50_000;
+pub const BITRATE_DEFAULT: u32 = 8000;
+pub const FPS_MIN: u32 = 10;
+pub const FPS_MAX: u32 = 60;
+pub const FPS_DEFAULT: u32 = 60;
 
 impl Default for DisplayPrefs {
     fn default() -> Self {
@@ -121,6 +150,8 @@ impl Default for DisplayPrefs {
             osk_height: OSK_DEFAULT,
             audio: false,
             follow_rotation: false,
+            bitrate: BITRATE_DEFAULT,
+            fps: FPS_DEFAULT,
         }
     }
 }
@@ -146,6 +177,12 @@ impl DisplayPrefs {
         self.output = self.output.trim().to_owned();
         if !(OSK_MIN..=OSK_MAX).contains(&self.osk_height) {
             self.osk_height = d.osk_height;
+        }
+        if !(BITRATE_MIN..=BITRATE_MAX).contains(&self.bitrate) {
+            self.bitrate = d.bitrate;
+        }
+        if !(FPS_MIN..=FPS_MAX).contains(&self.fps) {
+            self.fps = d.fps;
         }
         self
     }
@@ -174,6 +211,8 @@ impl DisplayPrefs {
             "output": if self.output.is_empty() { Value::Null } else { Value::from(self.output.clone()) },
             "audio": self.audio,
             "followRotation": self.follow_rotation,
+            "bitrate": self.bitrate,
+            "fps": self.fps,
         })
     }
 
@@ -209,6 +248,12 @@ impl DisplayPrefs {
         }
         if let Some(r) = v.get("followRotation").and_then(Value::as_bool) {
             self.follow_rotation = r;
+        }
+        if let Some(b) = v.get("bitrate").and_then(Value::as_u64) {
+            self.bitrate = u32::try_from(b).unwrap_or(u32::MAX);
+        }
+        if let Some(f) = v.get("fps").and_then(Value::as_u64) {
+            self.fps = u32::try_from(f).unwrap_or(u32::MAX);
         }
     }
 }
@@ -288,6 +333,8 @@ mod tests {
         // A `~/…` path is expanded against $HOME; an absolute path is taken as-is.
         assert_eq!(FilesPrefs { mount_dir: "~/Storage/Phone".into(), ..Default::default() }.mount_path(), home.join("Storage/Phone"));
         assert_eq!(FilesPrefs { mount_dir: "/mnt/phone".into(), ..Default::default() }.mount_path(), PathBuf::from("/mnt/phone"));
+        assert_eq!(FilesPrefs::default().share_path(), home);
+        assert_eq!(FilesPrefs { share_dir: "~/Public".into(), ..Default::default() }.share_path(), home.join("Public"));
     }
 
     #[test]
@@ -305,7 +352,7 @@ mod tests {
         let d = DisplayPrefs::default();
         assert_eq!(
             d.shared(),
-            json!({"mode":"extend","size":"native","displayScale":2.0,"oskHeight":45,"output":null,"audio":false,"followRotation":false})
+            json!({"mode":"extend","size":"native","displayScale":2.0,"oskHeight":45,"output":null,"audio":false,"followRotation":false,"bitrate":8000,"fps":60})
         );
         let mut d = DisplayPrefs { mode: "mirror".into(), output: "HDMI-A-1".into(), scale: 150, ..DisplayPrefs::default() };
         assert_eq!(d.shared()["size"], "requested");

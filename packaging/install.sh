@@ -15,6 +15,8 @@ Builds the Cargo workspace in release mode and installs, for the current user:
   systemd user unit   ~/.config/systemd/user/smartconnectd.service ($PREFIX/lib/systemd/user
                       for a prefix other than ~/.local); enabled only with --enable
   GTK app launcher    $PREFIX/share/applications/dev.smartconnect.Linux.desktop + icon
+  display helper      $PREFIX/share/applications/dev.smartconnect.Display.desktop (hidden; lets
+                      KDE Plasma trust smartconnect-display with screen casting and input)
   Noctalia plugin     ~/.config/noctalia/plugins/smart-connect (a copy; --link for a symlink)
   short guide         $PREFIX/share/doc/smartconnect-linux/
 
@@ -148,14 +150,25 @@ run install -Dm644 "$ROOT/LICENSE" "$DOC_DIR/LICENSE"
 # ---- GTK app launcher ----
 say "Installing the GTK app launcher and icon"
 desktop_script=""
+display_script=""
 if printf '%s' "$BIN_DIR" | grep -Eq '^[A-Za-z0-9._/+-]+$'; then
   # An absolute Exec= works even when $BIN_DIR is not on the launcher's PATH.
   desktop_script="s|^Exec=smartconnect-gui|Exec=$(sed_escape "$BIN_DIR")/smartconnect-gui|"
+  # KWin matches this Exec= against the running binary's path, so it has to be absolute.
+  display_script="s|^Exec=smartconnect-display|Exec=$(sed_escape "$BIN_DIR")/smartconnect-display|"
 else
   warn "$BIN_DIR has characters a .desktop Exec= line can't hold unquoted; the launcher relies on PATH"
+  warn "and on KDE Plasma the phone display will not get screen casting (KWin needs an absolute Exec=)"
 fi
 run install -Dm644 "$ROOT/packaging/$APP_ID.svg" "$ICON_DIR/$APP_ID.svg"
 install_filtered 644 "$ROOT/packaging/$APP_ID.desktop" "$APPS_DIR/$APP_ID.desktop" "$desktop_script"
+if [ -n "$display_script" ]; then
+  install_filtered 644 "$ROOT/packaging/dev.smartconnect.Display.desktop" "$APPS_DIR/dev.smartconnect.Display.desktop" "$display_script"
+  # KDE reads .desktop files through its sycoca cache; refresh it so KWin sees the new entry.
+  if command -v kbuildsycoca6 >/dev/null 2>&1; then
+    run kbuildsycoca6 2>/dev/null || true
+  fi
+fi
 # Older instructions installed the launcher under this name.
 old_desktop="$APPS_DIR/smartconnect-gui.desktop"
 if [ -f "$old_desktop" ] && grep -q '^Exec=.*smartconnect-gui' "$old_desktop"; then
@@ -291,7 +304,8 @@ ${C_SAY}Optional setup that needs root (not done by this script):${C_OFF}
     # or the --port you pass (2049 clashes with a running nfs-server).
     sudo firewall-cmd --permanent --add-port=2049/tcp
 
-  Phone as a second monitor (Extend): the vkms virtual output.
+  Phone as a second monitor (Extend), niri only (GNOME, KDE, Hyprland and sway need nothing):
+  the vkms virtual output.
     sudo modprobe vkms
     echo vkms | sudo tee /etc/modules-load.d/vkms.conf
     # niri: keep the virtual output off while it isn't used (~/.config/niri/config.kdl):

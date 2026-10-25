@@ -58,7 +58,7 @@ flowchart LR
 | `smartconnect-crosscontrol` | `crosscontrol/` | the daemon (phone tile), the GTK switch, the Noctalia button, the user | Wayland client for Cross Control. Only one runs at a time (file lock, newest takes over). |
 | `smartconnect-display` | `display/` | the daemon (when the phone starts the PC screen), the GTK app's *Display* page, the Noctalia panel, or the user | Phone as a display: captures the PC screen (and optionally its audio), sends it over WebRTC, injects the phone's touch input, shows an on-screen keyboard for the phone's keyboard button. Single instance (`$XDG_RUNTIME_DIR/smartconnect-display.lock`). |
 | `smartconnect-webcam` | `webcam/` | the daemon (`--answer`, phone tile), or the user | Phone camera as a webcam: receives WebRTC video and feeds v4l2loopback or a PipeWire camera node. Single instance (`$XDG_RUNTIME_DIR/smartconnect-webcam.lock`). |
-| `smartconnect-files` | `files/` | the GTK app's *Files* page, the Noctalia *Phone files* tile, or the user (`mount`, `list`, `serve`) | The phone's storage as a read-only FUSE mount (NFSv3 over mutual TLS to the phone, after a `cmd=1001` handshake on service 168 through the control socket), and `serve`: a local folder exported read-only to the phone on TCP 2049. Not supervised by the daemon. |
+| `smartconnect-files` | `files/` | the GTK app's *Files* page (`mount`, and `serve` from *Share with the phone*), the Noctalia *Phone files* tile, or the user (`mount`, `list`, `serve`) | The phone's storage as a read-only FUSE mount (NFSv3 over mutual TLS to the phone, after a `cmd=1001` handshake on service 168 through the control socket), and `serve`: a local folder exported read-only to the phone on TCP 2049. Not supervised by the daemon. |
 | `smartconnect-fex` | `fex/` | the user (`fetch-app-icons`, `pull`) | Client for the phone's fex file-transfer server. The same library runs inside the daemon, which downloads the app icons on every service 17 app list. |
 | `smartconnect-gui` | `gui/` | the user | GTK4/libadwaita front-end. |
 | Noctalia plugin | `noctalia-plugin/` | Noctalia Shell | Bar widget and panel. |
@@ -72,7 +72,7 @@ The daemon also uses these system services:
 | Clipboard | `wl-paste --type text --watch …` (child process) and `wl-copy`. |
 | mDNS | `avahi-publish -s … _readyformdns._tcp` and `avahi-browse -r -p -k _readyformdns._tcp` (child processes). |
 | Bluetooth LE | BlueZ over D-Bus (`bluer`). It acts as a GATT central for the Connect wake, and as an optional peripheral without `--no-ble`. |
-| PC lock | `loginctl lock-session`, then polling `loginctl show-session auto -p LockedHint`. |
+| PC lock | Noctalia's `qs ipc … lockScreen lock`, `loginctl lock-session <graphical session>` or `--lock-command`, then polling `loginctl show-session <id> -p LockedHint`; a desktop notification when nothing locked. |
 | Hotspot | `nmcli dev wifi connect …` / `nmcli connection delete …`. |
 
 ## Inside the daemon
@@ -245,7 +245,7 @@ answering yet:
 | Helper | Started when | Single-instance check |
 |---|---|---|
 | `smartconnect-mirror --host` | after the first verified session, and again (with backoff) whenever it exits | its socket `smartconnect-mirror.sock` answers |
-| `smartconnect-crosscontrol --edge $SMARTCONNECT_CROSS_EDGE --accept` | phone service 26 `cmd 0` (Cross Control tile) | `smartconnect-crosscontrol.lock` |
+| `smartconnect-crosscontrol --accept` (plus `--edge $SMARTCONNECT_CROSS_EDGE` when set; the position otherwise comes from `crosscontrol.json`) | phone service 26 `cmd 0` (Cross Control tile) | `smartconnect-crosscontrol.lock` |
 | `smartconnect-display --mode <shareType>` | phone service 202 `cmd 50` (the phone starts the PC screen) | `smartconnect-display.lock` |
 | `smartconnect-webcam --answer` | phone service 3 `cmd 0` with `isReply: 0` (Webcam tile) | `smartconnect-webcam.lock` |
 
@@ -259,7 +259,7 @@ flowchart TD
   G --> A
   T["phone: service 26 cmd 0<br/>(Cross Control tile)"] --> L{"crosscontrol lock held?"}
   L -- yes --> R["the running client answers"]
-  L -- no --> S["spawn smartconnect-crosscontrol<br/>--edge $SMARTCONNECT_CROSS_EDGE --accept"]
+  L -- no --> S["spawn smartconnect-crosscontrol<br/>--accept (position from crosscontrol.json)"]
   DT["phone: service 202 cmd 50<br/>(PC screen started on the phone)"] --> DL{"display lock held?"}
   DL -- yes --> DR["the running session answers"]
   DL -- no --> DS["spawn smartconnect-display --mode shareType<br/>(the rest from display.json)"]
@@ -300,7 +300,7 @@ flowchart TD
 
 ```mermaid
 flowchart LR
-  WP["wl-paste --watch"] --> LC["LocalClipboard<br/>drops sensitive copies and echoes"]
+  WP["wl-paste --watch<br/>(GNOME: Xwayland XFixes watcher)"] --> LC["LocalClipboard<br/>drops sensitive copies and echoes"]
   LC --> SL["session loop"]
   SL -->|"service 9 UPDATE_NOTIFY<br/>(after NEGO/CONFIRM)"| PH["phone"]
   PH -->|"service 9 UPDATE_NOTIFY"| SL2["session loop"]
@@ -393,7 +393,7 @@ changes. See [mirroring](protocol/mirroring.md) and [app streaming](protocol/app
   both. The phone display uses the same rules (`display/src/ice.rs`); the webcam helper offers
   addresses on the phone's /24.
 - **Views.** The host also answers the phone's service 1 `cmd 0` (the Screen share and Mobile
-  desktop tiles, advertised only with `--extra-tiles 1`) and then treats the `mirror`, `mobile` or
+  desktop tiles) and then treats the `mirror`, `mobile` or
   `desktop` stream like the whole-screen mirror.
 - **Window resize** (opt-in, `SMARTCONNECT_MIRROR_RESIZE=1`): the host polls each app window's size
   and sends service 15 `cmd 17` once a new size has settled; the phone resizes that app's virtual
@@ -401,25 +401,42 @@ changes. See [mirroring](protocol/mirroring.md) and [app streaming](protocol/app
 
 ### Cross Control
 
-`smartconnect-crosscontrol` maps a 1-pixel layer-shell strip on the chosen screen edge. When the
-pointer enters it, the client asks the phone over service 26, gets the phone's screen size, maps a
-transparent full-screen overlay with exclusive keyboard focus, locks the pointer, and turns relative
-pointer motion into absolute phone coordinates. Pointer, button, wheel and key events go out as
-service 16 input on display 0 (motion is coalesced to at most 125 Hz). Pushing back past the edge,
-or Ctrl+Alt+Esc, releases held keys, tells the phone, and unlocks. See
+`smartconnect-crosscontrol` has one core (`core.rs`: the service 26 session, a virtual cursor in
+phone pixels, and input forwarding) and two ways to grab input:
+
+- **layer-shell** (`layer.rs`): a 1-pixel layer-shell strip on the chosen screen edge. When the
+  pointer enters it, the client asks the phone over service 26, gets the phone's screen size, maps a
+  transparent full-screen overlay with exclusive keyboard focus and locks the pointer.
+- **portal** (`portal.rs`, GNOME): an xdg-desktop-portal InputCapture session with a pointer barrier
+  on that edge of every monitor. Pushing into it activates the capture, and the desktop sends every
+  pointer and key event over libei (`reis`) instead of handling it.
+
+Either way, relative pointer motion becomes absolute phone coordinates, and pointer, button, wheel
+and key events go out as service 16 input on display 0 (motion is coalesced to at most 125 Hz).
+Pushing back past the edge, or Ctrl+Alt+Esc, releases held keys, tells the phone, and gives input
+back (unlock, or the portal's `Release` with the pointer just inside the edge). `--backend auto`
+uses layer-shell when the compositor has it, else the portal. See
 [Cross Control](protocol/cross-control.md).
 
 ### Phone as display
 
 `smartconnect-display` is the opposite direction: the phone is the WebRTC offerer and the PC sends
-H.264 (and, with `--audio`, Opus from the default output's monitor). The video source comes from
-niri's screencast D-Bus API by connector name (or the xdg-desktop-portal ScreenCast as a fallback
-for mirror mode), through `pipewiresrc ! vapostproc`. For extend, the tool first turns on a spare
-output with temporary `niri msg output …` commands (mode, position, scale), and resizes or rotates
-it in place when the phone asks for another resolution or, with `--follow-rotation`, turns. The
-phone's touch, mouse and key packets arrive on a WebRTC data channel and are injected through
-`zwlr_virtual_pointer_v1` (pinned to the shared output) and `zwp_virtual_keyboard_v1`. The phone's
-keyboard button starts an on-screen keyboard (wvkbd) on the shared output.
+H.264 (and, with `--audio`, Opus from the default output's monitor). `display/src/desktop.rs`
+detects the desktop and `display/src/capture/` has one backend per desktop for the video source,
+the extend screen and the input route:
+
+| Desktop | Extend screen | Video source | Input injection |
+|---|---|---|---|
+| niri | spare output (vkms) via temporary `niri msg output …` | niri's `org.gnome.Mutter.ScreenCast` → `pipewiresrc ! vapostproc` | `zwlr_virtual_pointer_v1` + `zwp_virtual_keyboard_v1` |
+| GNOME | Mutter `RecordVirtual` (mode = negotiated caps), placed/scaled with `DisplayConfig.ApplyMonitorsConfig` (temporary) | Mutter ScreenCast → `pipewiresrc` (SHM) | Mutter RemoteDesktop session linked to the cast |
+| KDE | KWin `zkde_screencast` virtual output | KWin → `pipewiresrc` | `org_kde_kwin_fake_input` |
+| Hyprland / sway | headless output via `hyprctl` / `swaymsg` | wlr-screencopy thread → `appsrc` | virtual pointer + keyboard |
+
+Mirror falls back to the xdg-desktop-portal ScreenCast. Extend resizes or rotates the screen in
+place (KDE re-creates it) when the phone asks for another resolution or, with
+`--follow-rotation`, turns. The phone's touch, mouse and key packets arrive on a WebRTC data
+channel. The phone's keyboard button starts an on-screen keyboard (wvkbd; GNOME's own screen
+keyboard on GNOME) on the shared output. Design log: `.notes/display-any-desktop.md`.
 
 ```mermaid
 flowchart LR
@@ -454,7 +471,7 @@ keeps the phone's 30 s watchdog happy. See [webcam](protocol/webcam.md) and `.no
 | What | Where | Owner |
 |---|---|---|
 | Phone connection | TCP `--port` (52020) on all interfaces, TLS | daemon |
-| PC folder share (only while `smartconnect-files serve` runs) | TCP `--port` (2049) on all interfaces, mutual TLS, NFSv3 | `smartconnect-files serve` |
+| PC folder share (only while `smartconnect-files serve` runs, by hand or from the GTK app) | TCP `--port` (2049) on all interfaces, mutual TLS, NFSv3 | `smartconnect-files serve` |
 | Phone files mount | the mount folder (default `~/Phone`), FUSE | `smartconnect-files mount` |
 | Phone files log | `$XDG_RUNTIME_DIR/smartconnect-files.log` (mounts started by the GTK app) | GTK app |
 | File Station identity | `$XDG_DATA_HOME/smartconnect-linux/files-identity/` (`cert.der`, `key.der`; 0700/0600) | `smartconnect-files` |

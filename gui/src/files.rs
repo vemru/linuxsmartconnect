@@ -15,6 +15,8 @@
 //!
 //! The mount folder and the "mount automatically when connected" choice are remembered in
 //! `gui.json` (see `prefs.rs`); the default folder is `~/Phone`.
+//!
+//! Below the mount settings, [`ShareSection`] (`share.rs`) shares a PC folder with the phone.
 
 use std::cell::{Cell, RefCell};
 use std::fs::File;
@@ -30,6 +32,7 @@ use gtk::{gio, glib};
 
 use crate::mirror::binary;
 use crate::prefs;
+use crate::share::ShareSection;
 
 const BIN: &str = "smartconnect-files";
 
@@ -242,6 +245,8 @@ pub struct FilesPage {
     quick: Vec<gtk::Button>,
     location: adw::ActionRow,
     auto_mount: adw::SwitchRow,
+    /// The "Share with the phone" section (PC→phone, `smartconnect-files serve`).
+    share: Rc<ShareSection>,
     st: RefCell<State>,
     /// A poll timer is running: don't start a second one.
     watching: Cell<bool>,
@@ -345,6 +350,8 @@ impl FilesPage {
         column.append(&card);
         column.append(&quick_group);
         column.append(&group);
+        let (share, share_widget) = ShareSection::build(toasts);
+        column.append(&share_widget);
 
         let clamp = adw::Clamp::builder().maximum_size(1400).tightening_threshold(1400).child(&column).build();
         let scroller = gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).vexpand(true).child(&clamp).build();
@@ -362,6 +369,7 @@ impl FilesPage {
             quick,
             location,
             auto_mount,
+            share,
             st: RefCell::new(State {
                 connected: false,
                 phase: Phase::Unmounted,
@@ -433,6 +441,7 @@ impl FilesPage {
     }
 
     pub fn set_connected(self: &Rc<Self>, connected: bool) {
+        self.share.set_connected(connected);
         let changed = {
             let mut st = self.st.borrow_mut();
             let was = std::mem::replace(&mut st.connected, connected);
@@ -859,6 +868,7 @@ impl FilesPage {
     /// Synchronous unmount for app Quit: `fusermount3 -u`, then reap the child, so no stale mount is
     /// left. A no-op when nothing is mounted. Closing the window to the tray never calls this.
     pub fn shutdown(&self) {
+        self.share.shutdown();
         let (child, dir) = {
             let mut st = self.st.borrow_mut();
             if st.phase == Phase::Unmounted {

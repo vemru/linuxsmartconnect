@@ -3,7 +3,7 @@ name = "smartconnect-crosscontrol"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
-description = "Cross Control (svc 26): glide the PC mouse+keyboard onto a Smart Connect phone (Wayland layer-shell + pointer lock)"
+description = "Cross Control (svc 26): glide the PC mouse+keyboard onto a Smart Connect phone (Wayland layer-shell + pointer lock, or the InputCapture portal)"
 
 [[bin]]
 name = "smartconnect-crosscontrol"
@@ -16,3 +16,10 @@ libc = "0.2"
 smithay-client-toolkit = { version = "0.19", default-features = false }
 wayland-client = "0.31"
 wayland-protocols = { version = "0.32", features = ["client", "unstable", "staging"] }
+# InputCapture portal backend (GNOME): barriers via the portal, events over libei. async-io, the
+# same ashpd runtime the display helper uses (ashpd can't be built with both async-io and tokio).
+ashpd = { version = "0.13", default-features = false, features = ["async-io", "input_capture"] }
+reis = { version = "0.7.1", features = ["async-io"] }
+async-io = "2"
+futures-lite = "2"
+futures-util = { version = "0.3", default-features = false }

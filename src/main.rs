@@ -47,7 +47,7 @@ struct Args {
     #[arg(long)]
     no_ble_wake: bool,
     /// Experimental: extra phone feature tiles to advertise in the svc 25 `cap` map, as service
-    /// ids (`SVC` or `SVC=FLAGS`), e.g. `--extra-tiles 1` for Screen share + Mobile desktop.
+    /// ids (`SVC` or `SVC=FLAGS`), e.g. `--extra-tiles 20` for the File explorer tile.
     /// Untested on a device; the service must also be in `serviceVersions`.
     #[arg(long, value_delimiter = ',', value_name = "SVC[=FLAGS]")]
     extra_tiles: Vec<String>,
@@ -55,6 +55,11 @@ struct Args {
     /// (keys, tokens, passwords, clipboard, SMS and notification contents are redacted). Off by default.
     #[arg(long)]
     session_log: bool,
+    /// Command (run with `sh -c`) that locks the screen when the phone's PC lock tile is tapped.
+    /// Default: Noctalia's lock screen when Noctalia is running, else `loginctl lock-session` on
+    /// the graphical session (GNOME under GDM, KDE, and lockers started by swayidle/hypridle).
+    #[arg(long, value_name = "CMD")]
+    lock_command: Option<String>,
     #[command(subcommand)]
     command: Option<Cmd>,
 }
@@ -152,6 +157,8 @@ async fn main() -> Result<()> {
         ble_address,
     ));
     daemon.set_ble_wake(!args.no_ble_wake);
+    // Clipboard images to the phone are served over fex on this same port and certificate.
+    daemon.clipboard.set_fex_endpoint(args.port, daemon.identity.fp_hex());
     tokio::spawn(daemon.clone().invite_loop());
     // Reconnect promptly after a resume, a network change, or Bluetooth being switched on.
     tokio::spawn(smartconnect::reconnect::watch_system(daemon.clone(), refresh_ips));
@@ -163,7 +170,7 @@ async fn main() -> Result<()> {
             }
         });
     }
-    tokio::spawn(smartconnect::pc_lock::run(daemon.clone()));
+    tokio::spawn(smartconnect::pc_lock::run(daemon.clone(), args.lock_command.clone()));
     // Persistence: if the paired phone isn't back shortly after startup, reconnect on our own
     // (Bluetooth works even when the phone app is in the background).
     {

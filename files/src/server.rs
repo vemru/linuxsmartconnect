@@ -121,22 +121,30 @@ fn server_config(id: &Identity, pinned: PinnedFps) -> Result<Arc<ServerConfig>> 
 pub struct NfsServer {
     acceptor: TlsAcceptor,
     vfs: Arc<ReadOnlyAdapter<LocalFs>>,
+    /// A clone of the VFS (shared tables) for the category listings the router answers.
+    fs: LocalFs,
     export_label: String,
+    /// Let the phone move files to the Trash (Lenovo `REMOVEBATCH`); otherwise fully read-only.
+    allow_delete: bool,
 }
 
 impl NfsServer {
     /// Builds the server for `share_dir`, exported under `export_label` (the `path` we advertise in
     /// the handshake, e.g. `/PhoneShare`). `pinned` is the shared set the responder adds phone fps to.
+    /// Hidden (dot) entries are invisible to the phone unless `show_hidden`; `allow_delete` lets the
+    /// phone move files to the Trash.
     pub fn new(
         id: &Identity,
         share_dir: std::path::PathBuf,
         export_label: String,
         pinned: PinnedFps,
+        show_hidden: bool,
+        allow_delete: bool,
     ) -> Result<Self> {
-        let fs = LocalFs::new(share_dir).context("opening the shared directory")?;
-        let vfs = Arc::new(ReadOnlyAdapter::new(fs));
+        let fs = LocalFs::new(share_dir).context("opening the shared directory")?.show_hidden(show_hidden);
+        let vfs = Arc::new(ReadOnlyAdapter::new(fs.clone()));
         let config = server_config(id, pinned)?;
-        Ok(Self { acceptor: TlsAcceptor::from(config), vfs, export_label })
+        Ok(Self { acceptor: TlsAcceptor::from(config), vfs, fs, export_label, allow_delete })
     }
 
     /// Accepts connections forever, running one NFS session per TLS stream. Returns only on a fatal
@@ -145,8 +153,8 @@ impl NfsServer {
         // One base context (shared VFS + a single file-handle generation + transaction tracker);
         // cloned per connection so handles stay valid across the phone's connections.
         let base = RPCContext::test_ctx(&self.export_label, self.vfs.clone());
-        // Our real root handle ([generation][root id]); the phone's all-zero root handle is mapped
-        // onto it by `PhoneStream`.
+        // Our real root handle ([generation][root id]); the router maps the phone's all-zero root
+        // handle onto it.
         let root_fh: Arc<[u8]> = Arc::from(base.root_dir().data.as_ref());
         loop {
             let (tcp, peer) = listener.accept().await.context("accepting a TLS connection")?;
@@ -154,6 +162,8 @@ impl NfsServer {
             let acceptor = self.acceptor.clone();
             let ctx = base.clone();
             let root_fh = root_fh.clone();
+            let fs = self.fs.clone();
+            let (label, allow_delete) = (self.export_label.clone(), self.allow_delete);
             tokio::spawn(async move {
                 let tls = match acceptor.accept(tcp).await {
                     Ok(s) => s,
@@ -164,10 +174,19 @@ impl NfsServer {
                     }
                 };
                 info!("phone connected for file sharing from {peer}");
-                let tls = PhoneStream::new(tls, root_fh, trace_enabled(), peer);
-                if let Err(e) = process_socket(tls, ctx).await {
+                // The NFS core runs on one end of an in-memory pipe; the router sits between it and
+                // the phone (see `router.rs`).
+                let (nfs_end, router_end) = tokio::io::duplex(256 * 1024);
+                let core = tokio::spawn(async move {
+                    if let Err(e) = process_socket(nfs_end, ctx).await {
+                        debug!("NFS core for {peer} ended: {e}");
+                    }
+                });
+                let session = crate::router::Session { fs, label, allow_delete, root_fh, trace: trace_enabled(), peer };
+                if let Err(e) = crate::router::run(tls, router_end, session).await {
                     debug!("NFS session with {peer} ended: {e}");
                 }
+                let _ = core.await;
             });
         }
     }
@@ -178,54 +197,35 @@ fn trace_enabled() -> bool {
     std::env::var_os("SMARTCONNECT_FILES_TRACE").is_some_and(|v| v != "0")
 }
 
-/// The decrypted stream from the phone, with one compatibility fix applied at the RPC record layer.
-///
-/// The phone (like Lenovo's own NFS servers) treats a **64-byte all-zero file handle** as the export
-/// root and never calls MOUNT to learn ours — it goes straight to NFS `NULL`/`ACCESS`/`READDIRPLUS`
-/// on the zero handle. `nfs3_server` handles are `[8-byte generation][id]`, so a zero handle would be
-/// rejected as `NFS3ERR_STALE`. This adapter reassembles RPC record fragments and, for an NFS call
-/// whose first argument is that zero handle, substitutes our real root handle (fixing the record
-/// length). Writes pass through. With `SMARTCONNECT_FILES_TRACE=1` both directions are hex-dumped at
-/// `debug` level.
-struct PhoneStream<S> {
-    inner: S,
-    root_fh: Arc<[u8]>,
-    /// Raw bytes from the phone not yet assembled into a complete record fragment.
-    inbuf: Vec<u8>,
-    /// Rewritten bytes ready for the NFS core, and how much of it has been handed out.
-    outbuf: Vec<u8>,
-    outpos: usize,
-    trace: bool,
-    peer: std::net::SocketAddr,
-}
+// RPC record helpers shared with `router.rs`.
+//
+// The phone (like Lenovo's own NFS servers) treats a **64-byte all-zero file handle** as the export
+// root and never calls MOUNT to learn ours: it goes straight to NFS `NULL`/`ACCESS`/`READDIRPLUS`
+// on the zero handle. `nfs3_server` handles are `[8-byte generation][id]`, so a zero handle would be
+// rejected as `NFS3ERR_STALE`; [`rewrite_zero_root`] swaps in our real root handle.
 
-impl<S> PhoneStream<S> {
-    fn new(inner: S, root_fh: Arc<[u8]>, trace: bool, peer: std::net::SocketAddr) -> Self {
-        Self { inner, root_fh, inbuf: Vec::new(), outbuf: Vec::new(), outpos: 0, trace, peer }
-    }
-}
-
-const NFS_PROGRAM: u32 = 100_003;
-const ZERO_ROOT_LEN: usize = 64;
+pub(crate) const NFS_PROGRAM: u32 = 100_003;
+pub(crate) const ZERO_ROOT_LEN: usize = 64;
 
 /// Length (marker included) of the first complete record fragment in `buf`, if one is buffered.
+#[cfg(test)]
 fn complete_fragment(buf: &[u8]) -> Option<usize> {
     let marker = u32::from_be_bytes(buf.get(..4)?.try_into().ok()?);
     let len = (marker & 0x7fff_ffff) as usize;
     (buf.len() >= 4 + len).then_some(4 + len)
 }
 
-fn be32(b: &[u8], at: usize) -> Option<u32> {
+pub(crate) fn be32(b: &[u8], at: usize) -> Option<u32> {
     Some(u32::from_be_bytes(b.get(at..at + 4)?.try_into().ok()?))
 }
 
-fn pad4(n: usize) -> usize {
+pub(crate) fn pad4(n: usize) -> usize {
     n.div_ceil(4) * 4
 }
 
 /// If `frag` (marker + body) is a single-fragment NFS call whose first argument is the 64-byte
 /// all-zero handle, returns the fragment with `root_fh` in its place; otherwise `None`.
-fn rewrite_zero_root(frag: &[u8], root_fh: &[u8]) -> Option<(Vec<u8>, u32)> {
+pub(crate) fn rewrite_zero_root(frag: &[u8], root_fh: &[u8]) -> Option<(Vec<u8>, u32)> {
     let marker = be32(frag, 0)?;
     if marker & 0x8000_0000 == 0 {
         return None; // only single-fragment records (the phone's calls are small)
@@ -259,88 +259,8 @@ fn rewrite_zero_root(frag: &[u8], root_fh: &[u8]) -> Option<(Vec<u8>, u32)> {
     Some((out, proc_))
 }
 
-fn hex(bytes: &[u8]) -> String {
+pub(crate) fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
-}
-
-impl<S: tokio::io::AsyncRead + Unpin> tokio::io::AsyncRead for PhoneStream<S> {
-    fn poll_read(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-        buf: &mut tokio::io::ReadBuf<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        use std::task::Poll;
-        let this = &mut *self;
-        loop {
-            // Hand out rewritten bytes first.
-            if this.outpos < this.outbuf.len() {
-                let n = (this.outbuf.len() - this.outpos).min(buf.remaining());
-                buf.put_slice(&this.outbuf[this.outpos..this.outpos + n]);
-                this.outpos += n;
-                return Poll::Ready(Ok(()));
-            }
-            // Then assemble the next complete fragment, rewriting it if needed.
-            if let Some(n) = complete_fragment(&this.inbuf) {
-                let frag: Vec<u8> = this.inbuf.drain(..n).collect();
-                if this.trace {
-                    debug!("trace {} phone→PC {}B: {}", this.peer, frag.len(), hex(&frag[..frag.len().min(512)]));
-                }
-                this.outbuf = match rewrite_zero_root(&frag, &this.root_fh) {
-                    Some((rewritten, proc_)) => {
-                        debug!("mapped the phone's zero root handle onto ours (NFS proc {proc_})");
-                        rewritten
-                    }
-                    None => frag,
-                };
-                this.outpos = 0;
-                continue;
-            }
-            // Need more input from the phone.
-            let mut tmp = [0u8; 16 * 1024];
-            let mut rb = tokio::io::ReadBuf::new(&mut tmp);
-            match std::pin::Pin::new(&mut this.inner).poll_read(cx, &mut rb) {
-                Poll::Pending => return Poll::Pending,
-                Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
-                Poll::Ready(Ok(())) => {
-                    let got = rb.filled();
-                    if got.is_empty() {
-                        // EOF: flush any partial fragment as-is, then report EOF.
-                        if this.inbuf.is_empty() {
-                            return Poll::Ready(Ok(()));
-                        }
-                        this.outbuf = std::mem::take(&mut this.inbuf);
-                        this.outpos = 0;
-                        continue;
-                    }
-                    this.inbuf.extend_from_slice(got);
-                }
-            }
-        }
-    }
-}
-
-impl<S: tokio::io::AsyncWrite + Unpin> tokio::io::AsyncWrite for PhoneStream<S> {
-    fn poll_write(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-        data: &[u8],
-    ) -> std::task::Poll<std::io::Result<usize>> {
-        let res = std::pin::Pin::new(&mut self.inner).poll_write(cx, data);
-        if self.trace {
-            if let std::task::Poll::Ready(Ok(n)) = res {
-                debug!("trace {} PC→phone {}B: {}", self.peer, n, hex(&data[..n.min(512)]));
-            }
-        }
-        res
-    }
-
-    fn poll_flush(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<std::io::Result<()>> {
-        std::pin::Pin::new(&mut self.inner).poll_flush(cx)
-    }
-
-    fn poll_shutdown(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<std::io::Result<()>> {
-        std::pin::Pin::new(&mut self.inner).poll_shutdown(cx)
-    }
 }
 
 /// Binds the NFS-over-TLS listener on all interfaces at `port` (0 = pick a free port) and returns it
@@ -383,13 +303,36 @@ mod zero_root_tests {
     }
 
     #[test]
+    fn our_wire_handles_are_64_bytes() {
+        // The phone rejects any handle that isn't 0 or 64 bytes long.
+        let dir = std::env::temp_dir().join(format!("scf-fh-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let vfs = Arc::new(ReadOnlyAdapter::new(LocalFs::new(dir.clone()).unwrap()));
+        let ctx = RPCContext::test_ctx("/PhoneShare", vfs);
+        assert_eq!(ctx.root_dir().data.len(), ZERO_ROOT_LEN);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn zero_root_handle_is_replaced_in_place_by_a_64_byte_root() {
+        let root: Vec<u8> = (1..=64).collect();
+        let frag = phone_access_on_zero_root();
+        let (out, proc_) = rewrite_zero_root(&frag, &root).expect("should rewrite");
+        assert_eq!(proc_, 4, "ACCESS");
+        assert_eq!(out.len(), frag.len(), "same-length handle, same record length");
+        let args = out.len() - 4 - (4 + 64);
+        assert_eq!(&out[args + 4..args + 68], root.as_slice());
+        assert_eq!(&out[out.len() - 4..], &1u32.to_be_bytes());
+    }
+
+    #[test]
     fn zero_root_handle_is_mapped_onto_ours() {
         let root: Vec<u8> = (1..=16).collect();
         let frag = phone_access_on_zero_root();
         assert_eq!(complete_fragment(&frag), Some(frag.len()));
         let (out, proc_) = rewrite_zero_root(&frag, &root).expect("should rewrite");
         assert_eq!(proc_, 4, "ACCESS");
-        // 48 bytes shorter (64-byte handle → 16-byte handle), marker updated, last-fragment bit kept.
+        // A shorter root handle also works: 48 bytes shorter, marker updated, last-fragment bit kept.
         assert_eq!(out.len(), frag.len() - 48);
         let marker = u32::from_be_bytes(out[..4].try_into().unwrap());
         assert_eq!(marker, 0x8000_0000 | (out.len() as u32 - 4));
@@ -453,7 +396,7 @@ mod tests {
         pinned.write().unwrap().insert(client_id.fingerprint.clone());
 
         let (listener, port) = super::bind(0).await.unwrap();
-        let srv = super::NfsServer::new(&server_id, share, "/PhoneShare".into(), pinned).unwrap();
+        let srv = super::NfsServer::new(&server_id, share, "/PhoneShare".into(), pinned, false, false).unwrap();
         tokio::spawn(srv.serve(listener));
 
         // Client: present our client cert, pin the server's fp — the mirror of the phone.
@@ -511,7 +454,7 @@ mod tests {
         // Note: the client's fp is NOT inserted into the pinned set.
         let pinned = super::new_pinned();
         let (listener, port) = super::bind(0).await.unwrap();
-        let srv = super::NfsServer::new(&server_id, share, "/PhoneShare".into(), pinned).unwrap();
+        let srv = super::NfsServer::new(&server_id, share, "/PhoneShare".into(), pinned, false, false).unwrap();
         tokio::spawn(srv.serve(listener));
 
         let config = client_config(&client_id, &server_id.fingerprint).unwrap();

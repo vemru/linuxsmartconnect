@@ -26,6 +26,7 @@ use gst::prelude::*;
 use serde_json::{Value, json};
 
 use crate::opts::{self, Opts, Share, SizePref};
+use crate::desktop::{self, Desktop};
 use crate::{audio, capture, ice, input};
 
 const SERVICE: i64 = 202;
@@ -251,13 +252,25 @@ struct Source {
     desc: String,
     /// The size it was opened for (extend output mode / test pattern size).
     size: (u32, u32),
-    /// Captured screen rectangle (compositor logical px) and its output, for input mapping.
-    target: Option<((i32, i32, u32, u32), String)>,
+    /// Captured screen and how phone input reaches it (None for the test pattern).
+    target: Option<input::Target>,
     /// Keeps the cast session (and, for extend, the enabled output) alive.
     cap: Option<capture::Capture>,
 }
 
 impl Source {
+    /// Extend: moves the screen to the side the placement file now names (the user dragged the
+    /// phone on the Cross Control page).
+    fn reposition(&mut self) -> Result<bool> {
+        let Some(cap) = self.cap.as_mut() else { return Ok(false) };
+        if !cap.reposition()? {
+            return Ok(false);
+        }
+        println!("{} moved to {:?} (the phone's place changed)", cap.output_name(), cap.geometry());
+        self.target = Some(cap.input_target());
+        Ok(true)
+    }
+
     /// Extend: resizes/turns the output in place (it stays on, so its windows stay on it).
     /// `Ok(false)` = not an extend capture (open a new source instead).
     fn reconfigure(&mut self, size: (u32, u32)) -> Result<bool> {
@@ -266,7 +279,7 @@ impl Source {
         println!("{} is now {}x{}, geometry {:?}", cap.output_name(), cap.width, cap.height, cap.geometry());
         self.desc = cap.source_description();
         self.size = size;
-        self.target = Some((cap.geometry(), cap.output_name().to_owned()));
+        self.target = Some(cap.input_target());
         Ok(true)
     }
 }
@@ -291,11 +304,18 @@ fn open_source(o: &Opts, size: (u32, u32)) -> Result<Source> {
         },
     };
     let cap = capture::start(mode)?;
-    println!("capturing {} ({}x{}), geometry {:?}", cap.output_name(), cap.width, cap.height, cap.geometry());
+    println!(
+        "capturing {} on {} ({}x{}), geometry {:?}",
+        cap.output_name(),
+        cap.desktop().name(),
+        cap.width,
+        cap.height,
+        cap.geometry()
+    );
     Ok(Source {
         desc: cap.source_description(),
         size,
-        target: Some((cap.geometry(), cap.output_name().to_owned())),
+        target: Some(cap.input_target()),
         cap: Some(cap),
     })
 }
@@ -322,18 +342,18 @@ impl InputState {
         }
     }
 
-    /// Points injection at the captured rectangle (no-op for the test pattern). `fresh`: the
+    /// Points injection at the captured screen (no-op for the test pattern). `fresh`: the
     /// output was (re)created, so a pointer pinned to its old wl_output must be replaced.
-    fn retarget(&mut self, target: &Option<((i32, i32, u32, u32), String)>, fresh: bool) {
-        let Some((rect, output)) = target else { return };
+    fn retarget(&mut self, target: &Option<input::Target>, fresh: bool) {
+        let Some(t) = target else { return };
+        let (rect, output) = (t.rect, &t.output);
         if let Some(inj) = self.inj.as_mut().filter(|_| !fresh && self.output == *output) {
-            inj.set_target(*rect);
+            inj.set_target(t);
             println!("phone input now maps to {output} {rect:?}");
             return;
         }
         self.inj = None; // releases anything still held before the new pointer exists
-        let made = if output.is_empty() { input::Injector::new(*rect) } else { input::Injector::new_for_output(output, *rect) };
-        match made {
+        match input::Injector::open(t) {
             Ok(inj) => {
                 println!("injecting phone input into {output} {rect:?}");
                 self.inj = Some(inj);
@@ -498,6 +518,8 @@ struct Stream {
     head: gst::Element,
     srcbin: Option<gst::Element>,
     size: gst::Element,
+    /// Frames are converted and scaled on the GPU (`size` caps are VA memory).
+    va: bool,
     /// The audio branch's mute switch (`None`: no audio is sent).
     audio: Option<gst::Element>,
 }
@@ -512,13 +534,26 @@ fn pick_encoder(o: &Opts) -> String {
     }
 }
 
-fn size_caps(w: u32, h: u32) -> gst::Caps {
-    gst::Caps::builder("video/x-raw")
+/// The encoder's input: NV12 at the stream size, in VA (GPU) memory when `va`.
+fn size_caps(w: u32, h: u32, va: bool) -> gst::Caps {
+    let caps = gst::Caps::builder("video/x-raw")
         .field("format", "NV12")
         .field("width", w as i32)
         .field("height", h as i32)
-        .field("pixel-aspect-ratio", gst::Fraction::new(1, 1))
-        .build()
+        .field("pixel-aspect-ratio", gst::Fraction::new(1, 1));
+    if va { caps.features(["memory:VAMemory"]).build() } else { caps.build() }
+}
+
+/// Converts and scales the captured frames for the encoder. With the VA encoder, `vapostproc` does
+/// it on the GPU (~0.2 ms a frame at 2712x1220) and hands the frames over in GPU memory; on the CPU,
+/// `videoconvert ! videoscale` took ~10 ms single-threaded, which with ~10 ms of encoding in the
+/// same thread was more than a 60 fps frame allows, so frames queued up (the visible delay).
+fn convert_description(enc: &str) -> (String, bool) {
+    if enc.starts_with("vah264enc") && gst::ElementFactory::find("vapostproc").is_some() {
+        ("vapostproc add-borders=true".to_owned(), true)
+    } else {
+        ("videoconvert n-threads=0 ! videoscale add-borders=true n-threads=0".to_owned(), false)
+    }
 }
 
 /// Requests a webrtcbin sink pad WITH caps and makes its transceiver send-only with those caps as
@@ -541,14 +576,27 @@ impl Stream {
         let (pt, plid) = pick_h264(offer_sdp).context("the phone's offer has no H.264")?;
         let profile = if plid.starts_with("42") { "constrained-baseline" } else { "main" };
         let enc = pick_encoder(cfg.opts);
-        println!("sending H.264 pt {pt} (offer profile-level-id {plid}, encoding {profile}) at {w}x{h} with {}", enc.split(' ').next().unwrap_or(""));
+        println!(
+            "sending H.264 pt {pt} (offer profile-level-id {plid}, encoding {profile}) at {w}x{h}, at most {} fps, {} kbit/s with {}",
+            cfg.opts.fps,
+            cfg.opts.bitrate,
+            enc.split(' ').next().unwrap_or("")
+        );
         let offer_sdp = video_only_pt(offer_sdp, pt);
         let mids: Vec<String> = offer_sdp.lines().filter_map(|l| l.strip_prefix("a=mid:")).map(|m| m.trim().to_owned()).collect();
 
         let rtp_caps = format!("application/x-rtp,media=video,encoding-name=H264,clock-rate=90000,payload={pt}");
+        // drop-only: frames above the cap are dropped as they come, none are held back or added.
+        let fps = cfg.opts.fps;
+        let (convert, va) = convert_description(&enc);
+        let feature = if va { "(memory:VAMemory)" } else { "" };
+        // The one-frame leaky queue lets the encoder work in its own thread while the next frame is
+        // converted, and drops a stale frame rather than letting a backlog build up.
         let desc = format!(
-            "queue name=head max-size-buffers=2 leaky=downstream ! videoconvert ! videoscale add-borders=true \
-             ! capsfilter name=size caps=video/x-raw,format=NV12,width={w},height={h},pixel-aspect-ratio=1/1 \
+            "queue name=head max-size-buffers=2 leaky=downstream ! videorate drop-only=true max-rate={fps} \
+             ! {convert} \
+             ! capsfilter name=size caps=\"video/x-raw{feature},format=NV12,width={w},height={h},pixel-aspect-ratio=1/1\" \
+             ! queue max-size-buffers=1 max-size-bytes=0 max-size-time=0 leaky=downstream \
              ! {enc} ! video/x-h264,profile={profile} ! h264parse config-interval=-1 \
              ! rtph264pay config-interval=-1 aggregate-mode=zero-latency pt={pt} \
              ! capsfilter name=rtpcaps caps={rtp_caps}"
@@ -660,7 +708,7 @@ impl Stream {
             }
         });
 
-        let mut st = Stream { pipeline, webrtc, head, srcbin: None, size, audio: audio_vol };
+        let mut st = Stream { pipeline, webrtc, head, srcbin: None, size, va, audio: audio_vol };
         st.attach_source(cfg.src_desc)?;
         let (pipeline, webrtc) = (st.pipeline.clone(), st.webrtc.clone());
         pipeline.set_state(gst::State::Ready)?;
@@ -723,6 +771,11 @@ impl Stream {
         Ok(())
     }
 
+    /// The current source bin (built from the source description).
+    fn source_bin(&self) -> Option<&gst::Element> {
+        self.srcbin.as_ref()
+    }
+
     /// Stops and removes the source bin (before its capture session is closed).
     fn detach_source(&mut self) {
         if let Some(bin) = self.srcbin.take() {
@@ -742,7 +795,7 @@ impl Stream {
 
     fn resize(&self, (w, h): (u32, u32)) {
         println!("stream size → {w}x{h}");
-        self.size.set_property("caps", size_caps(w, h));
+        self.size.set_property("caps", size_caps(w, h, self.va));
     }
 
     /// Mutes/unmutes the audio branch. False when no audio is being sent.
@@ -778,11 +831,17 @@ fn send_candidate(d: &Daemon, sid: i32, mids: &[String], mline: u32, cand: &str)
 /// The PC's on-screen keyboard, toggled by the keyboard button in the phone's display toolbar
 /// (cmd 62 `{"setOSK":bool}`). Like Windows, it is shown on the shared screen itself, so it appears
 /// on the phone and taps reach it through the injected pointer. Runs `$SMARTCONNECT_OSK` (a command
-/// line) or wvkbd, a layer-shell keyboard that types through virtual-keyboard-v1.
+/// line) or wvkbd, a layer-shell keyboard that types through virtual-keyboard-v1. GNOME has neither
+/// layer-shell nor virtual-keyboard-v1, so there it switches on GNOME's own screen keyboard (it
+/// opens when a text field gets focus) and restores the setting afterwards.
 #[derive(Default)]
 struct Osk {
     child: Option<std::process::Child>,
+    /// GNOME: `screen-keyboard-enabled` before we turned it on.
+    gnome_was: Option<String>,
 }
+
+const GNOME_OSK: [&str; 2] = ["org.gnome.desktop.a11y.applications", "screen-keyboard-enabled"];
 
 impl Osk {
     const CANDIDATES: [&'static str; 2] = ["wvkbd-deskintl", "wvkbd-mobintl"];
@@ -798,23 +857,27 @@ impl Osk {
             .collect()
     }
 
-    /// `target` = the shared output's logical rect and name (None for the test pattern).
-    fn show(&mut self, target: Option<&((i32, i32, u32, u32), String)>, pct: u32) {
-        let output = target.map(|(_, name)| name.as_str());
-        if self.child.as_mut().is_some_and(|c| matches!(c.try_wait(), Ok(None))) {
+    /// `target` = the shared screen (None for the test pattern).
+    fn show(&mut self, target: Option<&input::Target>, pct: u32, desk: Desktop) {
+        if self.child.as_mut().is_some_and(|c| matches!(c.try_wait(), Ok(None))) || self.gnome_was.is_some() {
+            return;
+        }
+        let custom = std::env::var("SMARTCONNECT_OSK").ok().filter(|s| !s.trim().is_empty());
+        if desk == Desktop::Gnome && custom.is_none() {
+            self.show_gnome();
             return;
         }
         // Layer-shell surfaces open on the focused output: focus the one the phone shows.
-        if let Some(name) = output {
-            let _ = std::process::Command::new("niri").args(["msg", "action", "focus-monitor", name]).status();
+        if let Some(t) = target.filter(|t| !t.output.is_empty()) {
+            desktop::focus_output(desk, &t.output);
         }
-        let commands: Vec<Vec<String>> = match std::env::var("SMARTCONNECT_OSK").ok().filter(|s| !s.trim().is_empty()) {
+        let commands: Vec<Vec<String>> = match custom {
             Some(cmd) => vec![cmd.split_whitespace().map(str::to_owned).collect()],
             None => Self::CANDIDATES
                 .iter()
                 .map(|c| {
                     let mut argv = vec![(*c).to_owned()];
-                    argv.extend(Self::wvkbd_args(target.map(|((.., h), _)| *h), pct));
+                    argv.extend(Self::wvkbd_args(target.map(|t| t.rect.3), pct));
                     argv
                 })
                 .collect(),
@@ -838,11 +901,30 @@ impl Osk {
         notify("Phone keyboard button", hint);
     }
 
+    fn show_gnome(&mut self) {
+        let get = std::process::Command::new("gsettings").arg("get").args(GNOME_OSK).output();
+        let was = match get {
+            Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim().to_owned(),
+            _ => {
+                eprintln!("on-screen keyboard: could not read GNOME's screen-keyboard setting (gsettings)");
+                return;
+            }
+        };
+        if std::process::Command::new("gsettings").arg("set").args(GNOME_OSK).arg("true").status().is_ok_and(|s| s.success()) {
+            println!("on-screen keyboard: GNOME screen keyboard on (it opens when a text field is focused)");
+            self.gnome_was = Some(was);
+        }
+    }
+
     fn hide(&mut self) {
         if let Some(mut c) = self.child.take() {
             let _ = c.kill();
             let _ = c.wait();
             println!("on-screen keyboard: hidden");
+        }
+        if let Some(was) = self.gnome_was.take() {
+            let _ = std::process::Command::new("gsettings").arg("set").args(GNOME_OSK).arg(&was).status();
+            println!("on-screen keyboard: GNOME screen keyboard back to {was}");
         }
     }
 }
@@ -879,6 +961,9 @@ struct App {
     /// Fixed ICE candidate filter (tests); `None` = environment / daemon `pcAddress` / interfaces.
     fixed_ice: Option<ice::Filter>,
     osk: Osk,
+    desktop: Desktop,
+    /// The placement file's mtime last seen, and when it was last checked.
+    placement: (Option<std::time::SystemTime>, Instant),
     main_loop: glib::MainLoop,
 }
 
@@ -936,6 +1021,13 @@ impl App {
         self.ensure_source(size)
     }
 
+    /// Hands the stream's new source bin to the capture (screencopy feeds an appsrc in it).
+    fn bind_source(&self) {
+        if let (Some(cap), Some(bin)) = (self.src.as_ref().and_then(|s| s.cap.as_ref()), self.stream.as_ref().and_then(Stream::source_bin)) {
+            cap.bind(bin);
+        }
+    }
+
     fn teardown(&mut self) {
         if let Some(s) = self.stream.take() {
             s.stop();
@@ -990,6 +1082,7 @@ impl App {
             ice: self.fixed_ice.clone().unwrap_or_else(|| ice::Filter::resolve(pc_address)),
         };
         self.stream = Some(Stream::start(&self.d, self.sid, cfg, self.input.clone(), sdp)?);
+        self.bind_source();
         self.size = size;
         Ok(())
     }
@@ -1006,6 +1099,7 @@ impl App {
             self.swap_source(size)?;
             let desc = self.src.as_ref().context("no source")?.desc.clone();
             self.stream.as_mut().context("no stream")?.attach_source(&desc)?;
+            self.bind_source();
         }
         self.stream.as_ref().context("no stream")?.resize(size);
         self.size = size;
@@ -1047,8 +1141,28 @@ impl App {
         }
     }
 
+    /// Extend: once a second, whether the user moved the phone to another side; moves the screen.
+    fn follow_placement(&mut self) {
+        if self.share != Share::Extend || self.placement.1.elapsed() < Duration::from_secs(1) {
+            return;
+        }
+        self.placement.1 = Instant::now();
+        let stamp = desktop::placement_stamp();
+        if stamp == self.placement.0 {
+            return;
+        }
+        self.placement.0 = stamp;
+        let Some(src) = self.src.as_mut() else { return };
+        match src.reposition() {
+            Ok(true) => self.input.lock().unwrap().retarget(&src.target, false),
+            Ok(false) => println!("the phone's place changed; this desktop can't move its screen while it runs"),
+            Err(e) => eprintln!("moving the phone's screen: {e:#}"),
+        }
+    }
+
     /// Runs from the main loop's poll timer.
     fn tick(&mut self) {
+        self.follow_placement();
         if self.rotate_at.is_some_and(|t| Instant::now() >= t) {
             self.rotate_at = None;
             let size = self.wanted_size();
@@ -1134,7 +1248,7 @@ impl App {
             62 => {
                 if body.get("setOSK").and_then(Value::as_bool).unwrap_or(false) {
                     let target = self.src.as_ref().and_then(|s| s.target.clone());
-                    self.osk.show(target.as_ref(), self.o.osk_height);
+                    self.osk.show(target.as_ref(), self.o.osk_height, self.desktop);
                 } else {
                     self.osk.hide();
                 }
@@ -1175,6 +1289,9 @@ fn prepare_audio() -> Option<String> {
 pub fn run() -> Result<()> {
     let Some(o) = opts::parse_args()? else { return Ok(()) };
     let _lock = single_instance(o.replace)?;
+    if let Some(edge) = o.side {
+        desktop::set_side(edge);
+    }
     gst::init()?;
     let audio_src = if o.audio { prepare_audio() } else { None };
     let main_loop = glib::MainLoop::new(None, false);
@@ -1198,6 +1315,8 @@ pub fn run() -> Result<()> {
         audio_src,
         fixed_ice: None,
         osk: Osk::default(),
+        desktop: Desktop::detect(),
+        placement: (desktop::placement_stamp(), Instant::now()),
         main_loop: main_loop.clone(),
     }));
     // Mirror captures an existing output: open it before asking the phone (the portal may ask
@@ -1608,6 +1727,8 @@ m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=mid:2\r\na=sctp-port:5000"
             audio_on: false,
             fixed_ice: Some(ice::Filter::any("test")),
             osk: Osk::default(),
+            desktop: Desktop::Other,
+            placement: (None, Instant::now()),
             main_loop: glib::MainLoop::new(None, false),
         };
         let phone_msg = |cmd: i64, data: Value| json!({ "ver": "1", "cmd": cmd, "sessionId": 7, "data": data.to_string() });

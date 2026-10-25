@@ -28,10 +28,10 @@ We never sent (3), so no tile ever appeared. `server.rs` now sends
 | Tile | svc | Status |
 |---|---|---|
 | App streaming | 15 | on — phone picks the app, sends svc15 cmd 2; `smartconnect-mirror --host` answers |
-| Cross Control | 26 | on — phone sends svc26 cmd 0; daemon spawns `smartconnect-crosscontrol --accept` |
+| Cross Control | 26 (+202) | on — phone sends svc26 cmd 0; daemon spawns `smartconnect-crosscontrol --accept`. `"202"` stays out of the map (adding it made the merged tile jump straight into Extend), see [cross-control-gnome-portal.md](cross-control-gnome-portal.md) |
 | PC lock | 22 | on (needs svc 22 version ≥ 2) |
 | Hotspot | 13 | on |
-| Screen share / Mobile desktop | 1 | off by default; `--extra-tiles 1` adds it (phone svc 1 cmd 0 answered by the stream host, untested: `phone-view-invites.md`) |
+| Screen share / Mobile desktop | 1 | on by default since 2026-10-25 (was `--extra-tiles 1`; a restart without it kept dropping the tiles); was `--extra-tiles 1` (phone svc 1 cmd 0 answered by the stream host, untested: `phone-view-invites.md`) |
 | Webcam | 3 | on — phone sends svc3 cmd 0 `{isReply:0}`; daemon spawns `smartconnect-webcam --answer` (`webcam.md`, not verified on a device) |
 
 ```mermaid
@@ -55,6 +55,10 @@ poll logind `LockedHint` every 2 s and send `state:0` on unlock. **Known limitat
 user's niri + Noctalia setup the Noctalia lock screen doesn't react to logind's Lock signal, so
 nothing visibly locks (LockedHint stays false → we immediately report "unlocked"). The user
 deprioritized this.
+
+Superseded (2026-10-25) by [pc-lock-confirmed-locking.md](pc-lock-confirmed-locking.md): the lock is
+reported only once seen, Noctalia is locked through its IPC, `--lock-command` exists, and the
+user's "nothing locks" turned out to be GNOME without GDM (no lock screen at all).
 
 ### Hotspot (svc 13)
 

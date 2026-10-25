@@ -31,14 +31,19 @@ pub const SERVICE_DEVICE_STATUS: i64 = 25;
 /// "in use"), 16 = turned off by the user. Each message replaces the whole map for this PC.
 /// Keep only services the daemon answers (see evidence `device-tiles-spec.md`): 26 = Cross Control, 22 = PC lock, 13 = Hotspot,
 /// 3 = Webcam (answered by the `smartconnect-webcam` helper, see `webcam.rs`).
-/// "1" (Mobile desktop + Screen share tiles) is opt-in via `--extra-tiles 1` until verified on a
-/// device (answered by `smartconnect-mirror --host`, see `.notes/phone-view-invites.md`).
+/// "202" (phone as a display) is deliberately left out: the phone merges 26 and 202 into one Cross
+/// Control tile that relaunches whichever of the two last connected, and with "202" here a tap
+/// after any display session went straight to Extend (`QuickSettingRepository`
+/// `startLastUseUCExtend`). Without it the tile always sends svc 26 cmd 0: the daemon arms shared
+/// mouse and keyboard and the GTK app opens its Display tab, where Duplicate/Extend are.
+/// "1" = Mobile desktop + Screen share tiles (answered by `smartconnect-mirror --host`, see
+/// `.notes/phone-view-invites.md`); on by default since Mobile desktop was used from the phone.
 pub fn device_status_caps() -> Value {
     caps_with_extra(EXTRA_TILES.get().map(Vec::as_slice).unwrap_or_default())
 }
 
 fn caps_with_extra(extra: &[(String, i64)]) -> Value {
-    let mut cap = json!({ "3": 1, "13": 1, "15": 1, "22": 1, "26": 1 });
+    let mut cap = json!({ "1": 1, "3": 1, "13": 1, "15": 1, "22": 1, "26": 1 });
     if let Some(map) = cap.as_object_mut() {
         map.extend(extra.iter().map(|(svc, flags)| (svc.clone(), json!(flags))));
     }
@@ -176,14 +181,15 @@ mod tests {
 
     #[test]
     fn extra_tiles_parse_and_merge() {
-        let specs = vec!["1".to_owned(), " 2=3 ".to_owned(), String::new()];
+        let specs = vec!["20".to_owned(), " 2=3 ".to_owned(), String::new()];
         let tiles = parse_extra_tiles(&specs).unwrap();
-        assert_eq!(tiles, vec![("1".to_owned(), 1), ("2".to_owned(), 3)]);
+        assert_eq!(tiles, vec![("20".to_owned(), 1), ("2".to_owned(), 3)]);
         let cap = caps_with_extra(&tiles);
-        assert_eq!(cap["1"], 1);
+        assert_eq!(cap["20"], 1);
         assert_eq!(cap["2"], 3);
         assert_eq!(cap["26"], 1, "the default tiles stay");
-        assert!(caps_with_extra(&[]).get("1").is_none(), "svc 1 is off by default");
+        assert!(cap.get("202").is_none(), "the Cross Control tile must not relaunch Extend by itself");
+        assert_eq!(caps_with_extra(&[])["1"], 1, "Screen share and Mobile desktop are on by default");
         assert!(parse_extra_tiles(&["x".to_owned()]).is_err());
         assert!(parse_extra_tiles(&["1=-1".to_owned()]).is_err());
         assert!(parse_extra_tiles(&["1=abc".to_owned()]).is_err());

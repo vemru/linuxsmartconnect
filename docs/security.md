@@ -39,7 +39,7 @@ security the phone offers, which limits what this project can change.
 | Bluetooth LE peripheral (only without `--no-ble`) | Advertises service 0x5246 with this run's device id. The GATT server only logs writes. Also powers the adapter on at startup. | Experimental and not needed. The systemd unit passes `--no-ble`. |
 | Outbound TCP to the phone's fex port (app icons) | On every app list (service 17) the daemon connects to the port the phone advertised, on the phone's session address, and downloads the app icons. | TLS 1.3, the phone's throwaway certificate pinned by the SHA-256 fingerprint from the (authenticated) app list. Icons are size-capped, must be PNGs and are written only under `~/.cache/smartconnect-linux/app-icons/` with plain file names (no paths). On the phone's side the server does not authenticate the client: its `token` is not checked by the download route, so another device on the LAN that reaches the port in time could fetch the same icons (a phone-side property; the icons reveal which apps are installed). |
 | Outbound TCP to the phone's NFS ports (`smartconnect-files list`/`mount`) | NFSv3 to the ports the phone names in its File Station handshake reply (service 168, `cmd=1001`), which travels over the authenticated session. | Mutual TLS. The phone's certificate is pinned by the SHA-256 fingerprint from that reply; it is a minimal X.509 v1 certificate that webpki rejects, so the chain check is bypassed and only the pin and the handshake signature (checked against the pinned certificate's key) are verified. The phone checks this PC's client certificate by the fingerprint the PC sent in the handshake. |
-| Inbound TCP 2049 (`smartconnect-files serve` only, `--port`), **all interfaces** | Read-only NFSv3 export of `--sharedir` (default `~/PhoneShare`) for the phone. Only listens while `serve` runs. | Mutual TLS. A client certificate is accepted only when its SHA-256 fingerprint is one the connected phone sent on service 168 during this run; anything else is refused in the TLS handshake. The export is a read-only filesystem: writes are refused. Not verified with a phone yet. |
+| Inbound TCP 2049 (`smartconnect-files serve` only, `--port`), **all interfaces** | NFSv3 export of `--sharedir` (default: your home folder) for the phone, hidden (dot) entries excluded unless `--include-hidden`. Only listens while `serve` runs. | Mutual TLS. A client certificate is accepted only when its SHA-256 fingerprint is one the connected phone sent on service 168, during this run or (the last 4, kept in `files-identity/phone-fps`) an earlier one; anything else is refused in the TLS handshake. Standard NFS writes are refused; the only change the phone can make is Lenovo's batch delete, which moves files to the Trash (`--read-only` refuses it too). |
 | UDP, WebRTC (mirroring, app streaming, phone display, webcam) | Media between the phone and the helper. Only UDP candidates on the address the phone already reached the daemon on (`pcAddress`) are offered; without it, private IPv4 addresses on non-virtual interfaces. `SMARTCONNECT_ICE_ADDRESSES` overrides this. The webcam offers addresses on the phone's own subnet. | DTLS-SRTP (standard WebRTC encryption), negotiated over the TLS control channel. |
 
 ## Pairing, keys and encryption
@@ -75,12 +75,16 @@ These are the kinds of things the Windows app allows too. A paired phone can:
 - lock your session (the PC lock tile). It can't unlock it;
 - make the PC join a Wi-Fi hotspot whose name and password the PC generated (Hotspot tile);
 - start a webcam session that sends its camera picture to the PC (Webcam tile);
-- open stream windows on your desktop (app streaming, and the Screen share and Mobile desktop views
-  with `--extra-tiles 1`), and ask for Cross Control. Control only moves to the phone when **you**
+- open stream windows on your desktop (app streaming, and the Screen share and Mobile desktop views), and ask for Cross Control. Control only moves to the phone when **you**
   push the pointer into the screen edge, and while it is there everything you type, passwords
   included, goes to the phone;
-- **read every file under the shared folder while `smartconnect-files serve` runs** (default
-  `~/PhoneShare`). It can't change or delete them. Without `serve` running, nothing on the PC is
+- **read every visible file under the shared folder while `smartconnect-files serve` runs**
+  (default: your **home folder**; the GTK app's *Share with the phone* switch runs it whenever the
+  phone is connected), and **move those files to your Trash** unless the share is read-only
+  (`--read-only`, or *Let the phone delete files* off). It can't create or change files. Hidden
+  (dot) files and folders, such as `~/.ssh`, browser profiles and this project's own keys, are
+  invisible to it unless you turn on *Include hidden files* (`--include-hidden`): don't, unless
+  the folder you share holds nothing secret. Without `serve` running, nothing on the PC is
   exported. Browsing the phone's own files (`mount`) gives the phone nothing on the PC;
 - **start a phone-display session by itself** (when the PC's screen is started from the phone), as
   it can with the Windows app: the daemon then starts `smartconnect-display`, and the phone sees the
@@ -128,6 +132,7 @@ tightens them when it rewrites files left by older versions.
 | `notif-mute.json` | umask (0644) | Package names you muted | Low. |
 | `screencast-token` | umask (0644) | Screen-picker restore token for the phone display's portal fallback | Low. |
 | `files-identity/key.der` | 0600, in a 0700 directory | `smartconnect-files`' own TLS private key for File Station (separate from `key.pem`) | **Secret.** Lets someone present this PC's client certificate to the phone's NFS server, or serve the PC's share to it. |
+| `files-identity/phone-fps` | 0600, in a 0700 directory | The last 4 certificate fingerprints the phone presented for a PC folder share, so a restarted `serve` accepts the phone at once | Not secret, but it decides which client certificates the share accepts: only add fingerprints you trust. |
 | `files-identity/cert.der` | 0600 | Its self-signed certificate | Public. |
 
 Elsewhere:

@@ -13,14 +13,15 @@
 //! 4. The client reports `status` type 1 (complete) on the WebSocket, which the phone acks.
 //!
 //! [`client::pull`] runs that sequence for any offer. [`icons`] uses it for the service 17 app list
-//! (app icons for the Apps page); clipboard images (service 2 `FileExSendData`) are expected to
-//! ride the same server and can reuse [`client::pull`]. Wire details:
+//! (app icons for the Apps page) and for clipboard images from the phone (service 2
+//! `FileExSendData`). [`server`] is the sending side, for clipboard images to the phone. Wire details:
 //! `docs/protocol/file-exchange.md` §3.
 
 pub mod client;
 pub mod frame;
 pub mod http;
 pub mod icons;
+pub mod server;
 pub mod tls;
 pub mod zip;
 

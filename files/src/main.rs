@@ -18,6 +18,7 @@ mod fuse;
 mod localfs;
 mod nfs;
 mod responder;
+mod router;
 mod server;
 mod tls;
 
@@ -82,10 +83,16 @@ fn main() -> Result<()> {
                 Some(s) => s.parse().context("--port")?,
                 None => 2049,
             };
-            let label = flag(&args, "--label").unwrap_or_else(|| "/PhoneShare".to_string());
+            // The export name the phone sees; by default the folder's own name, e.g. `/alice`.
+            let label = flag(&args, "--label").unwrap_or_else(|| {
+                format!("/{}", share.file_name().map_or("share".into(), |n| n.to_string_lossy()))
+            });
             let ip_override = flag(&args, "--ip");
+            let include_hidden = args.iter().any(|a| a == "--include-hidden");
+            let read_only = args.iter().any(|a| a == "--read-only");
             let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
-            rt.block_on(serve(id, share, label, port, ip_override))
+            let opts = ServeOptions { share, label, port, ip_override, include_hidden, allow_delete: !read_only };
+            rt.block_on(serve(id, dir, opts))
         }
         Some("-h" | "--help" | "help") => {
             print!("{USAGE}");
@@ -110,8 +117,11 @@ USAGE (phone → PC, browse the phone's storage):
       mount the phone's storage (read-only) as a FUSE filesystem at DIR
 
 USAGE (PC → phone, let the phone browse a PC folder):
-  smartconnect-files serve [--sharedir DIR] [--label /PhoneShare] [--port 2049] [--ip ADDR] [--state-dir DIR]
-      export DIR (default ~/PhoneShare) read-only; the connected phone mounts it
+  smartconnect-files serve [--sharedir DIR] [--include-hidden] [--read-only] [--label /NAME] [--port 2049] [--ip ADDR] [--state-dir DIR]
+      share DIR (default: your home folder) with the connected phone, which browses it in its
+      Files app and in Smart Connect's Files tab. The phone can't change files; deleting from
+      the Files tab moves them to your Trash (--read-only refuses that too). Hidden (dot) files
+      stay invisible unless --include-hidden. --label defaults to the folder's name
 
 All need smartconnectd running and the phone connected; they perform the cmd=1001
 File Station handshake over the daemon control socket. A mount survives phone reconnects
@@ -121,34 +131,48 @@ and daemon restarts; Ctrl+C / SIGTERM or `fusermount3 -u DIR` unmounts it.
 
 /// Runs the PC→phone NFS-over-TLS server plus the handshake responder until Ctrl-C (or a fatal
 /// error from either half).
-async fn serve(
-    id: Identity,
+/// What `serve` shares and how (from its command-line flags).
+struct ServeOptions {
     share: PathBuf,
     label: String,
     port: u16,
     ip_override: Option<String>,
-) -> Result<()> {
+    include_hidden: bool,
+    allow_delete: bool,
+}
+
+async fn serve(id: Identity, state_dir: PathBuf, opts: ServeOptions) -> Result<()> {
+    let ServeOptions { share, label, port, ip_override, include_hidden, allow_delete } = opts;
     // Ensure a process-default crypto provider exists (some rustls paths look it up).
     let _ = rustls::crypto::ring::default_provider().install_default();
 
     let pinned = server::new_pinned();
     let (listener, actual_port) = server::bind(port).await?;
     let ip = responder::resolve_ip(ip_override).await?;
-    let srv = server::NfsServer::new(&id, share, label.clone(), pinned.clone())
+    let srv = server::NfsServer::new(&id, share, label.clone(), pinned.clone(), include_hidden, allow_delete)
         .context("building the NFS-over-TLS server")?;
     let params = responder::ReplyParams { our_fp: id.fingerprint.clone(), ip, port: actual_port, label };
 
     let mut serve_task = tokio::spawn(srv.serve(listener));
-    let mut responder_task = tokio::spawn(responder::run(params, pinned));
+    let mut responder_task = tokio::spawn(async move { responder::run(params, pinned, &state_dir).await });
+    responder::announce_tile(true).await;
+    let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .context("installing the SIGTERM handler")?;
 
-    tokio::select! {
+    let result = tokio::select! {
         _ = tokio::signal::ctrl_c() => {
             tracing::info!("received Ctrl-C, shutting down the file share");
             Ok(())
         }
+        _ = term.recv() => {
+            tracing::info!("received SIGTERM, shutting down the file share");
+            Ok(())
+        }
         r = &mut serve_task => r.context("the NFS server task panicked")?,
         r = &mut responder_task => r.context("the handshake responder task panicked")?,
-    }
+    };
+    responder::announce_tile(false).await;
+    result
 }
 
 /// Where the phone's NFS server is: from explicit `--ip`/`--mount-port`/`--nfs-port`/`--fp` flags

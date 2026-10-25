@@ -37,6 +37,20 @@ It is a Rust daemon (`smartconnectd`) plus small helper programs, a GTK4/libadwa
 <details open>
 <summary><h2>Quick start</h2></summary>
 
+**Easiest: the AppImage** (any distribution from about 2022 on, nothing to build or install first):
+
+1. Download `Smart_Connect-…-x86_64.AppImage` from the
+   [Releases page](https://github.com/rudrahnpatel/smartconnect-linux/releases).
+2. Make it executable (file manager: *Properties → Executable as program*, or
+   `chmod +x Smart_Connect-*.AppImage`) and open it.
+3. Press **Set up** (no password needed). Smart Connect opens: choose **Pair new phone…**, then on
+   the phone open Smart Connect, tap **+** → **Scan QR code** and scan the code.
+
+If a firewall blocks the phone, the pairing window says so and offers to allow it. Updating: open
+a newer AppImage and press **Update**. See [the AppImage section](docs/installation.md#appimage).
+
+**From source:**
+
 ```sh
 # Arch Linux; other distributions: docs/installation.md#packages
 sudo pacman -S --needed git base-devel rust avahi bluez wl-clipboard gstreamer \
@@ -91,7 +105,7 @@ Noctalia Shell on Arch Linux. Other phones, app versions and desktops may behave
 | Reconnect over Wi-Fi and Bluetooth LE | ✅ | The phone's Connect button, the daemon dialing the phone back over Wi-Fi (mDNS), and a Bluetooth LE wake that reaches the phone while Smart Connect is in the background. |
 | Automatic reconnect | ✅ | After drops, at startup and after a failed Connect, with Smart Connect in the background on the phone (Bluetooth LE wake, about 5 to 6 s). Early retries (phone back on Wi-Fi, resume, network change, Bluetooth switched on) and dropping a dead session after 70 s of silence are unit-tested, not yet seen on a device. A Disconnect from either side is respected. |
 | Feature tiles for this PC on the phone | ✅ | App streaming, Cross Control, PC lock, Hotspot and Webcam. |
-| PC lock tile | 🟡 | Locks through logind. Some lock screens don't react to that, Noctalia's for example. |
+| PC lock tile | 🟡 | Locks through Noctalia's lock screen when it runs, else logind (GNOME under GDM, KDE, swayidle/hypridle lockers), or `--lock-command`. Tells the phone "locked" only once the lock is seen; GNOME started from SDDM or LightDM has no lock screen, and the PC then shows why. Not yet re-tested on a device. |
 | Hotspot tile | 🟡 | |
 
 **Notifications, clipboard and messages**
@@ -116,21 +130,23 @@ Noctalia Shell on Arch Linux. Other phones, app versions and desktops may behave
 | App streaming from the phone's tile and the GTK app's *Apps* page | 🟡 | |
 | Real app icons for the *Apps* page | ✅ | Downloaded from the phone on every connection into `~/.cache/smartconnect-linux/app-icons/`. `smartconnect-fex fetch-app-icons` does it by hand. |
 | App window resize | 🟡 | Opt-in (`SMARTCONNECT_MIRROR_RESIZE=1`): the phone resizes the app's virtual display to the window. |
-| Screen share and Mobile desktop tiles | 🟡 | Hidden unless the daemon runs with `--extra-tiles 1`. |
+| Screen share and Mobile desktop tiles | 🟡 | Shown by default. Mobile desktop has been started from the phone; Screen share is less tested. |
 
 **Cross Control**
 
 | Feature | Status | Notes |
 |---|---|---|
 | Cross Control started from the PC | ✅ | The PC's mouse and keyboard glide onto the phone across a screen edge. |
-| Cross Control started from the phone's tile | 🟡 | |
+| Cross Control started from the phone's tile | ✅ | Verified on GNOME. The tile arms shared mouse and keyboard, and the GTK app comes forward on its Display tab to switch to Duplicate or Extend. |
+| Cross Control on GNOME | ✅ | Uses the InputCapture portal (asks for permission once) instead of wlr-layer-shell. Verified on GNOME 51. |
+| Cross Control modes and a phone position editor (top of the GTK app's Display tab) | 🟡 | Shared mouse and keyboard, Duplicate display, Extend display; drag the phone to any side of the screen and part of an edge. New, not yet tested by hand. |
 
 **Phone as a display**
 
 | Feature | Status | Notes |
 |---|---|---|
-| Extend | ✅ | The phone becomes a second monitor: a `vkms` virtual output at the phone's resolution, placed to the right of your screens and switched off when the session ends (`smartconnect-display --mode extend`). |
-| Duplicate | ✅ | Shows the focused screen on the phone. |
+| Extend | ✅ | The phone becomes a second monitor at the phone's resolution, placed to the right of your screens and removed when the session ends (`smartconnect-display --mode extend`). Verified with the phone on niri (vkms output); verified without a phone session on GNOME (Mutter virtual monitor) and Hyprland (headless output); written but untested on KDE Plasma and sway. |
+| Duplicate | ✅ | Shows the focused screen on the phone (niri, GNOME, Hyprland verified; KDE, sway untested; other desktops through the portal picker). |
 | Display scale | ✅ | 200 % by default, the value Windows uses (`--display-scale`). |
 | Keyboard button on the phone display | ✅ | Shows an on-screen keyboard ([wvkbd](https://git.sr.ht/~proycon/wvkbd)) on the shared screen, so you type by tapping it on the phone. |
 | Larger on-screen keyboard | 🟡 | 45 % of the screen's height by default (`--osk-height`). |
@@ -154,7 +170,7 @@ Noctalia Shell on Arch Linux. Other phones, app versions and desktops may behave
 | Browse the phone's files (mount `/sdcard`) | ✅ | `smartconnect-files mount`: the phone's storage as a read-only FUSE folder, over the phone's own File Station protocol (NFSv3 on mutual TLS, no root or adb). Surviving a phone reconnect or daemon restart, and unmounting cleanly on Ctrl+C/SIGTERM, are tested against this project's own server, not yet through a real phone reconnect. |
 | Phone files in the GTK app | 🟡 | The *Files* page: **Mount**, **Open in Files**, **Unmount**, quick folders (Camera, Screenshots, Downloads, Documents), a mount folder setting (default `~/Phone`) and *Mount automatically when connected*. Wraps the verified helper. |
 | Phone files in the Noctalia panel | 🟡 | The *Phone files* tile: **Mount**, then **Open** and **Unmount**, with the mount folder in the plugin settings. Wraps the verified helper. |
-| Share a PC folder to the phone | 🟡 | `smartconnect-files serve` exports a folder (default `~/PhoneShare`) **read-only** to the phone over the same protocol. Covered by loopback tests; not yet exercised with a phone. |
+| Share a PC folder to the phone | ✅ | `smartconnect-files serve`, or *Share with the phone* on the GTK app's Files page: the phone browses a folder (default: your home folder, hidden files excluded) in Smart Connect's **Files tab** (All files, Recents, Images, Videos, …, with thumbnails) and Android's file browser. It can open and copy files, and delete them to your Trash (switchable off). Verified on a phone. Needs TCP 2049 open in your Wi-Fi's firewall zone; video thumbnails need `ffmpeg`. |
 | Writing to the phone | 🟡 | Reverse-engineered; the NFS write path is not implemented yet. |
 | File transfer (push/pull single files) | ❌ | Separate "fex" transport; see [file-exchange.md](docs/protocol/file-exchange.md). No send/receive UI; `smartconnect-fex pull` only fetches an offer whose coordinates you already have. |
 
@@ -173,20 +189,21 @@ Noctalia Shell on Arch Linux. Other phones, app versions and desktops may behave
 - A Motorola phone with the Smart Connect app, on the same Wi-Fi network and subnet as the PC
   (discovery uses mDNS).
 - A Linux desktop with a Wayland compositor and a systemd user session. Cross Control needs
-  wlr-layer-shell and works best with pointer constraints. Linux-to-phone clipboard sync needs the
-  data-control protocol.
+  wlr-layer-shell (with pointer constraints) or, on GNOME, the InputCapture portal. Linux-to-phone clipboard sync needs the
+  data-control protocol, or Xwayland on GNOME (which has no data-control).
 - Runtime: avahi, BlueZ, `wl-clipboard`, a notification daemon, GStreamer 1.22 or newer with
   `webrtcbin` and libnice. Optional: NetworkManager (Hotspot tile), Quickshell (reply window),
   GTK 4.18 / libadwaita 1.7 (GTK app), Noctalia Shell 4.4 or newer (plugin).
-- The phone display needs PipeWire and VA-API; Extend also needs niri plus the `vkms` kernel module
-  or an HDMI dummy plug, and the keyboard button needs `wvkbd`. The webcam works best with
+- The phone display needs PipeWire (and VA-API for the default encoder). Extend works on GNOME,
+  KDE Plasma, Hyprland and sway by themselves; on niri it needs the `vkms` kernel module or an HDMI
+  dummy plug. The keyboard button needs `wvkbd` (GNOME uses its own screen keyboard). The webcam works best with
   `v4l2loopback`. Browsing the phone's files needs `fuse3` (its `fusermount3` helper).
 - Reconnecting while Smart Connect is in the background on the phone: BlueZ and a Bluetooth LE
   adapter that is already powered on (the daemon never powers it on).
 - To build: Rust 1.88 or newer, `git`, a C toolchain, `pkg-config` and the development files of
   GTK 4, libadwaita, GStreamer and D-Bus.
-- Firewall: inbound TCP 52020 and mDNS (UDP 5353). Sharing a PC folder with the phone
-  (`smartconnect-files serve`) also needs inbound TCP 2049, or the port you pass with `--port`
+- Firewall: inbound TCP 52020 and mDNS (UDP 5353), in the firewall zone your Wi-Fi connection is in.
+  Sharing a PC folder with the phone also needs inbound TCP 2049, or the port you pass with `--port`
   (use another port when a system `nfs-server` already holds 2049).
 
 [docs/installation.md](docs/installation.md) has package lists for Arch, with hints for Debian and
@@ -264,11 +281,13 @@ The action buttons need the stream host, which `smartconnectd` starts and superv
   `v4l2loopback` the camera is PipeWire-only: OBS, Firefox with
   `media.webrtc.camera.allow-pipewire`, Chromium with its PipeWire camera flag. Most other apps need
   `v4l2loopback`.
-- **Extend needs a virtual output.** niri can't create one, so use the `vkms` module or an HDMI
-  dummy plug. If `smartconnect-display` is killed rather than stopped, switch the output off with
-  `niri msg output Virtual-1 off`.
-- **The PC lock tile** locks through logind, which some lock screens ignore (Noctalia's, for
-  example).
+- **Extend on niri needs a virtual output.** niri can't create one, so use the `vkms` module or an
+  HDMI dummy plug. If `smartconnect-display` is killed rather than stopped, switch the output off
+  with `niri msg output Virtual-1 off` (Hyprland: `hyprctl output remove SMARTCONNECT-1`).
+- **KDE Plasma needs the installed `.desktop` file** for the phone display (KWin only offers screen
+  casting and input injection to trusted programs). Run the copy `install.sh` installed.
+- **The PC lock tile can't lock GNOME started from SDDM or LightDM:** GNOME Shell only has a lock
+  screen under GDM. Other lockers that ignore logind need `--lock-command`.
 - **Reconnects are accepted on the phone's device ID**; it's still unknown whether the phone can
   prove it holds the pairing key. See [Security](docs/security.md).
 - **Noctalia plugin stuck on "smartconnectd is not running" after a daemon restart.** Fixed; restart
@@ -288,7 +307,7 @@ The action buttons need the stream host, which `smartconnectd` starts and superv
 |---|---|---|
 | `smartconnectd` | `src/` | The daemon. It runs the TLS WebSocket server the phone connects to and handles pairing, mDNS and Bluetooth LE reconnects, clipboard, notifications, phone status, SMS, the PC lock and Hotspot tiles, and the local control socket. It starts and supervises the helpers. The same binary is the CLI (`smartconnectd status`, `connect`, …). |
 | `smartconnect-mirror` | `mirror/` | WebRTC viewer: whole-screen mirroring and app streaming, one window per stream, plus the long-running stream host (`--host`) that also runs notification action buttons in the background. |
-| `smartconnect-crosscontrol` | `crosscontrol/` | Cross Control for Wayland: an edge strip and a pointer lock forward the PC's mouse and keyboard to the phone. |
+| `smartconnect-crosscontrol` | `crosscontrol/` | Cross Control for Wayland: an edge strip and a pointer lock (or, on GNOME, the InputCapture portal) forward the PC's mouse and keyboard to the phone. |
 | `smartconnect-display` | `display/` | The phone as an external display, extending or duplicating the desktop. It also injects the phone's touch input on the PC and shows an on-screen keyboard for the phone's keyboard button. |
 | `smartconnect-webcam` | `webcam/` | The phone camera as a Linux webcam (v4l2loopback or a PipeWire camera). |
 | `smartconnect-files` | `files/` | The phone's storage as a read-only FUSE mount, and (`serve`) a local folder shared read-only to the phone, both over File Station (NFSv3 over fingerprint-pinned mutual TLS). It handshakes with the phone through the daemon. |

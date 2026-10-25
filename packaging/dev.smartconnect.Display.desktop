@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Smart Connect phone display
+Comment=Helper that shows this PC's screen on the phone (started by Smart Connect, not from a menu)
+Exec=smartconnect-display
+Icon=dev.smartconnect.Linux
+Terminal=false
+NoDisplay=true
+# KDE Plasma: KWin offers its screencast and fake-input protocols only to programs listed here,
+# matched by the absolute path in Exec= (install.sh writes it).
+X-KDE-Wayland-Interfaces=zkde_screencast_unstable_v1,org_kde_kwin_fake_input

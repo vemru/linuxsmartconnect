@@ -10,8 +10,17 @@
 //!
 //! The phone re-sends ~once a second, so we throttle: reply the first time we see a given phone `fp`
 //! and then at most once every [`REPLY_INTERVAL`] (so a dropped reply is retried without flooding).
+//!
+//! Two more duties once the phone has mounted:
+//! - **Network check.** After an I/O error the phone's NFS client sends `cmd=2006` and unmounts
+//!   unless `cmd=2007` `{port, nfsport}` (the ports it mounted) arrives within 3 s. We answer it.
+//! - **Pin memory.** Accepted phone fingerprints are kept in `<state dir>/phone-fps` (the last
+//!   [`MAX_REMEMBERED_FPS`]), so a restarted `serve` accepts the phone's reconnect before it has
+//!   seen a fresh `type:0`.
+//!
 //! See `docs/protocol/file-exchange.md`.
 
+use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
@@ -28,6 +37,13 @@ use crate::server::PinnedFps;
 const SERVICE_FILE_STATION: i64 = 168;
 /// File Station handshake command.
 const CMD_HANDSHAKE: i64 = 1001;
+/// The phone's NFS client asks whether the server is still there (after an I/O error).
+const CMD_NETWORK_REQUEST: i64 = 2006;
+/// Our answer: the ports the phone mounted. Without it the phone unmounts after 3 s.
+const CMD_NETWORK_RESPONSE: i64 = 2007;
+/// How many phone fingerprints `phone-fps` keeps (the phone's NFS cert changes when its app
+/// restarts, so old ones go stale).
+const MAX_REMEMBERED_FPS: usize = 4;
 /// Don't re-reply to the same phone more often than this (it re-sends ~1/s).
 const REPLY_INTERVAL: Duration = Duration::from_secs(5);
 
@@ -118,8 +134,9 @@ fn local_private_ipv4() -> Option<String> {
 }
 
 /// Runs the handshake responder until the control connection drops or an error occurs. For each
-/// phone `type:0` it pins the phone fp and (throttled) replies `type:1`.
-pub async fn run(params: ReplyParams, pinned: PinnedFps) -> Result<()> {
+/// phone `type:0` it pins the phone fp and (throttled) replies `type:1`; it answers `cmd=2006`
+/// network checks with `cmd=2007`. `state_dir` holds the remembered phone fingerprints.
+pub async fn run(params: ReplyParams, pinned: PinnedFps, state_dir: &Path) -> Result<()> {
     let path = socket_path();
     let watch = UnixStream::connect(&path).await.with_context(|| {
         format!("connecting to the daemon at {} (is smartconnectd running and the phone connected?)", path.display())
@@ -130,6 +147,13 @@ pub async fn run(params: ReplyParams, pinned: PinnedFps) -> Result<()> {
         .write_all(b"{\"cmd\":\"watch\",\"services\":[168]}\n")
         .await
         .context("subscribing to File Station frames")?;
+
+    let store = FpStore::new(state_dir);
+    let remembered = store.load();
+    if !remembered.is_empty() {
+        pinned.write().unwrap().extend(remembered.iter().cloned());
+        info!("accepting {} remembered phone certificate(s) until the phone handshakes", remembered.len());
+    }
 
     info!(
         "sharing {:?} to the phone on {}:{} (fp {}…); waiting for the phone's File Station handshake",
@@ -148,8 +172,15 @@ pub async fn run(params: ReplyParams, pinned: PinnedFps) -> Result<()> {
         if n == 0 {
             anyhow::bail!("the daemon closed the control connection");
         }
-        let Some(phone_fp) = parse_type0_fp(&line) else {
-            continue;
+        let phone_fp = match parse_frame(&line) {
+            Some(Incoming::Handshake { fp }) => fp,
+            Some(Incoming::NetworkRequest) => {
+                // The phone saw an I/O error; tell it the server it mounted is still here.
+                send(&path, &network_response_frame(params.port)).await;
+                info!("answered the phone's network check (cmd 2007)");
+                continue;
+            }
+            None => continue,
         };
 
         // Pin the phone's client cert so the TLS server accepts it.
@@ -160,23 +191,15 @@ pub async fn run(params: ReplyParams, pinned: PinnedFps) -> Result<()> {
         if is_new {
             info!("pinned phone certificate fp {}…", &phone_fp[..phone_fp.len().min(8)]);
         }
+        if last_fp.as_deref() != Some(phone_fp.as_str()) {
+            store.remember(&phone_fp);
+        }
 
         // Throttle: reply on a new phone, or once per REPLY_INTERVAL otherwise.
         let changed = last_fp.as_deref() != Some(phone_fp.as_str());
         if changed || last_reply.elapsed() >= REPLY_INTERVAL {
-            let frame = send_frame(&build_reply(&params));
-            match UnixStream::connect(&path).await {
-                Ok(mut send) => {
-                    if let Err(e) = send.write_all(format!("{frame}\n").as_bytes()).await {
-                        warn!("sending the File Station reply failed: {e}");
-                    } else {
-                        send.shutdown().await.ok();
-                        if changed {
-                            info!("replied type:1 (SSL) — phone should now mount {:?}", params.label);
-                        }
-                    }
-                }
-                Err(e) => warn!("opening a send connection to the daemon failed: {e}"),
+            if send(&path, &send_frame(&build_reply(&params))).await && changed {
+                info!("replied type:1 (SSL) — phone should now mount {:?}", params.label);
             }
             last_fp = Some(phone_fp);
             last_reply = Instant::now();
@@ -184,20 +207,114 @@ pub async fn run(params: ReplyParams, pinned: PinnedFps) -> Result<()> {
     }
 }
 
-/// If `line` is a watched File Station frame carrying a `cmd=1001` `type:0` handshake, returns the
-/// phone's `fp` (its client-cert fingerprint). Otherwise `None`.
-fn parse_type0_fp(line: &str) -> Option<String> {
+/// Sends one control-socket frame on a fresh connection. Returns whether it was written.
+async fn send(path: &Path, frame: &Value) -> bool {
+    match UnixStream::connect(path).await {
+        Ok(mut s) => {
+            if let Err(e) = s.write_all(format!("{frame}\n").as_bytes()).await {
+                warn!("sending a File Station frame failed: {e}");
+                return false;
+            }
+            s.shutdown().await.ok();
+            true
+        }
+        Err(e) => {
+            warn!("opening a send connection to the daemon failed: {e}");
+            false
+        }
+    }
+}
+
+/// The `cmd=2007` answer: the same single port we advertised for portmap and NFS, so the phone's
+/// "same server?" check passes.
+fn network_response_frame(port: u16) -> Value {
+    let body = json!({ "port": port, "nfsport": port });
+    json!({
+        "cmd": "send",
+        "service": SERVICE_FILE_STATION,
+        "data": { "ver": "1.0", "cmd": CMD_NETWORK_RESPONSE, "data": body.to_string() },
+    })
+}
+
+/// Service 25 (device status), whose `cap` map decides which feature tiles the phone draws.
+const SERVICE_DEVICE_STATUS: i64 = 25;
+/// The `cap` key for the phone's "File explorer" tile (local service 169, gated on PC service 20).
+const CAP_FILE_EXPLORER: &str = "20";
+/// The `cap` key that lists this PC under "Files" in Smart Connect's Files tab. The phone drops a
+/// PC (scType 2, verCode ≥ 900001000) from that list unless `"206"` is present and non-zero.
+const CAP_FILES_TAB: &str = "206";
+
+/// Announces the share to the phone's UI while we run (`on`), or withdraws it: the "File explorer"
+/// tile (`"20"`: 1 = available, 16 = turned off) and the entry in the Files tab (`"206"`: 1, or 0 to
+/// drop it). The daemon merges a helper's `cap` into its own tile map, so only these keys change.
+pub async fn announce_tile(on: bool) {
+    send(&socket_path(), &tile_frame(on)).await;
+}
+
+fn tile_frame(on: bool) -> Value {
+    let (explorer, files_tab) = if on { (1, 1) } else { (16, 0) };
+    json!({
+        "cmd": "send",
+        "service": SERVICE_DEVICE_STATUS,
+        "data": { "cap": { CAP_FILE_EXPLORER: explorer, CAP_FILES_TAB: files_tab } },
+    })
+}
+
+/// A File Station frame the responder acts on.
+#[derive(Debug, PartialEq)]
+enum Incoming {
+    /// `cmd=1001` `type:0`: the phone wants us to be its NFS server; `fp` is its client cert.
+    Handshake { fp: String },
+    /// `cmd=2006`: the phone's NFS client asks whether we're still there.
+    NetworkRequest,
+}
+
+/// Classifies a watched service 168 frame
+/// (`{"service":168,"data":{"ver":"1.0","cmd":N,"data":"<json string>"}}`).
+fn parse_frame(line: &str) -> Option<Incoming> {
     let frame: Value = serde_json::from_str(line.trim()).ok()?;
-    // {"service":168,"data":{"ver":"1.0","cmd":1001,"data":"<handshake json string>"}}
-    if frame.pointer("/data/cmd").and_then(Value::as_i64) != Some(CMD_HANDSHAKE) {
-        return None;
+    match frame.pointer("/data/cmd").and_then(Value::as_i64)? {
+        CMD_HANDSHAKE => {
+            let inner = frame.pointer("/data/data")?.as_str()?;
+            let hs: Value = serde_json::from_str(inner).ok()?;
+            if hs.get("type").and_then(Value::as_i64) != Some(0) {
+                return None;
+            }
+            let fp = hs.get("fp").and_then(Value::as_str).filter(|s| !s.is_empty())?;
+            Some(Incoming::Handshake { fp: fp.to_owned() })
+        }
+        CMD_NETWORK_REQUEST => Some(Incoming::NetworkRequest),
+        _ => None,
     }
-    let inner = frame.pointer("/data/data")?.as_str()?;
-    let hs: Value = serde_json::from_str(inner).ok()?;
-    if hs.get("type").and_then(Value::as_i64) != Some(0) {
-        return None;
+}
+
+/// The remembered phone fingerprints (`<state dir>/phone-fps`, newest last, mode 0600).
+struct FpStore {
+    path: PathBuf,
+}
+
+impl FpStore {
+    fn new(state_dir: &Path) -> Self {
+        Self { path: state_dir.join("phone-fps") }
     }
-    hs.get("fp").and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_owned)
+
+    fn load(&self) -> Vec<String> {
+        std::fs::read_to_string(&self.path)
+            .map(|s| s.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_owned).collect())
+            .unwrap_or_default()
+    }
+
+    /// Moves `fp` to the end of the list, keeping the newest [`MAX_REMEMBERED_FPS`].
+    fn remember(&self, fp: &str) {
+        let mut fps = self.load();
+        fps.retain(|f| !f.eq_ignore_ascii_case(fp));
+        fps.push(fp.to_owned());
+        let skip = fps.len().saturating_sub(MAX_REMEMBERED_FPS);
+        let text: String = fps[skip..].iter().map(|f| format!("{f}\n")).collect();
+        if let Err(e) = crate::cert::write_private(&self.path, text.as_bytes()) {
+            warn!("could not remember the phone certificate: {e:#}");
+        }
+    }
 }
 
 #[cfg(test)]
@@ -247,13 +364,45 @@ mod tests {
     }
 
     #[test]
+    fn tile_frame_only_touches_the_share_keys() {
+        assert_eq!(tile_frame(true), json!({ "cmd": "send", "service": 25, "data": { "cap": { "20": 1, "206": 1 } } }));
+        assert_eq!(tile_frame(false)["data"]["cap"], json!({ "20": 16, "206": 0 }));
+    }
+
+    #[test]
+    fn network_request_gets_our_ports_back() {
+        let req = json!({ "service": 168, "data": { "ver": "1.0", "cmd": 2006, "data": "{}" } });
+        assert_eq!(parse_frame(&req.to_string()), Some(Incoming::NetworkRequest));
+        let f = network_response_frame(2049);
+        assert_eq!(f["cmd"], "send");
+        assert_eq!(f["service"], 168);
+        assert_eq!(f["data"]["cmd"], 2007);
+        let inner: Value = serde_json::from_str(f["data"]["data"].as_str().unwrap()).unwrap();
+        assert_eq!(inner, json!({ "port": 2049, "nfsport": 2049 }));
+    }
+
+    #[test]
+    fn fp_store_keeps_the_newest_few() {
+        let dir = std::env::temp_dir().join(format!("scf-fps-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = FpStore::new(&dir);
+        assert!(store.load().is_empty());
+        for fp in ["A", "B", "C", "D", "E"] {
+            store.remember(fp);
+        }
+        store.remember("c"); // seen again: moves to the end, case-insensitively
+        assert_eq!(store.load(), ["B", "D", "E", "c"]);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn parses_phone_type0_fp_and_ignores_others() {
         let frame = json!({
             "service": 168,
             "data": { "ver": "1.0", "cmd": 1001,
                       "data": json!({"type":0,"dt2type":3,"fp":"PHONEFP","nfs_version":8}).to_string() }
         });
-        assert_eq!(parse_type0_fp(&frame.to_string()).as_deref(), Some("PHONEFP"));
+        assert_eq!(parse_frame(&frame.to_string()), Some(Incoming::Handshake { fp: "PHONEFP".into() }));
 
         // type:1 (a server reply, not a request) is ignored.
         let reply = json!({
@@ -261,10 +410,10 @@ mod tests {
             "data": { "ver": "1.0", "cmd": 1001,
                       "data": json!({"type":1,"fp":"X"}).to_string() }
         });
-        assert_eq!(parse_type0_fp(&reply.to_string()), None);
+        assert_eq!(parse_frame(&reply.to_string()), None);
 
         // a different command is ignored.
         let other = json!({ "service": 168, "data": { "ver": "1.0", "cmd": 2003, "data": "{}" } });
-        assert_eq!(parse_type0_fp(&other.to_string()), None);
+        assert_eq!(parse_frame(&other.to_string()), None);
     }
 }

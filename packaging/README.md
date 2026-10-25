@@ -10,6 +10,8 @@ and the Noctalia (Quickshell) panel plugin. `install.sh` copies this file to
 |---|---|
 | `install.sh`, `uninstall.sh` (+ `common.sh`) | Per-user install from the checkout |
 | `systemd/smartconnectd.service` | The user unit |
+| `appimage/make-appimage.sh` (+ `build-in-container.sh`, `AppRun.sh`) | Builds the AppImage in an Arch container (see docs/installation.md#appimage) |
+| `dev.smartconnect.Display.desktop` | Hidden entry that lets KDE Plasma's KWin trust `smartconnect-display` |
 | `dev.smartconnect.Linux.desktop`, `dev.smartconnect.Linux.svg` | GTK app launcher and icon (named after the app ID) |
 | `arch/PKGBUILD` | Arch Linux package built from the checkout |
 
@@ -71,8 +73,9 @@ the `PATH` Noctalia runs with.
   the port you pass with `--port` (pick another one when an `nfs-server` already holds 2049):
   `sudo firewall-cmd --permanent --add-port=2049/tcp`.
 
-- Phone as a second monitor (Extend): the `vkms` module, and on niri the virtual output off while
-  unused (`smartconnect-display` switches it on for a session).
+- Phone as a second monitor (Extend), niri only (GNOME, KDE Plasma, Hyprland and sway make the
+  phone's screen themselves): the `vkms` module, and the virtual output off while unused
+  (`smartconnect-display` switches it on for a session).
 
   ```sh
   sudo modprobe vkms

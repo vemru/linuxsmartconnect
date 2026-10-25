@@ -50,3 +50,6 @@ sequenceDiagram
   in serviceVersions.
 - Open: svc 25 cap value (phone itself reports `"26":5` while connected — maybe bit 4, not 8);
   lock on a layer surface under niri and real-hand feel (gain) are untested.
+
+Update (2026-10-25): the binary is now split into `core.rs` / `layer.rs` / `portal.rs`, with an
+InputCapture portal backend for GNOME; see [cross-control-gnome-portal.md](cross-control-gnome-portal.md).

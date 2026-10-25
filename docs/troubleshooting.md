@@ -130,9 +130,9 @@ BLE peripheral.
 
 ## Feature tiles are missing or do nothing
 
-- **Which tiles are expected:** App streaming, Cross Control, PC lock, Hotspot and Webcam. Screen
-  share and Mobile desktop only appear when the daemon runs with `--extra-tiles 1`, and the phone
-  keeps showing them until the next connection without that flag.
+- **Which tiles are expected:** App streaming, Cross Control, PC lock, Hotspot, Webcam, Screen
+  share and Mobile desktop. A daemon from before Screen share and Mobile desktop were on by default
+  needed `--extra-tiles 1` for those two; if they vanish after a restart, update the daemon.
 - **No tiles at all:** the phone draws a tile only if the PC lists the service in its handshake and
   in a status message sent right after it. The phone keeps the last list across reconnects. Update to
   a current build and reconnect, so the phone re-reads the list.
@@ -159,9 +159,12 @@ BLE peripheral.
 ## Clipboard doesn't sync
 
 - **Linux → phone:** the daemon must see `WAYLAND_DISPLAY`
-  (`systemctl --user show-environment | grep WAYLAND`), and your compositor must support the
-  data-control protocol. Test with `wl-paste --watch echo changed`, then copy something: it should
-  print `changed`.
+  (`systemctl --user show-environment | grep WAYLAND`). With the data-control protocol (KDE,
+  Hyprland, sway, niri), test with `wl-paste --watch echo changed`, then copy something: it should
+  print `changed`. Without it (GNOME prints "Watch mode requires a compositor that supports the
+  data-control protocol"), the daemon logs `following the clipboard through Xwayland` and needs
+  `DISPLAY` in its environment and Xwayland not disabled; `xclip -o -selection clipboard` should
+  print what you copied.
 - **Phone → Linux:** needs `wl-copy` and `WAYLAND_DISPLAY` too. The journal logs
   `clipboard: phone → Linux` with the character count.
 - **Never sent, by design:** copies marked sensitive by a password manager, and anything that isn't
@@ -232,13 +235,18 @@ For GStreamer-level detail, run the viewer by hand with
 
 | Message or symptom | Fix |
 |---|---|
-| `compositor lacks wlr-layer-shell` | Your compositor can't host the edge strip. Cross Control doesn't work there (GNOME, for example). |
+| `compositor lacks wlr-layer-shell` | You forced `--backend layer-shell` on a compositor without it (GNOME). Leave `--backend` at `auto`, which uses the InputCapture portal there. |
+| `no InputCapture portal` | The portal backend needs xdg-desktop-portal with a backend that implements InputCapture (GNOME 45 or newer; KDE Plasma 6.1 or newer). Check `busctl --user get-property org.freedesktop.portal.Desktop /org/freedesktop/portal/desktop org.freedesktop.portal.InputCapture version`. |
+| `InputCapture.CreateSession (was the prompt declined?)` | The desktop's "allow input capture" prompt was declined or closed. Start Cross Control again and allow it. |
+| `the desktop accepted no pointer barrier on the … edge` | That edge touches another monitor on every screen. Pick an outer edge with `--edge`. |
+| `the desktop disabled input capture` | The permission was revoked or the portal session ended. Start Cross Control again. |
 | `missing zwp_pointer_constraints_v1 …` / `no pointer-constraints: relying on relative motion only` | It still works, but the PC cursor isn't locked while you control the phone. |
 | `no svc26 cmd 2 reply from the phone within 4 s` | The phone didn't answer. Check that it is connected (`smartconnectd status`), and restart the daemon if you just updated it. |
 | `cross control DENIED by phone` | Allow Cross Control on the phone (it may show a permission prompt), then push into the edge again. |
 | `another smartconnect-crosscontrol is running and didn't stop` | An old client ignored the takeover request. Stop it: `pkill -INT -f smartconnect-crosscontrol`. |
-| The pointer won't come back | Press **Ctrl+Alt+Esc**. Ctrl+C in the client's terminal also releases everything. |
-| The GTK switch or Noctalia button shows "off" although Cross Control works | A client started by the daemon (from the phone's tile) is running. This is a known gap. |
+| The pointer won't come back | Press **Ctrl+Alt+Esc**. Ctrl+C in the client's terminal also releases everything (on GNOME the desktop also ends the capture when the client exits). |
+| The Noctalia button shows "off" although Cross Control works | A client started by the daemon (from the phone's tile) is running. This is a known gap in the plugin; the GTK app's Display tab does show it. |
+| The pointer doesn't cross over everywhere on the edge | Only the highlighted part of the edge (where the phone touches the screen under *Phone position* on the Display tab) leads to the phone. Drag the phone to change it, or pass `--span 0:1`. |
 | The pointer is too fast or too slow on the phone | Use `--gain` (default 1.6). |
 
 ## Phone files (~/Phone)
@@ -265,11 +273,29 @@ For GStreamer-level detail, run the viewer by hand with
 
 ### Sharing a folder to the phone (`serve`)
 
-This direction is **not verified with a phone yet**, so a share that doesn't show up may be a gap in
-the implementation rather than your setup. Before reporting it, check:
-
-- **The firewall.** The phone connects to the PC on TCP 2049 (or your `--port`). Open it as in
-  [Installation](installation.md#firewall); `ss -ltn 'sport = :2049'` shows the listener.
+- **The status says the phone hasn't connected / the share never appears on the phone: the
+  firewall.** The phone connects to the PC on TCP 2049 (or your `--port`). Open it as in
+  [Installation](installation.md#firewall), **in the zone your Wi-Fi interface is in**:
+  `firewall-cmd --get-active-zones` shows it (no sudo needed), for example
+  `sudo firewall-cmd --zone=home --add-port=2049/tcp`. Plain `--add-port` without `--zone` changes
+  the *default* zone, which often isn't the Wi-Fi's. On the phone this shows up in logcat as
+  "No route to host" for port 2049. `ss -ltn 'sport = :2049'` shows the listener.
+- **Where is it on the phone?** Smart Connect → **Files** tab → *Files* → your PC. It's also in
+  Android's system file browser as "<PC name> <PC IP>" (any app's "open file"/attach picker, side
+  menu). The PC only appears in the Files tab while the share runs.
+- **The PC is in the Files tab but *All files* is empty or shows an error:** make sure the share is
+  the current build (the Files tab needs Lenovo's own NFS calls, added on 2026-10-25), then go back
+  and open the PC again. `RUST_LOG=smartconnect_files=debug` logs each `READCATEGORYDIR` request
+  and how many entries it returned.
+- **A folder or file I expect is missing:** names starting with a dot are hidden from the phone
+  unless *Include hidden files* (`--include-hidden`) is on. The category views (Recents, Images, …)
+  stop after 200 000 entries or 16 folder levels, and Recents only covers the last 30 days.
+- **Videos have no thumbnails:** install `ffmpeg`; the share makes video thumbnails with it.
+- **Deleting on the phone does nothing:** the share is read-only (`--read-only`, or *Let the phone
+  delete files* off), or `gio` isn't installed. Deleted files are in your desktop Trash.
+- **The phone drops the folder after a Wi-Fi hiccup or a `serve` restart, then gets it back:**
+  expected. It re-handshakes and remounts within about a second. If it stays gone, open the folder
+  again from the file browser.
 - **"Address already in use"**: another NFS server (`nfs-server.service`) holds 2049. Pass another
   port, for example `smartconnect-files serve --port 20490`; the phone learns the port from the
   handshake.
@@ -280,12 +306,17 @@ the implementation rather than your setup. Before reporting it, check:
 
 ## PC lock and Hotspot
 
-- **Nothing locks:** the daemon runs `loginctl lock-session`, which only asks your screen locker to
-  lock. Lockers that don't listen to logind (Noctalia's lock screen, for example) do nothing. Test it
-  with `loginctl lock-session`. If nothing happens, set up your idle daemon to lock on logind's lock
-  request (swayidle's `lock` event, hypridle's `lock_cmd`).
-- **The phone says "unlocked" right away:** your locker doesn't set logind's `LockedHint`, so the
-  daemon can't tell that the session is locked.
+- **Nothing locks, and the PC shows "Couldn't lock this PC":** the notification says why.
+  - *GNOME Shell only has a lock screen when GDM is the display manager:* GNOME started from SDDM or
+    LightDM can't lock at all (Super+L doesn't work either). Log in through GDM.
+  - *No screen locker reacted to logind's Lock signal:* test with `loginctl lock-session`. If nothing
+    happens, set up your idle daemon to lock on logind's lock request (swayidle's `lock` event,
+    hypridle's `lock_cmd`), or give the daemon your locker: `--lock-command 'swaylock -f'`.
+- **Noctalia:** the daemon calls Noctalia's own lock IPC (`qs ipc --pid <pid> call lockScreen
+  lock`) when it finds Noctalia running. Noctalia doesn't report the lock to logind, so the phone's
+  tile stays "locked" after you unlock, until the next lock or reconnect.
+- **The phone's tile stays "locked":** your locker doesn't set logind's `LockedHint` (Noctalia, or
+  a `--lock-command` locker), so the daemon can't see the unlock.
 - **Hotspot (untested):** if the PC is left on the phone's hotspot or without network, remove the
   profile and reconnect your usual network:
 
@@ -309,18 +340,38 @@ the implementation rather than your setup. Before reporting it, check:
   A bad value in the file is skipped with a warning at the top of the output. *Apply Changes* in the
   GTK app restarts a running session with the new settings; the Noctalia panel uses them for the
   next start.
-- **A virtual monitor stays on after a crash.** When the process is killed hard, it can't switch the
-  output off. Run `niri msg output Virtual-1 off`.
-- **Extend finds no output.** Load vkms (`sudo modprobe vkms`) and check that `niri msg outputs`
+- **A virtual monitor stays on after a crash.** When the process is killed hard, it can't remove the
+  phone's screen. niri: `niri msg output Virtual-1 off`; Hyprland: `hyprctl output remove
+  SMARTCONNECT-1`; sway: `swaymsg output HEADLESS-N unplug`. GNOME and KDE clean up by themselves.
+- **Which desktop and screens does the helper see?** Run `smartconnect-display --list-outputs`. A
+  wrong guess (e.g. a nested session) can be overridden with `SMARTCONNECT_DESKTOP=gnome|kde|hyprland|sway|niri`.
+- **Extend finds no output (niri).** Load vkms (`sudo modprobe vkms`) and check that `niri msg outputs`
   lists a `Virtual-1` connector, or name another spare output with `--output`.
+- **"… has no known way to add a screen for the phone":** your compositor isn't one of GNOME, KDE
+  Plasma, Hyprland, sway or niri. Use Duplicate, or switch on a spare monitor or dummy plug and pass
+  its name with `--output`.
+- **KDE: "KWin did not offer zkde_screencast_unstable_v1" (or `org_kde_kwin_fake_input`).** KWin
+  only gives these to programs listed in a `.desktop` file with this binary's absolute path. Run
+  `packaging/install.sh` (it installs `dev.smartconnect.Display.desktop` and runs `kbuildsycoca6`),
+  then log out and back in. Run the installed `smartconnect-display`, not a build-directory copy.
+- **GNOME: no mouse cursor on the phone at 200 %.** GNOME doesn't draw the cursor into a scaled
+  virtual monitor's stream. Touches still land in the right place.
+- **Hyprland asks before sharing the screen.** With `ecosystem:enforce_permissions` on, allow
+  screencopy for `smartconnect-display`.
+- **The picture lags behind while touches don't.** Try a lower *Stream quality* (`--bitrate`), a
+  lower *Frame rate* (`--fps 30`) and *Phone default* resolution instead of *Phone native*, and
+  turn *Send PC audio to the phone* off to compare (the phone delays the picture to keep it in sync
+  with the sound).
 - **Text on the phone display is tiny or huge.** Adjust `--display-scale` (default 2, i.e. 200 %).
 - **The picture is letterboxed.** Use `--size native` (*Phone native*) to stream at the phone's own
   panel size. A phone held upright shows the landscape picture letterboxed unless you turn on
   `--follow-rotation` (*Rotate with the phone*, Extend only, not verified on a device).
 - **`no more input formats` / `not-negotiated` errors from `pipewiresrc`:** niri only offers DMA-BUF
   frames, and the capture path needs VA-API's `vapostproc` (package `gst-plugin-va`) to read them.
+  GNOME, KDE, Hyprland and sway don't need it for capture.
 - **The keyboard button does nothing** and you get "No on-screen keyboard found": install `wvkbd`
-  (AUR), or set `SMARTCONNECT_OSK` to the command that starts your on-screen keyboard.
+  (AUR), or set `SMARTCONNECT_OSK` to the command that starts your on-screen keyboard. On GNOME the
+  button turns on GNOME's own screen keyboard instead (it opens when a text field is focused).
 - **The on-screen keyboard is too small or covers too much:** change *On-screen keyboard height*
   (`--osk-height`, 15 to 80 % of the shared screen, default 45). It applies to wvkbd only.
 - **No sound on the phone with `--audio`:** the helper says at startup whether the PC's audio could

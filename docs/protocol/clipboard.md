@@ -2,7 +2,7 @@
 
 **Status in this project:** Text sync in both directions is implemented and verified on a device
 (phone copies appear in the Linux clipboard through `wl-copy`; Linux copies reach the phone through
-`wl-paste --watch`). File and image clips: the control plane is documented
+`wl-paste --watch`, or on GNOME through Xwayland). File and image clips: the control plane is documented
 [below](#image-and-file-clips); the daemon recognises them and logs them, but does not fetch the
 bytes yet (the fex client exists but isn't wired to clipboard clips).
 

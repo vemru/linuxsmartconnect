@@ -2,6 +2,7 @@
 
 mod apps;
 mod daemon;
+mod crosscontrol;
 mod display;
 mod files;
 mod icons;
@@ -9,6 +10,8 @@ mod lastdevice;
 mod lifecycle;
 mod mirror;
 mod prefs;
+mod setup;
+mod share;
 mod tray;
 mod window;
 
@@ -27,6 +30,7 @@ const CSS: &str = "
 picture.wallpaper { border-radius: 12px; }
 picture.qr { background: white; border-radius: 12px; padding: 12px; }
 .sc-card { padding: 16px; }
+.sc-mode { padding: 16px 10px; }
 .sc-tile { padding: 10px; }
 .sc-chip { padding: 6px 10px; }
 .sc-dimmed { opacity: 0.55; }
@@ -62,8 +66,25 @@ fn main() -> glib::ExitCode {
 
     let slot = ui.clone();
     app.connect_activate(move |app| {
-        let mut slot = slot.borrow_mut();
         let is_first = first_activation.replace(false);
+        // Started from the AppImage file: set it up first (or open the installed copy).
+        if is_first && slot.borrow().is_none() {
+            if setup::installed_same_build() {
+                setup::open_installed_and_quit(app);
+                return;
+            }
+            if let Some((appimage, update)) = setup::pending_install() {
+                let (slot, app_c) = (slot.clone(), app.clone());
+                setup::welcome(app, appimage, update, move || {
+                    let ui = window::Ui::new(&app_c);
+                    ui.start();
+                    ui.present();
+                    *slot.borrow_mut() = Some(ui);
+                });
+                return;
+            }
+        }
+        let mut slot = slot.borrow_mut();
         let ui = slot.get_or_insert_with(|| {
             let ui = window::Ui::new(app);
             ui.start();

@@ -380,6 +380,16 @@ async fn handle(daemon: Arc<Daemon>, acceptor: TlsAcceptor, tcp: TcpStream, peer
         );
     }
 
+    // Our fex offers (clipboard images to the phone) share this port: route their two paths there,
+    // and replay the request head into the control WebSocket for everything else.
+    let mut tls = tls;
+    let head = timeout(FIRST_MESSAGE_TIMEOUT, crate::fex_host::read_head(&mut tls)).await.context("no HTTP request")??;
+    if let Some(target) = crate::fex_host::target(&head).filter(|t| crate::fex_host::is_fex(t)).map(str::to_owned) {
+        info!(%peer, "fex request");
+        return crate::fex_host::serve(daemon.clipboard.fex(), crate::fex_host::Prefixed::new(head, tls), &target, peer).await;
+    }
+    let tls = crate::fex_host::Prefixed::new(head, tls);
+
     let mut uri = String::new();
     let ws = tokio_tungstenite::accept_hdr_async(tls, |req: &Request, resp: Response| {
         uri = req.uri().to_string();
@@ -553,6 +563,9 @@ where
                             if msg.service_id == crate::app_icons::SERVICE_APP_LIST {
                                 crate::app_icons::on_app_list(peer.ip().to_canonical(), d);
                             }
+                            if msg.service_id == clipboard::SERVICE_FILE_EX {
+                                clipboard::on_file_ex(peer.ip().to_canonical(), d, daemon.clipboard.clone());
+                            }
                             if matches!(msg.service_id, notifications::SERVICE_NOTIFY | notifications::SERVICE_NOTIFY_WIDGET) {
                                 if let Some(n) = daemon.notifier.get() {
                                     n.handle(msg.service_id, d).await;
@@ -567,7 +580,7 @@ where
                             }
                             (clipboard::SERVICE_CLIPBOARD, Some(d)) => clip
                                 .handle(d, clipboard)
-                                .map(|d| WsMsg::outgoing(device_id, clipboard::SERVICE_CLIPBOARD, d)),
+                                .map(|(svc, d)| WsMsg::outgoing(device_id, svc, d)),
                             _ => respond(&msg, device_id),
                         };
                         if let Some(resp) = resp {

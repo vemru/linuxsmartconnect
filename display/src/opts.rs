@@ -10,8 +10,9 @@
 //!
 //! - `mode`: `"extend"` or `"mirror"`; `size`: `"native"`, `"requested"` (what the phone asks for) or
 //!   `"WxH"`; `displayScale`: a factor (0.5–4) or a percentage (50–400, or `"150%"`); `oskHeight`:
-//!   15–80 (% of the shared screen); `output`: `null` (first `Virtual-*` output) or a connector name;
-//!   `audio`, `followRotation`: booleans.
+//!   15–80 (% of the shared screen); `output`: `null` (a new virtual screen; on niri the first
+//!   `Virtual-*` output) or a connector name;
+//!   `audio`, `followRotation`: booleans; `bitrate`: kbit/s (500–50000); `fps`: 10–60.
 //! - Unknown keys are ignored and a bad value is reported and skipped, so a file written by a newer
 //!   or older GUI never stops a phone-initiated start.
 
@@ -20,19 +21,27 @@ use std::path::PathBuf;
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
 
-pub const USAGE: &str = "usage: smartconnect-display [--mode mirror|extend] [--output NAME|auto]
+pub const USAGE: &str = "usage: smartconnect-display [--mode mirror|extend] [--side SIDE] [--output NAME|auto]
                             [--size WxH|native|requested] [--display-scale N] [--osk-height PCT]
                             [--audio|--no-audio] [--follow-rotation|--no-follow-rotation]
-                            [--test-pattern [--pattern NAME]] [--scale N] [--x264] [--bitrate KBPS]
+                            [--test-pattern [--pattern NAME]] [--scale N] [--x264] [--bitrate KBPS] [--fps N]
                             [--config PATH|--no-config] [--replace]
+       smartconnect-display --list-outputs
   Shows this PC's screen on the phone (Smart Connect svc 202). Needs smartconnectd running and the phone connected.
+  Works on GNOME, KDE Plasma, Hyprland, sway and niri ($SMARTCONNECT_DESKTOP overrides the detection).
   Defaults come from ~/.config/smartconnect-linux/display.json (written by the GUI); flags override it.
-  --mode          mirror (default: the focused output) or extend (turns on a spare/virtual output, e.g. vkms Virtual-1)
-  --output NAME   extend: the output to turn on and send (default/auto: the first Virtual-* output)
+  --mode          mirror (default: the focused output) or extend (the phone becomes a second monitor:
+                  a virtual screen on GNOME/KDE/Hyprland/sway, a spare output such as vkms Virtual-1 on niri)
+  --side SIDE     extend: left, right, top or bottom of the main screen (default: where the phone
+                  was put on the GTK Cross Control page, ~/.config/smartconnect-linux/crosscontrol.json,
+                  else right; a running session follows changes to that file)
+  --output NAME   extend: use this connected output instead (e.g. an HDMI dummy plug; default/auto:
+                  a new virtual screen, or on niri the first Virtual-* output)
   --size WxH      stream size (default/requested: what the phone asks for, usually 1920x1080);
                   'native' = the phone's own panel, landscape (e.g. 2712x1220, no letterboxing)
-  --display-scale N  extend: scale of the phone's virtual monitor, e.g. 1, 1.5, 2 or 150%
-                  (default 2 = 200%, like Windows; bigger = larger text, less space)
+  --display-scale N  extend: scale of the phone's monitor, e.g. 1, 1.5, 2 or 150%
+                  (default 2 = 200%, like Windows; bigger = larger text, less space; GNOME rounds it
+                  to a scale it supports for the size)
   --osk-height PCT  height of the on-screen keyboard shown by the phone's keyboard button,
                   in % of the shared screen (default 45, like a phone keyboard; needs wvkbd)
   --audio         also send what this PC plays (default output's monitor, Opus) to the phone;
@@ -43,9 +52,12 @@ pub const USAGE: &str = "usage: smartconnect-display [--mode mirror|extend] [--o
   --pattern NAME  videotestsrc pattern for --test-pattern (default ball; smpte shows the frame edges)
   --scale N       setScale sent to the phone (Windows DPI %, default 100)
   --x264          force the software encoder (default: vah264enc when available)
-  --bitrate KBPS  encoder bitrate (default 8000)
+  --bitrate KBPS  stream quality: video bitrate, 500-50000 (default 8000); lower = less data per
+                  frame, which can cut the delay on a busy Wi-Fi
+  --fps N         most frames per second sent, 10-60 (default 60); fewer = less to encode and send
   --config PATH   read defaults from PATH instead; --no-config ignores the settings file
-  --replace       stop a running smartconnect-display first (default: refuse to start a second one)";
+  --replace       stop a running smartconnect-display first (default: refuse to start a second one)
+  --list-outputs  print this desktop's outputs and how Extend works here as JSON, then exit";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Share {
@@ -103,7 +115,7 @@ pub struct Opts {
     pub output: Option<String>,
     pub size: SizePref,
     pub test_pattern: Option<String>,
-    /// Extend: niri scale of the phone's output.
+    /// Extend: scale of the phone's output (compositor scale, e.g. 2.0 = 200 %).
     pub display_scale: f64,
     /// On-screen keyboard height, % of the shared screen.
     pub osk_height: u32,
@@ -111,12 +123,16 @@ pub struct Opts {
     pub scale: i64,
     pub force_x264: bool,
     pub bitrate: u32,
+    /// Most frames per second sent (`--fps`).
+    pub fps: u32,
     /// Send the PC's audio (opt-in).
     pub audio: bool,
     /// Extend: follow the phone's rotation (cmd 7) with a portrait/landscape output (opt-in).
     pub follow_rotation: bool,
     /// Stop a running instance instead of refusing to start.
     pub replace: bool,
+    /// Extend: which side of the main screen (`--side`; else the Cross Control placement file).
+    pub side: Option<crate::desktop::Edge>,
 }
 
 impl Default for Opts {
@@ -131,9 +147,11 @@ impl Default for Opts {
             scale: 100,
             force_x264: false,
             bitrate: 8000,
+            fps: 60,
             audio: false,
             follow_rotation: false,
             replace: false,
+            side: None,
         }
     }
 }
@@ -148,7 +166,7 @@ pub fn config_path() -> PathBuf {
         .join("display.json")
 }
 
-/// "1.5", "150%" or 150 → 1.5 (niri accepts 0.5–10; keep it to sane display scales).
+/// "1.5", "150%" or 150 → 1.5 (compositors accept roughly 0.5–10; keep it to sane display scales).
 pub fn parse_display_scale(v: &str) -> Result<f64> {
     let s = match v.trim().strip_suffix('%') {
         Some(p) => p.trim().parse::<f64>()? / 100.0,
@@ -162,6 +180,22 @@ pub fn parse_display_scale(v: &str) -> Result<f64> {
         bail!("display scale {v}: use a value between 0.5 and 4 (or 50%–400%)");
     }
     Ok(s)
+}
+
+pub fn parse_bitrate(v: &str) -> Result<u32> {
+    let kbps: u32 = v.trim().parse()?;
+    if !(500..=50_000).contains(&kbps) {
+        bail!("bitrate {v}: use 500–50000 (kbit/s)");
+    }
+    Ok(kbps)
+}
+
+pub fn parse_fps(v: &str) -> Result<u32> {
+    let fps: u32 = v.trim().parse()?;
+    if !(10..=60).contains(&fps) {
+        bail!("frame rate {v}: use 10–60");
+    }
+    Ok(fps)
 }
 
 pub fn parse_osk_height(v: &str) -> Result<u32> {
@@ -219,6 +253,16 @@ pub fn apply_file(o: &mut Opts, v: &Value) -> Vec<String> {
                 Value::String(s) if s.trim().is_empty() || s.trim() == "auto" => o.output = None,
                 Value::String(s) => o.output = Some(s.trim().to_owned()),
                 _ => bad(k, val, "use null or an output name".into()),
+            },
+            "bitrate" => match val.as_u64().map(|n| parse_bitrate(&n.to_string())) {
+                Some(Ok(b)) => o.bitrate = b,
+                Some(Err(e)) => bad(k, val, format!("{e:#}")),
+                None => bad(k, val, "use a number of kbit/s such as 8000".into()),
+            },
+            "fps" => match val.as_u64().map(|n| parse_fps(&n.to_string())) {
+                Some(Ok(f)) => o.fps = f,
+                Some(Err(e)) => bad(k, val, format!("{e:#}")),
+                None => bad(k, val, "use a number such as 30".into()),
             },
             "audio" => match val.as_bool() {
                 Some(b) => o.audio = b,
@@ -307,6 +351,10 @@ pub fn parse_with(args: &[String], file: Option<&Value>) -> Result<(Option<Opts>
                 println!("{USAGE}");
                 return Ok((None, warnings));
             }
+            "--list-outputs" => {
+                println!("{}", crate::desktop::list_json());
+                return Ok((None, warnings));
+            }
             "--mode" => o.mode = Share::parse(&val("mirror|extend")?).context("--mode needs mirror|extend")?,
             "--output" => {
                 let v = val("NAME")?;
@@ -318,13 +366,15 @@ pub fn parse_with(args: &[String], file: Option<&Value>) -> Result<(Option<Opts>
             "--display-scale" => o.display_scale = parse_display_scale(&val("N")?)?,
             "--scale" => o.scale = val("N")?.parse()?,
             "--x264" => o.force_x264 = true,
-            "--bitrate" => o.bitrate = val("KBPS")?.parse()?,
+            "--bitrate" => o.bitrate = parse_bitrate(&val("KBPS")?)?,
+            "--fps" => o.fps = parse_fps(&val("N")?)?,
             "--osk-height" => o.osk_height = parse_osk_height(&val("PCT")?)?,
             "--audio" => o.audio = true,
             "--no-audio" => o.audio = false,
             "--follow-rotation" => o.follow_rotation = true,
             "--no-follow-rotation" => o.follow_rotation = false,
             "--replace" => o.replace = true,
+            "--side" => o.side = Some(crate::desktop::Edge::parse(&val("left|right|top|bottom")?).context("--side needs left, right, top or bottom")?),
             "--config" => {
                 val("PATH")?; // read by parse_args before the file is loaded
             }

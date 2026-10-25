@@ -7,6 +7,7 @@ pub mod ble_connect;
 pub mod clipboard;
 pub mod control;
 pub mod discovery;
+pub mod fex_host;
 pub mod helpers;
 pub mod hotspot;
 pub mod identity;

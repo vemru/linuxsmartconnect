@@ -1,16 +1,13 @@
-//! Owned by the input agent. Contract used by `session`:
+//! Phone input (data-channel packets) → this PC. Contract used by `session`:
 //!
 //! ```ignore
+//! /// The captured screen, and how input reaches it on this desktop (from `Capture::input_target`).
+//! pub struct Target { pub rect: (i32, i32, u32, u32), pub output: String, pub route: Route }
 //! pub struct Injector { … }
 //! impl Injector {
-//!     /// `target` = (x, y, w, h) of the captured screen area in compositor logical px.
-//!     pub fn new(target: (i32, i32, u32, u32)) -> anyhow::Result<Self>;
-//!     /// Optional: pin the pointer to the output with this connector name (e.g. from
-//!     /// `Capture::output_name()`, "Virtual-1" for the vkms extend display, "eDP-1" for mirror).
-//!     /// Preferred with several outputs; `new` pins by exact logical-rect match instead.
-//!     pub fn new_for_output(output: &str, target: (i32, i32, u32, u32)) -> anyhow::Result<Self>;
-//!     /// Optional: the captured area moved/resized (cmd 70 resize).
-//!     pub fn set_target(&mut self, target: (i32, i32, u32, u32));
+//!     pub fn open(target: &Target) -> anyhow::Result<Self>;
+//!     /// The captured area moved/resized (cmd 70 resize, rotation); same output and route.
+//!     pub fn set_target(&mut self, target: &Target);
 //!     /// Called with each binary data-channel message from the phone.
 //!     pub fn handle_packet(&mut self, bytes: &[u8]);
 //! }
@@ -30,40 +27,29 @@
 //! * PEN (56 B): touch-like x/y/res, `u16 flags @24` (1 down, 2 move, 4 up, 32 cancel, 8 hover, 16 hover exit),
 //!   `f32 pressure @28, i32 tilt @32, i32 orientation @36, i64 time @40`.
 //!
-//! Injection: Wayland `zwlr_virtual_pointer_v1` + `zwp_virtual_keyboard_v1` (both supported by niri).
-//! The keyboard re-uses the seat's current keymap (so the user's layout is left alone); falls back
-//! to `xkbcli compile-keymap --layout us`.
+//! Injection, per desktop (`Route`):
+//! * `Wayland`: `zwlr_virtual_pointer_v1` + `zwp_virtual_keyboard_v1` (niri, Hyprland, sway, …),
+//!   in `wlr.rs`.
+//! * `Mutter`: the RemoteDesktop session linked to GNOME's screen cast (`mutter.rs`); positions
+//!   are in stream pixels, so no output geometry is needed.
+//! * `Kwin`: KDE's `org_kde_kwin_fake_input` (`kwin.rs`), in global logical coordinates.
 //!
 //! Touch gestures: 1 finger tap = left click, 1 finger move (> threshold) = left drag,
 //! hold ≥ 600 ms without moving = right click, ≥ 2 fingers = scroll (finger source).
 
-use std::os::fd::{AsFd, OwnedFd};
-use std::time::Instant;
+mod kwin;
+mod mutter;
+mod wlr;
 
-use anyhow::{Context, Result, anyhow};
-use wayland_client::{
-    Connection, Dispatch, EventQueue, Proxy, QueueHandle, WEnum,
-    globals::{GlobalListContents, registry_queue_init},
-    protocol::{
-        wl_keyboard::{self, WlKeyboard},
-        wl_output::{self, WlOutput},
-        wl_pointer::{Axis, AxisSource, ButtonState},
-        wl_registry::WlRegistry,
-        wl_seat::WlSeat,
-    },
-};
-use wayland_protocols::xdg::xdg_output::zv1::client::{
-    zxdg_output_manager_v1::ZxdgOutputManagerV1,
-    zxdg_output_v1::{self, ZxdgOutputV1},
-};
-use wayland_protocols_misc::zwp_virtual_keyboard_v1::client::{
-    zwp_virtual_keyboard_manager_v1::ZwpVirtualKeyboardManagerV1,
-    zwp_virtual_keyboard_v1::ZwpVirtualKeyboardV1,
-};
-use wayland_protocols_wlr::virtual_pointer::v1::client::{
-    zwlr_virtual_pointer_manager_v1::ZwlrVirtualPointerManagerV1,
-    zwlr_virtual_pointer_v1::ZwlrVirtualPointerV1,
-};
+pub use mutter::RemoteInput;
+
+/// What to tell the user when KWin does not offer its screencast or fake-input protocol to us.
+pub fn kwin_trust_hint() -> &'static str {
+    kwin::TRUST_HINT
+}
+
+use anyhow::Result;
+
 
 // ---------------------------------------------------------------------------------------------
 // Decoding
@@ -460,158 +446,98 @@ impl Translator {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Wayland backend
+// Injection
 // ---------------------------------------------------------------------------------------------
 
-#[derive(Default)]
-struct State {
-    outputs: Vec<OutputInfo>,
-    keymap: Option<(OwnedFd, u32)>,
+/// How phone input reaches this desktop.
+#[derive(Clone)]
+pub enum Route {
+    /// wlroots virtual pointer + virtual keyboard (niri, Hyprland, sway, other wlroots compositors).
+    Wayland,
+    /// GNOME: Mutter's RemoteDesktop session linked to the screen cast.
+    Mutter(RemoteInput),
+    /// KDE Plasma: `org_kde_kwin_fake_input`.
+    Kwin,
 }
 
-#[derive(Clone, Debug)]
-struct OutputInfo {
-    wl: WlOutput,
-    /// Connector name (wl_output v4 `name`, or xdg-output `name`), e.g. "eDP-1", "Virtual-1".
-    name: Option<String>,
-    /// Logical geometry from xdg-output (w == 0 until known).
-    x: i32,
-    y: i32,
-    w: i32,
-    h: i32,
+/// The captured screen and how input reaches it.
+#[derive(Clone)]
+pub struct Target {
+    /// Captured area in compositor logical px.
+    pub rect: (i32, i32, u32, u32),
+    /// Connector name of the captured output ("" when unknown).
+    pub output: String,
+    pub route: Route,
 }
 
-impl OutputInfo {
-    fn rect(&self) -> Option<(i32, i32, u32, u32)> {
-        (self.w > 0 && self.h > 0).then(|| (self.x, self.y, self.w as u32, self.h as u32))
+impl Target {
+    /// The rectangle the translator maps the phone into: stream pixels for Mutter (its absolute
+    /// motion is relative to the stream), global logical px otherwise.
+    fn space(&self) -> (i32, i32, u32, u32) {
+        match &self.route {
+            Route::Mutter(r) => (0, 0, r.size.0, r.size.1),
+            Route::Wayland | Route::Kwin => self.rect,
+        }
     }
 }
 
+/// Where translated actions go. Coordinates are in `Target::space()`.
+trait Sink: Send {
+    fn describe(&self) -> String;
+    fn set_target(&mut self, _rect: (i32, i32, u32, u32)) {}
+    /// Before a packet: pick up compositor events without blocking.
+    fn begin(&mut self) {}
+    /// After a packet.
+    fn flush(&mut self) {}
+    fn move_abs(&mut self, x: f64, y: f64);
+    fn move_rel(&mut self, dx: f64, dy: f64);
+    fn button(&mut self, button: u32, down: bool);
+    /// Discrete wheel steps, +1 = down.
+    fn wheel(&mut self, steps: i32);
+    /// Finger scroll in the translator's px (+ = down); `None` ends it.
+    fn finger_scroll(&mut self, delta: Option<(f64, f64)>);
+    /// `mods` = (depressed, locked) after this key; `modifier` = the key changes them. Returns
+    /// whether the key was sent (false: no keyboard on this route).
+    fn key(&mut self, code: u32, down: bool, mods: (u32, u32), modifier: bool) -> bool;
+    /// Last call before the sink is dropped (buttons and keys are already released).
+    fn finish(&mut self, _locked: u32) {}
+}
+
 pub struct Injector {
-    conn: Connection,
-    queue: EventQueue<State>,
-    state: State,
-    pointer: ZwlrVirtualPointerV1,
-    keyboard: Option<ZwpVirtualKeyboardV1>,
-    /// Index into `state.outputs` when the virtual pointer is bound to one output
-    /// (`create_virtual_pointer_with_output`); absolute motion is then relative to that output.
-    pinned: Option<usize>,
-    target: (i32, i32, u32, u32),
     tr: Translator,
-    epoch: Instant,
+    sink: Box<dyn Sink>,
     held_keys: Vec<u32>,
     held_buttons: Vec<u32>,
     scrolling: bool,
 }
 
 impl Injector {
-    /// `target` = (x, y, w, h) of the captured screen area in compositor logical px.
-    /// Pins the virtual pointer to the output whose logical rect equals `target`, if any.
-    pub fn new(target: (i32, i32, u32, u32)) -> Result<Self> {
-        Self::build(target, None, true)
+    pub fn open(target: &Target) -> Result<Self> {
+        let sink: Box<dyn Sink> = match &target.route {
+            Route::Wayland => {
+                let output = Some(target.output.as_str()).filter(|o| !o.is_empty());
+                Box::new(wlr::WlrSink::new(target.rect, output, true)?)
+            }
+            Route::Mutter(r) => Box::new(mutter::MutterSink::new(r.clone())),
+            Route::Kwin => Box::new(kwin::KwinSink::new()?),
+        };
+        Ok(Self::with_sink(target.space(), sink))
     }
 
-    /// Like `new`, but pins the virtual pointer to the output with connector name `output`
-    /// (e.g. `Capture::output_name()`, "Virtual-1"). Falls back to `new`'s behaviour if not found.
-    #[allow(dead_code)]
-    pub fn new_for_output(output: &str, target: (i32, i32, u32, u32)) -> Result<Self> {
-        Self::build(target, Some(output), true)
+    fn with_sink(space: (i32, i32, u32, u32), sink: Box<dyn Sink>) -> Self {
+        let mut me = Self { tr: Translator::new(space), sink, held_keys: Vec::new(), held_buttons: Vec::new(), scrolling: false };
+        eprintln!("[input] target {space:?}, {}", me.sink.describe());
+        me.sink.flush();
+        me
     }
 
-    /// Update the captured area (e.g. after the virtual output was resized / moved).
-    #[allow(dead_code)]
-    pub fn set_target(&mut self, target: (i32, i32, u32, u32)) {
-        self.target = target;
-        self.tr.target = target;
-    }
-
-    fn build(target: (i32, i32, u32, u32), output: Option<&str>, allow_pin: bool) -> Result<Self> {
-        let conn = Connection::connect_to_env().context("connect to Wayland")?;
-        let (globals, mut queue) = registry_queue_init::<State>(&conn).context("registry")?;
-        let qh = queue.handle();
-        let mut state = State::default();
-
-        let seat: WlSeat = globals.bind(&qh, 1..=7, ()).context("wl_seat")?;
-        let vp_mgr: ZwlrVirtualPointerManagerV1 =
-            globals.bind(&qh, 1..=2, ()).context("compositor lacks zwlr_virtual_pointer_manager_v1")?;
-        let vk_mgr: Option<ZwpVirtualKeyboardManagerV1> = globals.bind(&qh, 1..=1, ()).ok();
-        let xo_mgr: Option<ZxdgOutputManagerV1> = globals.bind(&qh, 1..=3, ()).ok();
-
-        // Enumerate outputs: connector names (wl_output v4) + logical geometry (xdg-output).
-        for g in globals.contents().clone_list() {
-            if g.interface == "wl_output" {
-                let idx = state.outputs.len();
-                let wl: WlOutput = globals.registry().bind(g.name, g.version.min(4), &qh, idx);
-                if let Some(m) = &xo_mgr {
-                    m.get_xdg_output(&wl, &qh, idx);
-                }
-                state.outputs.push(OutputInfo { wl, name: None, x: 0, y: 0, w: 0, h: 0 });
-            }
+    /// The captured area moved or was resized (same output and route).
+    pub fn set_target(&mut self, target: &Target) {
+        if let Route::Mutter(r) = &target.route {
+            self.sink = Box::new(mutter::MutterSink::new(r.clone()));
         }
-        // Grab the seat keymap for the virtual keyboard.
-        let kb = vk_mgr.as_ref().map(|_| seat.get_keyboard(&qh, ()));
-        queue.roundtrip(&mut state)?;
-        queue.roundtrip(&mut state)?;
-        if let Some(kb) = kb {
-            if kb.version() >= 3 {
-                kb.release();
-            }
-        }
-
-        let pinned = if allow_pin && vp_mgr.version() >= 2 {
-            output
-                .and_then(|n| state.outputs.iter().position(|o| o.name.as_deref() == Some(n)))
-                .or_else(|| state.outputs.iter().position(|o| o.rect() == Some(target)))
-        } else {
-            None
-        };
-        if let (Some(n), None) = (output, pinned) {
-            eprintln!("[input] output {n:?} not found (or no virtual-pointer v2); mapping over the whole layout");
-        }
-        let pointer = match pinned {
-            Some(i) => vp_mgr.create_virtual_pointer_with_output(Some(&seat), Some(&state.outputs[i].wl), &qh, ()),
-            None => vp_mgr.create_virtual_pointer(Some(&seat), &qh, ()),
-        };
-
-        let keyboard = match vk_mgr {
-            Some(m) => {
-                let (fd, size) = match state.keymap.take() {
-                    Some(k) => k,
-                    None => us_keymap_fd().context("no seat keymap and xkbcli fallback failed")?,
-                };
-                let vk = m.create_virtual_keyboard(&seat, &qh, ());
-                vk.keymap(1 /* XKB_V1 */, fd.as_fd(), size);
-                Some(vk)
-            }
-            None => {
-                eprintln!("[input] compositor lacks zwp_virtual_keyboard_manager_v1: keyboard disabled");
-                None
-            }
-        };
-        conn.flush()?;
-
-        let mut me = Self {
-            conn,
-            queue,
-            state,
-            pointer,
-            keyboard,
-            pinned,
-            target,
-            tr: Translator::new(target),
-            epoch: Instant::now(),
-            held_keys: Vec::new(),
-            held_buttons: Vec::new(),
-            scrolling: false,
-        };
-        eprintln!(
-            "[input] target {target:?}, pointer pinned to {:?}, motion space {:?}, keyboard {}",
-            me.pinned.and_then(|i| me.state.outputs[i].name.clone()),
-            me.space(),
-            me.keyboard.is_some()
-        );
-        me.sync();
-        Ok(me)
+        self.tr.target = target.space();
+        self.sink.set_target(target.rect);
     }
 
     /// Called with each binary data-channel message from the phone.
@@ -620,116 +546,58 @@ impl Injector {
             eprintln!("[input] undecodable packet ({} B)", bytes.len());
             return;
         };
-        self.sync_in();
+        self.sink.begin();
         for a in self.tr.translate(&p) {
             self.apply(a);
         }
-        self.sync();
+        self.sink.flush();
     }
 
-    /// Absolute-motion space (origin x, origin y, w, h) in global logical px: the pinned output's
-    /// current geometry, else the bounding box of all outputs (what niri maps unpinned motion to).
-    fn space(&self) -> (i32, i32, u32, u32) {
-        if let Some(i) = self.pinned {
-            return self.state.outputs[i].rect().unwrap_or(self.target);
-        }
-        layout_bbox(self.state.outputs.iter().filter_map(OutputInfo::rect)).unwrap_or(self.target)
-    }
-
-    fn time(&self) -> u32 {
-        self.epoch.elapsed().as_millis() as u32
-    }
-
-    /// Pick up output geometry changes without blocking.
-    fn sync_in(&mut self) {
-        let _ = self.queue.dispatch_pending(&mut self.state);
-        if let Some(guard) = self.queue.prepare_read() {
-            let _ = guard.read(); // non-blocking; WouldBlock when nothing is queued
-        }
-        let _ = self.queue.dispatch_pending(&mut self.state);
-    }
-
-    fn sync(&mut self) {
-        if let Err(e) = self.conn.flush() {
-            eprintln!("[input] wayland flush: {e}");
-        }
-    }
-
-    /// Absolute move to global logical (x, y). (Used by the smoke test; no buttons involved.)
-    #[allow(dead_code)]
+    /// Absolute move to (x, y) in the target space. (Used by the smoke test; no buttons involved.)
+    #[cfg(test)]
     pub fn move_abs(&mut self, x: f64, y: f64) {
-        self.sync_in();
+        self.sink.begin();
         self.apply(Action::MoveAbs(x, y));
-        self.sync();
+        self.sink.flush();
     }
 
     /// Relative move by (dx, dy) logical px. (Used by the smoke test; no buttons involved.)
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn move_rel(&mut self, dx: f64, dy: f64) {
         self.apply(Action::MoveRel(dx, dy));
-        self.sync();
+        self.sink.flush();
     }
 
     fn apply(&mut self, a: Action) {
-        let t = self.time();
         match a {
-            Action::MoveAbs(x, y) => {
-                let (sx, sy, sw, sh) = self.space();
-                let rx = (x - sx as f64).clamp(0.0, sw.saturating_sub(1) as f64);
-                let ry = (y - sy as f64).clamp(0.0, sh.saturating_sub(1) as f64);
-                // Sub-pixel precision: extents ×16.
-                self.pointer.motion_absolute(t, (rx * 16.0).round() as u32, (ry * 16.0).round() as u32, sw * 16, sh * 16);
-                self.pointer.frame();
-            }
-            Action::MoveRel(dx, dy) => {
-                self.pointer.motion(t, dx, dy);
-                self.pointer.frame();
-            }
+            Action::MoveAbs(x, y) => self.sink.move_abs(x, y),
+            Action::MoveRel(dx, dy) => self.sink.move_rel(dx, dy),
             Action::Button(b, down) => {
-                self.pointer.button(t, b, if down { ButtonState::Pressed } else { ButtonState::Released });
-                self.pointer.frame();
+                self.sink.button(b, down);
                 if down {
                     self.held_buttons.push(b);
                 } else {
                     self.held_buttons.retain(|&x| x != b);
                 }
             }
-            Action::Wheel(steps) => {
-                self.pointer.axis_source(AxisSource::Wheel);
-                self.pointer.axis_discrete(t, Axis::VerticalScroll, steps as f64 * 15.0, steps);
-                self.pointer.frame();
-            }
-            Action::FingerScroll(Some((dx, dy))) => {
+            Action::Wheel(steps) => self.sink.wheel(steps),
+            Action::FingerScroll(Some(d)) => {
                 self.scrolling = true;
-                self.pointer.axis_source(AxisSource::Finger);
-                if dy != 0.0 {
-                    self.pointer.axis(t, Axis::VerticalScroll, dy);
-                }
-                if dx != 0.0 {
-                    self.pointer.axis(t, Axis::HorizontalScroll, dx);
-                }
-                self.pointer.frame();
+                self.sink.finger_scroll(Some(d));
             }
             Action::FingerScroll(None) => {
                 if self.scrolling {
-                    self.pointer.axis_source(AxisSource::Finger);
-                    self.pointer.axis_stop(t, Axis::VerticalScroll);
-                    self.pointer.axis_stop(t, Axis::HorizontalScroll);
-                    self.pointer.frame();
+                    self.sink.finger_scroll(None);
                 }
                 self.scrolling = false;
             }
             Action::Key(code, down) => {
-                if let Some(vk) = &self.keyboard {
-                    vk.key(t, code, down as u32);
+                let modifier = modifier_mask(code) != 0 || code == 58;
+                if self.sink.key(code, down, self.tr.modifiers(), modifier) {
                     if down {
                         self.held_keys.push(code);
                     } else {
                         self.held_keys.retain(|&k| k != code);
-                    }
-                    if modifier_mask(code) != 0 || code == 58 {
-                        let (dep, lock) = self.tr.modifiers();
-                        vk.modifiers(dep, 0, lock, 0);
                     }
                 }
             }
@@ -740,96 +608,16 @@ impl Injector {
 impl Drop for Injector {
     fn drop(&mut self) {
         // Never leave a button or key stuck when the session dies.
-        let t = self.time();
         for b in std::mem::take(&mut self.held_buttons) {
-            self.pointer.button(t, b, ButtonState::Released);
+            self.sink.button(b, false);
         }
-        self.pointer.frame();
-        if let Some(vk) = &self.keyboard {
-            for k in std::mem::take(&mut self.held_keys) {
-                vk.key(t, k, 0);
-            }
-            vk.modifiers(0, 0, self.tr.locked, 0);
-            vk.destroy();
+        for k in std::mem::take(&mut self.held_keys) {
+            self.sink.key(k, false, (0, self.tr.locked), false);
         }
-        self.pointer.destroy();
-        let _ = self.conn.flush();
+        self.sink.finish(self.tr.locked);
     }
 }
 
-/// Bounding box of output rects (niri's `global_bounding_rectangle`, used for unpinned absolute motion).
-fn layout_bbox(rects: impl Iterator<Item = (i32, i32, u32, u32)>) -> Option<(i32, i32, u32, u32)> {
-    let (x0, y0, x1, y1) = rects.fold(None, |acc: Option<(i32, i32, i32, i32)>, (x, y, w, h)| {
-        let (x1, y1) = (x + w as i32, y + h as i32);
-        Some(match acc {
-            None => (x, y, x1, y1),
-            Some((a, b, c, d)) => (a.min(x), b.min(y), c.max(x1), d.max(y1)),
-        })
-    })?;
-    Some((x0, y0, (x1 - x0) as u32, (y1 - y0) as u32))
-}
-
-fn us_keymap_fd() -> Result<(OwnedFd, u32)> {
-    let out = std::process::Command::new("xkbcli").args(["compile-keymap", "--layout", "us"]).output()?;
-    if !out.status.success() || out.stdout.is_empty() {
-        return Err(anyhow!("xkbcli compile-keymap failed"));
-    }
-    let mut data = out.stdout;
-    data.push(0);
-    let dir = std::env::var_os("XDG_RUNTIME_DIR").map(std::path::PathBuf::from).unwrap_or_else(std::env::temp_dir);
-    let path = dir.join(format!("smartconnect-keymap-{}", std::process::id()));
-    std::fs::write(&path, &data)?;
-    let f = std::fs::File::open(&path)?;
-    let _ = std::fs::remove_file(&path);
-    Ok((f.into(), data.len() as u32))
-}
-
-impl Dispatch<WlRegistry, GlobalListContents> for State {
-    fn event(_: &mut Self, _: &WlRegistry, _: wayland_client::protocol::wl_registry::Event, _: &GlobalListContents, _: &Connection, _: &QueueHandle<Self>) {}
-}
-
-impl Dispatch<WlKeyboard, ()> for State {
-    fn event(state: &mut Self, _: &WlKeyboard, ev: wl_keyboard::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
-        if let wl_keyboard::Event::Keymap { format: WEnum::Value(wl_keyboard::KeymapFormat::XkbV1), fd, size } = ev {
-            state.keymap = Some((fd, size));
-        }
-    }
-}
-
-impl Dispatch<ZxdgOutputV1, usize> for State {
-    fn event(state: &mut Self, _: &ZxdgOutputV1, ev: zxdg_output_v1::Event, idx: &usize, _: &Connection, _: &QueueHandle<Self>) {
-        let Some(o) = state.outputs.get_mut(*idx) else { return };
-        match ev {
-            zxdg_output_v1::Event::LogicalPosition { x, y } => {
-                o.x = x;
-                o.y = y;
-            }
-            zxdg_output_v1::Event::LogicalSize { width, height } => {
-                o.w = width;
-                o.h = height;
-            }
-            zxdg_output_v1::Event::Name { name } if o.name.is_none() => o.name = Some(name),
-            _ => {}
-        }
-    }
-}
-
-impl Dispatch<WlOutput, usize> for State {
-    fn event(state: &mut Self, _: &WlOutput, ev: wl_output::Event, idx: &usize, _: &Connection, _: &QueueHandle<Self>) {
-        if let (wl_output::Event::Name { name }, Some(o)) = (ev, state.outputs.get_mut(*idx)) {
-            o.name = Some(name);
-        }
-    }
-}
-
-macro_rules! ignore_events {
-    ($($t:ty),*) => {$(
-        impl Dispatch<$t, ()> for State {
-            fn event(_: &mut Self, _: &$t, _: <$t as wayland_client::Proxy>::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {}
-        }
-    )*};
-}
-ignore_events!(WlSeat, ZxdgOutputManagerV1, ZwlrVirtualPointerManagerV1, ZwlrVirtualPointerV1, ZwpVirtualKeyboardManagerV1, ZwpVirtualKeyboardV1);
 
 // ---------------------------------------------------------------------------------------------
 // Tests
@@ -990,7 +778,7 @@ mod tests {
     #[test]
     fn extend_output_mapping() {
         // eDP-1 at 0,0 1920x1080 + vkms Virtual-1 at 1920,0 1024x768 (extend target).
-        assert_eq!(layout_bbox([(0, 0, 1920, 1080), (1920, 0, 1024, 768)].into_iter()), Some((0, 0, 2944, 1080)));
+        assert_eq!(wlr::layout_bbox([(0, 0, 1920, 1080), (1920, 0, 1024, 768)].into_iter()), Some((0, 0, 2944, 1080)));
         let mut tr = Translator::new((1920, 0, 1024, 768));
         // Phone view 2048x1536: centre → centre of Virtual-1 in global coords.
         let mut b = touch(1024, 768, 1, 0, &[(1024, 768)]);
@@ -1011,10 +799,55 @@ mod tests {
         assert_send::<Injector>();
     }
 
+    /// Live, any desktop: the phone's touch lands where it should on the extended screen. Only a
+    /// touch DOWN is sent, which moves the pointer without clicking. Hyprland: checked against
+    /// `hyprctl cursorpos`; everywhere: frames (cursor drawn in) are saved to
+    /// `$TMPDIR/smartconnect-input-frames/` to look at; the cursor tip should be at 29.5 % / 41 %.
+    /// `cargo test --release -p smartconnect-display input_smoke -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn input_smoke_extend() {
+        use gst::prelude::*;
+        use std::time::Duration;
+        let cap = crate::capture::start(crate::capture::Mode::Extend { width: 2712, height: 1220, output: None, scale: Some(2.0) }).unwrap();
+        let dir = std::env::temp_dir().join("smartconnect-input-frames");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        gst::init().unwrap();
+        let desc = format!(
+            "{} ! videoconvert ! pngenc ! multifilesink max-files=3 location={}/f%05d.png",
+            cap.source_description(),
+            dir.display()
+        );
+        let pipeline = gst::parse::launch(&desc).unwrap();
+        cap.bind(&pipeline);
+        pipeline.set_state(gst::State::Playing).unwrap();
+        // GNOME: the monitor appears and is placed. INPUT_SMOKE_WAIT=secs leaves time to open a
+        // pointer probe window on it.
+        let wait = std::env::var("INPUT_SMOKE_WAIT").ok().and_then(|s| s.parse().ok()).unwrap_or(2);
+        std::thread::sleep(Duration::from_secs(wait));
+        let target = cap.input_target();
+        let mut inj = Injector::open(&target).unwrap();
+        // 295/1000, 205/500 of the phone view.
+        inj.handle_packet(&touch(295, 205, 1, 0, &[(295, 205)]));
+        std::thread::sleep(Duration::from_millis(1500));
+        let (x, y, w, h) = cap.geometry();
+        let want = (x as f64 + 0.295 * w as f64, y as f64 + 0.41 * h as f64);
+        eprintln!("{} {:?}: expect the pointer at {want:?} (frames in {})", cap.output_name(), cap.geometry(), dir.display());
+        if cap.desktop() == crate::desktop::Desktop::Hyprland {
+            let out = std::process::Command::new("hyprctl").arg("cursorpos").output().unwrap();
+            let pos: Vec<f64> = String::from_utf8_lossy(&out.stdout).split(',').filter_map(|v| v.trim().parse().ok()).collect();
+            eprintln!("hyprctl cursorpos: {pos:?}");
+            assert!((pos[0] - want.0).abs() <= 2.0 && (pos[1] - want.1).abs() <= 2.0, "pointer at {pos:?}, want {want:?}");
+        }
+        drop(inj);
+        pipeline.set_state(gst::State::Null).unwrap();
+    }
+
     /// Safe live smoke test: small pointer moves on the focused output, ending where it started.
     /// No clicks, no keys. `cargo test --release smoke -- --ignored --nocapture`.
     /// With `CURSOR_LOCATOR=/path/cursor_pos.py` (grim-based sprite finder) it also verifies the
-    /// absolute mapping, pinned (`new_for_output`) and unpinned (layout bounding box).
+    /// absolute mapping, pinned (to the output) and unpinned (layout bounding box).
     #[test]
     #[ignore]
     fn smoke_move_pointer() {
@@ -1034,8 +867,12 @@ mod tests {
         };
         let pause = || sleep(Duration::from_millis(250));
         for pin in [true, false] {
-            let mut inj = if pin { Injector::new_for_output(&name, target) } else { Injector::build(target, None, false) }.unwrap();
-            eprintln!("--- pinned={pin} output={name} target={target:?} space={:?}", inj.space());
+            let mut inj = if pin {
+                Injector::open(&Target { rect: target, output: name.clone(), route: Route::Wayland }).unwrap()
+            } else {
+                Injector::with_sink(target, Box::new(wlr::WlrSink::new(target, None, false).unwrap()))
+            };
+            eprintln!("--- pinned={pin} output={name} target={target:?}: {}", inj.sink.describe());
             inj.move_rel(12.0, 0.0);
             pause();
             let p1 = locate();

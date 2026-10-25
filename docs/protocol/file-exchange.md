@@ -2,9 +2,9 @@
 
 **Status in this project:** phone→PC **file browsing is implemented and verified on a device**
 (`smartconnect-files`, a read-only FUSE mount over NFSv3-on-mutual-TLS). The reverse, **PC→phone
-sharing (phone mounts the PC), is now implemented but not yet verified with a phone**
-(`smartconnect-files serve` — a read-only NFSv3 *server* over the same mutual TLS; see
-[PC→phone: `serve`](#pcphone-sharing-serve-implemented-pending-live-test) below). Writing to the
+sharing (phone mounts the PC), is implemented and verified on a device** (`smartconnect-files
+serve`, a read-only NFSv3 *server* over the same mutual TLS; see
+[PC→phone: `serve`](#pcphone-sharing-serve-verified-on-a-phone) below). Writing to the
 phone is not built. The **fex pull client is implemented and verified on a device** for the app
 icons the phone offers on service 17 ([`fex/`](../../fex/), `smartconnect-fex`); clipboard images,
 which use the same transfer server, are not wired to it yet. This page documents
@@ -184,7 +184,9 @@ also re-resolves NFS file handles from the previous session by `LOOKUP` from the
 assuming they survive (INFERRED as necessary; the root handle is re-taken from the new `MNT`).
 
 Dispatch note: `cmd` values on this File Station channel include `1001` (handshake), `2001/2002`
-(sync/delete), `2003` (unmount), `2008` (screen-state), and smart-share `103–112`; `1001` is the only
+(sync/delete), `2003` (unmount), `2006`/`2007` (the NFS client's network check and the server's answer,
+see PC→phone below), `2008` (screen-state), `2010` (external-storage permission), and smart-share
+`103–112`; `1001` is the only
 mount-setup command, sub-dispatched by `type` (0 client / 1 server).
 
 ### Sequence
@@ -202,7 +204,7 @@ sequenceDiagram
   PC->>Ph: NFS v3: GETATTR/FSINFO, LOOKUP/READDIRPLUS, READ
 ```
 
-### PC→phone sharing: `serve` (IMPLEMENTED, pending live test)
+### PC→phone sharing: `serve` (VERIFIED on a phone)
 
 The reverse direction reuses the **same** `cmd=1001` handshake and the **same** `SOCKET_SSL`
 mutual-TLS NFS transport, with the roles swapped: the **PC is the NFS server** and the **phone is
@@ -227,8 +229,64 @@ the client**. `smartconnect-files serve [--sharedir DIR]` implements it.
 - **Pinning.** The PC takes the phone's `fp` from the `type:0` request and pins it (the phone's
   client cert is accepted only by that `SHA-256(DER)` fingerprint, verified exactly like the client
   side — webpki is bypassed because the phone's cert is X.509 v1). The phone pins the PC's `fp` from
-  the reply. Then the phone opens a mutual-TLS TCP connection to `ip:nfsport` and speaks standard
-  NFSv3 + MOUNT (+ PORTMAP), which the PC serves **read-only** over the shared directory.
+  the reply. Then the phone opens a mutual-TLS TCP connection to `ip:nfsport` and speaks NFSv3,
+  which the PC serves **read-only** over the shared directory. The phone's `type:0` carries two
+  fingerprints: `fp` is the certificate it presents on this SSL connection (OBSERVED), `fp2` is the
+  native one used only by the QUIC tunnel. It compares our `fp` case-insensitively (OBSERVED).
+- **No PORTMAP, no MOUNT (OBSERVED on a phone).** When the reply's `nfsport` is non-zero the phone's
+  client skips PORTMAP and MOUNT entirely. It makes one NFS `NULL` call, then uses a **64-byte
+  all-zero file handle** as the export root. A non-zero `nfsDataPort` adds one `NULL` on the data
+  channel. With `nfsport` absent or 0, it would query PORTMAP on `port` and call MOUNT for `path`
+  instead (code, not tried).
+- **File handles must be exactly 64 bytes (OBSERVED).** The phone's XDR reader accepts opaque file
+  handles of length 0 or 64 only. Any other length flags a decode error without consuming the bytes,
+  the rest of the reply is mis-parsed, and the client re-sends the same call (same xid) until its UI
+  times out (10 s for a folder listing). So every handle the server returns (LOOKUP, READDIRPLUS
+  entries) must be 64 bytes. `serve` uses `nfs3_server`'s 8-byte generation + a 56-byte id, and
+  substitutes its real root handle for the all-zero one in incoming calls.
+- **Keep-alive and network check (OBSERVED).** While mounted, the phone sends `ACCESS(READ)` on the
+  root about every 2 s. After an I/O error it sends `cmd=2006` on serviceId 168. Unless the server
+  answers `cmd=2007` with `{"port": <port>, "nfsport": <nfsport>}` (the values from its `type:1`)
+  within 3 s, it unmounts. With the answer it re-handshakes and remounts (about 0.1 s on a
+  phone).
+- **Where the user sees it (OBSERVED).** Two places:
+  - **Smart Connect's Files tab** lists each PC under "Files"; tapping one opens *All files* and
+    *Recents / Images / Videos / Documents / Audio / Downloads*. The phone leaves a PC out of that
+    list unless the PC's service 25 `cap` map has key **`"206"`** with a non-zero value. Everything
+    on that page uses Lenovo's own NFS procedures (below), not the standard ones.
+  - **Android's system file browser** (DocumentsUI, the one behind every app's "open file"
+    picker) shows the share as "<PC name> <PC IP>", using standard NFS only.
+
+  A third entry, the **File explorer** tile (the phone's local service 169, gated on `cap` key
+  `"20"`), is drawn only in Smart Connect's home-screen widget. `serve` sets `"206": 1` and
+  `"20": 1` while it runs, and `"206": 0`, `"20": 16` (off) when it stops.
+- **Lenovo NFS procedures (OBSERVED in the phone's client and server, verified on a phone).**
+  Beyond RFC 1813 the phone's NFS program has procedures 22–29 (`READTHUMBNAIL`, `READCATEGORYDIR`,
+  `GETATTRPATH`, `READPATH`, `CREATEPATH`, `REMOVEBATCH`, …). The Files tab uses three:
+
+  | Proc | Arguments | Reply |
+  |---|---|---|
+  | 22 `READTHUMBNAIL` | `quality` (u32), path (opaque) | status (0, 100 = no thumbnail, 17 = missing); on 0 the image bytes (opaque, JPEG) |
+  | 23 `READCATEGORYDIR` | directory handle, `offset`, `limit`, `category` (u32 each) | status; then per entry `TRUE` + entry, and a final `FALSE` (no eof flag; the phone pages with offset/limit; its server caps a reply at 5000) |
+  | 27 `REMOVEBATCH` | JSON array of paths (opaque) | status (0, 5 = nothing removed); a JSON array of `1`/`0` per path (opaque) |
+
+  Categories: 6 = the direct children of the handle's folder (*All files*); 0 recents (the phone's
+  server: files modified in the last month), 1 images, 2 videos, 3 documents, 4 audio, 5 the
+  Downloads folder, 7 images and videos. These search the whole share, newest first. An entry is a
+  JSON string when the server advertised capability bit 8 (`PHOTO_LIST_JSON`, which our `type:1`
+  does), otherwise XDR fields in the same order:
+  ```jsonc
+  { "fileId": "<unique id>", "path": "/Pictures/cat.jpg", "parentPath": "/Pictures",
+    "name": "cat.jpg", "fileSize": 12345, "modifyDate": 1700000000, "createdDate": 1700000000,
+    "type": 2, "isLive": 0, "iCloud": 0 }
+  ```
+  `path` is relative to the export root with a leading `/`; dates are in seconds; `type` is
+  1 folder, 2 image, 4 video, 8 audio, 16 document, 0 other. Paths in procedures 22 and 27 come
+  back in that relative form, or prefixed with the export path or `<ip>:` (accept all three).
+  `nfs3_server` rejects unknown procedures (`PROC_UNAVAIL`, acceptStat 3) before any VFS code runs,
+  so `serve` answers these three in a record router in front of it (`files/src/router.rs`).
+  Its choices: thumbnails up to 320 px (images decoded in-process, videos as one `ffmpeg` frame),
+  and delete *moves to the Trash* (`gio trash`) rather than unlinking, refused with `--read-only`.
 
 ```mermaid
 sequenceDiagram
@@ -240,8 +298,15 @@ sequenceDiagram
   PC-->>Ph: cmd=1001 {type:1, path:"/PhoneShare", port/nfsport=<P>, fp:<PC cert fp>, ip, dt2type:2}
   Note over PC,Ph: SOCKET_SSL — mutual-TLS TCP, each pins the other's cert fp
   Ph->>PC: TLS connect PC-ip:<P> (present phone cert matching sent fp; pin PC fp)
-  Ph->>PC: MOUNT v3 MNT("/PhoneShare") -> root FH
-  Ph->>PC: NFS v3: GETATTR/FSINFO, LOOKUP/READDIRPLUS, READ (read-only)
+  Ph->>PC: NFS v3 NULL (no PORTMAP/MOUNT: nfsport was given)
+  loop about every 2 s
+    Ph->>PC: ACCESS(READ) on the 64-byte all-zero root handle
+  end
+  Ph->>PC: GETATTR, READDIRPLUS, LOOKUP, READ (64-byte handles, read-only)
+  Ph->>PC: Files tab: READCATEGORYDIR (23), READTHUMBNAIL (22), REMOVEBATCH (27)
+  Note over Ph,PC: after an I/O error
+  Ph->>PC: cmd=2006 (serviceId 168)
+  PC-->>Ph: cmd=2007 {port, nfsport}   (within 3 s, or the phone unmounts)
 ```
 
 **Implementation (OBSERVED in our code).** The NFS server is `nfs3_server` 0.11 driven over our own
@@ -249,11 +314,10 @@ TLS stream (`process_socket` fed a `tokio_rustls::server::TlsStream`); a local-d
 VFS (`files/src/localfs.rs`) maps file handles ↔ paths/inodes and answers
 lookup/getattr/read/readdir(plus)/readlink/fsinfo. `files/src/server.rs` builds the rustls
 `ServerConfig` with a fingerprint-pinning `ClientCertVerifier`; `files/src/responder.rs` drives the
-handshake over the daemon control socket. The full server + mutual-TLS + NFS round-trip (mount,
-list, read, and rejection of an unpinned client) is covered by loopback unit tests. **Not yet
-verified against a real phone** — the handshake *trigger* for this direction is confirmed by capture,
-but the phone's exact reply-field expectations and whether it uses portmap are unconfirmed on the
-wire.
+handshake over the daemon control socket, answers `cmd=2006`, and remembers the last few phone
+fingerprints across restarts. The full server + mutual-TLS + NFS round-trip (mount, list, read, and
+rejection of an unpinned client) is covered by loopback unit tests, and the whole path is verified
+against a phone: mount, folder listing, subfolders and file reads from the phone's file browser.
 
 ---
 

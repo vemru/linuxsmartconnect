@@ -7,7 +7,8 @@
 //!   the host socket answering means "a host is running", and `--host` itself refuses to start twice.
 //! * `smartconnect-crosscontrol`: started on svc 26 cmd 0 ("phone wants to be controlled") only when
 //!   no instance holds its lock; a running instance answers cmd 0 itself. Started with `--accept` so
-//!   it replies cmd 1 `{trigger:1}` at once (it missed the cmd 0) and arms the edge.
+//!   it replies cmd 1 `{trigger:1}` at once (it missed the cmd 0) and arms the edge. The phone's
+//!   position comes from the shared `~/.config/smartconnect-linux/crosscontrol.json`.
 //! * `smartconnect-webcam --answer`: started on svc 3 cmd 0 `{isReply:0}` (Webcam tile tapped) when no
 //!   webcam session holds its lock; the helper replies to the phone and runs the session. Needs no
 //!   display (it writes to v4l2loopback or PipeWire), so it is started even without one.
@@ -178,8 +179,14 @@ impl Helpers {
                 info!("helpers: cross control requested by the phone; the running client answers");
                 continue;
             }
-            let edge = std::env::var("SMARTCONNECT_CROSS_EDGE").unwrap_or_else(|_| "right".into());
-            match self.spawn(CROSSCONTROL, &["--edge", &edge, "--accept"]) {
+            // Where the phone sits comes from the shared crosscontrol.json (the GTK app's Cross
+            // Control page); $SMARTCONNECT_CROSS_EDGE still overrides the edge.
+            let edge = std::env::var("SMARTCONNECT_CROSS_EDGE").ok().filter(|e| !e.is_empty());
+            let mut args = vec!["--accept"];
+            if let Some(edge) = edge.as_deref() {
+                args.extend(["--edge", edge]);
+            }
+            match self.spawn(CROSSCONTROL, &args) {
                 Ok(c) => ours = Some(c),
                 Err(e) => warn!("helpers: can't start cross control for the phone's request: {e}"),
             }

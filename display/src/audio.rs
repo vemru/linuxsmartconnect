@@ -20,8 +20,10 @@ pub fn source_description() -> String {
     }
     if gst::ElementFactory::find("pulsesrc").is_some() {
         // PulseAudio or pipewire-pulse. No clock from the sound card: the video branch times its
-        // frames on the system clock and should stay on it.
-        "pulsesrc device=@DEFAULT_MONITOR@ provide-clock=false".to_owned()
+        // frames on the system clock and should stay on it. A small buffer (40 ms, 10 ms periods
+        // instead of pulsesrc's 200 ms): the phone holds the video back to keep it in sync with
+        // late audio, so audio latency becomes display latency.
+        "pulsesrc device=@DEFAULT_MONITOR@ provide-clock=false buffer-time=40000 latency-time=10000".to_owned()
     } else {
         // PipeWire without its Pulse server: a capture stream on the default sink's monitor.
         "pipewiresrc stream-properties=\"props,stream.capture.sink=true\" do-timestamp=true".to_owned()
@@ -52,7 +54,7 @@ pub fn rtp_caps(pt: u32) -> String {
 /// `ptime:10`) → RTP with payload type `pt`.
 pub fn branch_description(src: &str, pt: u32, on: bool) -> String {
     format!(
-        "{src} ! queue max-size-time=200000000 leaky=downstream ! audioconvert ! audioresample \
+        "{src} ! queue max-size-time=40000000 leaky=downstream ! audioconvert ! audioresample \
          ! audio/x-raw,rate=48000,channels=2 ! volume name=audiovol mute={} \
          ! opusenc bitrate=128000 frame-size=10 ! rtpopuspay pt={pt} ! capsfilter caps={}",
         !on,

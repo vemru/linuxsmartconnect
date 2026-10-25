@@ -67,11 +67,14 @@ pub enum Event {
     Status(Box<Status>),
     /// The daemon is not running (or just went away).
     Down,
+    /// The phone's Cross Control tile was tapped (service 26 `cmd 0`).
+    CrossControlRequested,
 }
 
 /// Starts the subscriber thread. It never panics and exits only when the receiver is dropped.
 pub fn subscribe() -> async_channel::Receiver<Event> {
     let (tx, rx) = async_channel::unbounded();
+    let tx2 = tx.clone();
     std::thread::Builder::new()
         .name("smartconnectd-subscribe".into())
         .spawn(move || {
@@ -94,7 +97,31 @@ pub fn subscribe() -> async_channel::Receiver<Event> {
             }
         })
         .expect("spawning subscriber thread");
+    std::thread::Builder::new()
+        .name("smartconnectd-watch26".into())
+        .spawn(move || {
+            while !tx2.is_closed() {
+                let _ = watch_cross_requests(&tx2);
+                std::thread::sleep(RETRY);
+            }
+        })
+        .expect("spawning watch thread");
     rx
+}
+
+/// Watches service 26 frames from the phone and reports its `cmd 0` (tile tapped).
+fn watch_cross_requests(tx: &async_channel::Sender<Event>) -> std::io::Result<()> {
+    let mut stream = UnixStream::connect(socket_path())?;
+    stream.write_all(b"{\"cmd\":\"watch\",\"services\":[26]}\n")?;
+    for line in BufReader::new(stream).lines() {
+        let Ok(v) = serde_json::from_str::<Value>(&line?) else { continue };
+        if v.get("service").and_then(Value::as_i64) == Some(26) && v.pointer("/data/cmd").and_then(Value::as_i64) == Some(0) {
+            if tx.send_blocking(Event::CrossControlRequested).is_err() {
+                return Ok(());
+            }
+        }
+    }
+    Ok(())
 }
 
 /// One `subscribe` session: returns when the daemon hangs up or the socket errors.

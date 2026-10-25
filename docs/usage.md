@@ -58,7 +58,7 @@ protocol work and are off by default:
   `~/.local/share/smartconnect-linux/sessions/`, with keys, tokens, passwords, clipboard, SMS and
   notification contents redacted (see [Security](security.md#session-logs)).
 - `--extra-tiles SVC[=FLAGS],…` advertises extra feature tiles to the phone, for example
-  `--extra-tiles 1` for [Screen share and Mobile desktop](#screen-share-and-mobile-desktop-tiles).
+  `--extra-tiles 20` for the File explorer tile. Screen share and Mobile desktop are on by default.
 
 To keep the flags under systemd, add them with a drop-in (`systemctl --user edit smartconnectd`,
 see [Installation](installation.md#the-systemd-user-service)).
@@ -197,14 +197,15 @@ wallpaper is saved to `$XDG_RUNTIME_DIR/smartconnectd/phone-wallpaper.jpg` (or `
 Status: ✅ text both ways · ❌ images and files
 
 - Copy text on the phone and it is placed on the Linux clipboard (`wl-copy`).
-- Copy text on Linux and it is sent to the phone (`wl-paste --watch`).
+- Copy text on Linux and it is sent to the phone (`wl-paste --watch`; on GNOME, which lacks the
+  data-control protocol, through Xwayland).
 - Copies that a password manager marks as sensitive are never sent to the phone.
 - Text longer than 100,000 characters is cut to that length.
 - When you copy files or screenshots on the phone, the daemon logs them as unsupported and ignores
   them.
 
-This needs `WAYLAND_DISPLAY` in the daemon's environment and a compositor with the data-control
-protocol (see [Troubleshooting](troubleshooting.md#clipboard-doesnt-sync)).
+This needs `WAYLAND_DISPLAY` in the daemon's environment, and either a compositor with the
+data-control protocol or (GNOME) Xwayland with `DISPLAY` set (see [Troubleshooting](troubleshooting.md#clipboard-doesnt-sync)).
 
 ## Notifications
 
@@ -364,15 +365,11 @@ phone for a new size as soon as it opens. The whole-screen mirror is never resiz
 
 ## Screen share and Mobile desktop tiles
 
-Status: 🟡 implemented, not verified on a device; hidden by default
+Status: 🟡 shown by default; Mobile desktop started from the phone, Screen share less tested
 
 The phone has two more tiles for a PC: **Screen share** (the phone's screen, or a "virtual phone",
-in a PC window) and **Mobile desktop** (Ready For's desktop mode in a PC window). The daemon only
-advertises them when it runs with `--extra-tiles 1`:
-
-```sh
-systemctl --user edit smartconnectd     # ExecStart=… --extra-tiles 1, see Installation
-```
+in a PC window) and **Mobile desktop** (Ready For's desktop mode in a PC window). The daemon
+advertises both by default.
 
 Tapping a tile and then **Connect** on the phone makes the phone ask the PC to show that view; the
 stream host answers, and the view opens in a window titled "Phone — Smart Connect",
@@ -385,32 +382,62 @@ From the PC, `smartconnect-mirror --desktop` asks the phone for the Mobile deskt
 
 ## Cross Control
 
-Status: ✅ started from the PC · 🟡 started from the phone's tile
+Status: ✅ started from the PC · ✅ started from the phone's tile (GNOME) · 🟡 position editor and
+the three-mode page are new
 
-Cross Control moves the PC's mouse and keyboard onto the phone, as if the phone sat next to your
-screen.
+Cross Control has three modes, as on Windows:
 
-1. Start it:
-   - **GTK app:** the **Cross Control** switch on the *Phone* page. Pick the phone edge first.
-   - **Noctalia:** **Cross Control** in the panel. The arrow button next to it cycles the edge.
-   - **CLI:** `smartconnect-crosscontrol --edge right`
-   - **Phone:** tap the **Cross Control** tile. If no client is running, the daemon starts
-     `smartconnect-crosscontrol --edge "${SMARTCONNECT_CROSS_EDGE:-right}" --accept`.
-2. Push the pointer into the chosen edge of the screen. The phone may ask you to allow control the
-   first time.
+| Mode | What it does | Runs |
+|---|---|---|
+| **Shared mouse and keyboard** | The PC's mouse and keyboard move onto the phone across a screen edge. | `smartconnect-crosscontrol` |
+| **Duplicate display** | The phone shows this PC's screen. | a [phone as display](#phone-as-an-external-display) session in Mirror mode |
+| **Extend display** | The phone becomes a second screen. | a phone as display session in Extend mode |
+
+1. Start a mode:
+   - **GTK app:** the top of the **Display** tab (also reachable from Cross Control on the *Phone*
+     page). Click a mode to start it, click it again to stop it; starting one stops the other. The
+     display settings that Duplicate and Extend use are further down the same tab.
+   - **Noctalia:** **Cross Control** in the panel (shared mouse and keyboard); the arrow button
+     next to it cycles the edge. Duplicate and Extend are the panel's display button.
+   - **CLI:** `smartconnect-crosscontrol` (shared mouse and keyboard), or
+     `smartconnect-display --mode mirror|extend`.
+   - **Phone:** tap the **Cross Control** tile. The daemon arms shared mouse and keyboard
+     (`smartconnect-crosscontrol --accept` if no client runs), and the GTK app, if running, comes
+     forward on its Display tab so you can switch to Duplicate or Extend.
+2. For shared mouse and keyboard, push the pointer into the phone's edge of the screen. The phone
+   may ask you to allow control the first time.
 3. Your mouse now moves a pointer on the phone, and your keyboard types on it. Where the compositor
    supports it, desktop shortcuts are inhibited while you control the phone.
 4. To come back, push the pointer back out past the shared edge (with no button held), or press
-   **Ctrl+Alt+Esc**. To enter again right away, give a small outward push inside the edge strip.
-5. Stop the client with the same switch or button, or Ctrl+C. It tells the phone it is done.
+   **Ctrl+Alt+Esc**. To enter again right away, give a small outward push inside the edge.
+5. Stop it from the same page or button, or Ctrl+C. It tells the phone it is done.
 
-Only one client runs at a time. Starting a new one takes over from the old one. Known gap: the GTK
-switch and the Noctalia button show "off" while a client started by the daemon (from the phone's
-tile) is running.
+### Phone position
 
-Needs `wlr-layer-shell`. Pointer constraints, relative pointer and shortcut inhibiting are used when
-available. Tested only on niri. Options are listed in the
-[reference](#smartconnect-crosscontrol).
+On the Display tab (*Phone position*), drag the phone around the picture of your screen. It snaps to the
+nearest side; the highlighted part of that edge is where the pointer crosses over, and it maps onto
+the whole height (or width) of the phone. **Extend display** uses the same position: the phone's
+screen goes on that side of the primary monitor, centred on the phone, and a running Extend session
+moves when you drop the phone (`smartconnect-display --side` overrides the side). The position is saved in
+`~/.config/smartconnect-linux/crosscontrol.json` (`{"edge": "left", "start": 0.15, "end": 0.85}`,
+fractions along the edge from the top or the left), which `smartconnect-crosscontrol` reads when it
+starts, also when the daemon starts it for the phone's tile. Moving the phone while shared mouse and
+keyboard runs restarts the client to apply it. `--edge` and `--span START:END` override the file,
+and so does `$SMARTCONNECT_CROSS_EDGE` for clients the daemon starts.
+
+Only one client runs at a time. Starting a new one takes over from the old one.
+
+Two ways to grab the mouse and keyboard, picked automatically (`--backend` overrides it):
+
+- **layer-shell** (niri, sway, Hyprland, KDE): a 1-pixel strip on the edge plus a pointer lock.
+  Pointer constraints, relative pointer and shortcut inhibiting are used when available. Tested on
+  niri.
+- **portal** (GNOME): the desktop's InputCapture portal puts a barrier on that edge of every
+  monitor (only along the phone's part of it) and hands the mouse and keyboard to the client while
+  you're on the phone. The first start asks you to allow input capture; the answer is remembered.
+  Verified on GNOME 51 with a phone.
+
+Options are listed in the [reference](#smartconnect-crosscontrol).
 
 ## Feature tiles on the phone
 
@@ -418,7 +445,7 @@ Status: ✅
 
 On connect, the daemon tells the phone which features this PC offers, and the phone draws tiles for
 them on the PC's device page: **App streaming**, **Cross Control**, **PC lock**, **Hotspot** and
-**Webcam**. **Screen share** and **Mobile desktop** are only offered with `--extra-tiles 1` (see
+**Webcam**, **Screen share** and **Mobile desktop** (see
 [above](#screen-share-and-mobile-desktop-tiles)). A tile only does something if its PC-side
 handler is available:
 
@@ -426,26 +453,36 @@ handler is available:
 |---|---|
 | App streaming | The stream host, which the daemon starts after the phone connects. |
 | Cross Control | A running `smartconnect-crosscontrol`, or one the daemon starts on demand. |
-| PC lock | The daemon (`loginctl lock-session`). |
+| PC lock | The daemon (Noctalia's lock screen, `loginctl lock-session`, or `--lock-command`). |
 | Hotspot | The daemon (`nmcli`). |
 | Webcam | `smartconnect-webcam --answer`, which the daemon starts on demand. If it can't be started, the phone shows its "install the PC camera driver" message. |
-| Screen share, Mobile desktop | The stream host (only with `--extra-tiles 1`). |
+| Screen share, Mobile desktop | The stream host. |
 
-Showing the PC's screen on the phone isn't a tile on the device page, but the phone can start it
-too; see [Started from the phone](#started-from-the-phone).
+Showing the PC's screen on the phone is picked with the Cross Control modes at the top of the GTK
+app's Display tab (the phone's Cross Control tile brings it forward); see also [Started from the phone](#started-from-the-phone).
 
 The stream host, Cross Control and the phone display are only started when the daemon has
 `WAYLAND_DISPLAY` or `DISPLAY` in its environment. The webcam helper needs neither.
 
 ## PC lock
 
-Status: 🟡. Works through logind, but not every lock screen reacts to that (Noctalia's doesn't).
+Status: 🟡 not yet re-tested on a device
 
-Tap the **PC lock** tile and the daemon runs `loginctl lock-session`. Your screen locker has to
-listen to logind's Lock signal: GNOME and KDE do, and for others the idle daemon does it (for
-example swayidle with a `lock` handler, or hypridle's `lock_cmd`). The tile then shows "locked".
-When logind's `LockedHint` turns false again, the daemon reports "unlocked". On setups whose locker
-ignores the signal, nothing visibly locks and the phone is told "unlocked" right away.
+Tap the **PC lock** tile and the daemon locks the screen:
+
+- with Noctalia's lock screen, when Noctalia is running;
+- else with `loginctl lock-session` on your graphical session. GNOME (under GDM) and KDE react to
+  that, and for other lockers the idle daemon does (swayidle with a `lock` handler, or hypridle's
+  `lock_cmd`);
+- or with your own command: `smartconnectd --lock-command 'swaylock -f'` (run with `sh -c`).
+
+The phone's tile shows "locked" only once the daemon sees logind's `LockedHint` turn true (or, for
+Noctalia and `--lock-command`, once the command succeeds). When the hint turns false again the tile
+resets. If nothing locks, the tile resets right away and the PC shows a notification saying why.
+
+GNOME started from a display manager other than GDM (SDDM, LightDM) has no lock screen at all:
+GNOME Shell only creates it under GDM, so neither the tile nor Super+L can lock it. Logging in
+through GDM is the only fix.
 
 ## Hotspot
 
@@ -468,27 +505,45 @@ rotation · 🟡 audio · 🟡 started from the phone
 phone, and turns your touches on the phone into pointer input on the PC. The daemon must be running
 and the phone connected.
 
-- **Extend** (✅): the phone becomes a second monitor. The helper switches on a spare output (by
-  default the first `Virtual-*` connector from
-  [vkms](installation.md#vkms-for-extending-the-desktop-onto-the-phone)) at the stream size and
-  scale, places it to the right of your other screens (they keep their positions), shares it, and
-  switches it off again when the session ends. An HDMI dummy plug works instead of vkms. Extend
-  uses `niri msg output` and has only been developed and tested on niri.
-- **Duplicate** (✅, `--mode mirror`): shows the focused screen. Capture uses niri's built-in
-  screencast API, which needs no picker dialog. On compositors without that API it falls back to the
-  xdg-desktop-portal screen picker, which asks once and remembers the choice.
+- **Extend** (✅): the phone becomes a second monitor at the stream size and scale, placed to the
+  right of your other screens (they keep their positions), and removed again when the session
+  ends. How the screen is made depends on the desktop (detected automatically; set
+  `SMARTCONNECT_DESKTOP=gnome|kde|hyprland|sway|niri` to override):
+
+  | Desktop | The phone's screen | Input | Status |
+  |---|---|---|---|
+  | GNOME | a Mutter virtual monitor (no extra packages, no dialog) | Mutter RemoteDesktop | ✅ verified on GNOME 51, without a phone session yet |
+  | Hyprland | a headless output (`hyprctl output create headless`), captured with wlr-screencopy | virtual pointer | ✅ verified on Hyprland 0.56 (nested), without a phone session yet |
+  | niri | a spare output switched on: the first `Virtual-*` from [vkms](installation.md#vkms-for-extending-the-desktop-onto-the-phone), or an HDMI dummy plug | virtual pointer | ✅ verified with the phone |
+  | sway | a headless output (`swaymsg create_output`), wlr-screencopy | virtual pointer | ❓ untested |
+  | KDE Plasma | a KWin virtual output (screencast protocol); needs the `.desktop` file `install.sh` installs | KWin fake input | ❓ untested |
+  | other Wayland | none: name a connected spare output with `--output` | virtual pointer | ❓ untested |
+
+  **Which side:** the phone's screen goes where you put the phone on the GTK app's Cross Control
+  page (left, right, top or bottom of the main screen, centred on the spot you dropped it; saved
+  in `~/.config/smartconnect-linux/crosscontrol.json`), else on the right. A running session
+  follows a change within a second (GNOME, niri, Hyprland, sway; KDE places it itself). `--side
+  left|right|top|bottom` overrides it for one session.
+
+  `--output NAME` uses an existing connector (e.g. an HDMI dummy plug) instead on every desktop.
+  `smartconnect-display --list-outputs` prints what the helper sees.
+- **Duplicate** (✅, `--mode mirror`): shows the focused (or primary) screen, without a picker on
+  GNOME, niri (Mutter screencast API), KDE (KWin) and Hyprland/sway (wlr-screencopy). When that
+  fails it falls back to the xdg-desktop-portal screen picker, which asks once and remembers the
+  choice.
 
 ### Starting and stopping
 
 The command line is verified with a phone. The GTK and Noctalia controls (🟡) were tested against a
 stand-in helper only.
 
-- **GTK app:** the *Display* page. Pick Extend or Duplicate and press **Start**; **Stop** ends the
-  session. The header shows what is happening ("Streaming 2712×1220 to the phone", "Extended onto
+- **GTK app:** the *Display* tab. Click *Duplicate display* or *Extend display* in the Cross
+  Control modes at the top; **Stop** (or clicking the mode again) ends the session. The header shows what is happening ("Streaming 2712×1220 to the phone", "Extended onto
   Virtual-1", or why the last session ended). When you change a setting while a session runs,
   **Apply Changes** restarts it with the new settings. The page also checks the setup and says what
-  is missing: no virtual output (with the `sudo modprobe vkms` command to copy), the chosen output
-  unplugged, or no `wvkbd`. Closing the window doesn't stop the session.
+  is missing: on niri no virtual output (with the `sudo modprobe vkms` command to copy), a desktop
+  that can't add a screen, the chosen output unplugged, or no `wvkbd` (not needed on GNOME).
+  It lists the screens through `smartconnect-display --list-outputs`. Closing the window doesn't stop the session.
 - **Noctalia:** **Phone as display** in the panel (it becomes **Stop phone display**), with a button
   next to it that switches between Extend and Duplicate. The display settings are under the
   plugin's *Settings*. For keybindings:
@@ -509,8 +564,10 @@ extend output off. Only one session runs at a time: a second `smartconnect-displ
 app and the plugin find a session however it was started (terminal, the other front-end, or the
 daemon) and can stop it.
 
-If the process is killed hard (SIGKILL or a crash), the virtual output can stay on. Turn it off with
-`niri msg output Virtual-1 off`.
+If the process is killed hard (SIGKILL or a crash), the phone's screen can stay: on niri run
+`niri msg output Virtual-1 off`, on Hyprland `hyprctl output remove SMARTCONNECT-1`, on sway
+`swaymsg output HEADLESS-N unplug`. GNOME and KDE remove their virtual screen by themselves when the
+process dies.
 
 ### Settings
 
@@ -533,6 +590,8 @@ override the file; `--no-config` ignores it and `--config PATH` reads another fi
 | `output` | `--output` | Extend: `null`, `""` or `auto` for the first `Virtual-*` output, or a connector name such as `HDMI-A-1`. The GTK app has it under *Advanced → Extend onto*. |
 | `audio` | `--audio`, `--no-audio` | Send the PC's audio (default off). |
 | `followRotation` | `--follow-rotation`, `--no-follow-rotation` | Extend: follow the phone's rotation (default off). |
+| `bitrate` | `--bitrate` | Stream quality in kbit/s, 500 to 50000 (default 8000). The GTK app offers 2, 4, 8 and 16 Mbit/s. Lower sends less data per frame, which can cut the picture's delay on a busy Wi-Fi. |
+| `fps` | `--fps` | Most frames per second sent, 10 to 60 (default 60). The GTK app offers 15, 30 and 60. |
 
 Unknown keys are ignored, and a bad value is skipped with a warning, so the file never stops a
 session from starting.
@@ -726,35 +785,72 @@ like the CLI and the GTK app.
 
 ## Sharing a PC folder to the phone (phone browses the PC)
 
-This is the mirror of the mount above: the **PC exports a folder** and the **phone mounts it**,
-read-only, in Smart Connect's file browser. With `smartconnectd` running and the phone connected:
+This is the mirror of the mount above: the **PC shares a folder** (by default your home folder)
+and the **phone browses it** in Smart Connect's **Files** tab and in Android's file browser.
+Nothing is copied to the phone; it reads a folder listing, a thumbnail or a file only when you
+open it.
+
+**From the GTK app:** Files page → *Share with the phone* → turn on *Share a folder with the phone*.
+
+| Setting | Default | What it does |
+|---|---|---|
+| *Shared folder* (Change…) | your home folder | The folder the phone sees. The open button shows it in your file manager. |
+| *Include hidden files* | off | Show files and folders whose names start with a dot (`~/.ssh`, `~/.config`, …). Off keeps them invisible to the phone: not listed, not openable, not deletable. |
+| *Let the phone delete files* | on | Deleting in the phone's Files tab moves the file to your desktop **Trash**, so you can restore it. Off makes the share fully read-only. |
+
+The choices are remembered. The share starts whenever the phone connects, restarts if the daemon
+restarts, and stops on Quit (closing the window to the tray keeps it). The status row says whether
+the phone has connected. If the phone hasn't connected 15 s after being told the address, the row
+points at the firewall.
+
+**On the phone:**
+
+- **Smart Connect → Files tab → Files → "<PC name>".** *All files* shows the shared folder (folders
+  first). *Recents*, *Images*, *Videos*, *Documents*, *Audio* and *Downloads* search the whole
+  shared folder, newest first (*Recents* = changed in the last 30 days; *Downloads* =
+  `Downloads/` in the shared folder). Images and videos have thumbnails. Videos need `ffmpeg` on
+  the PC. The first search of a big home folder can take a few seconds.
+- **Android's file browser** (any app's "open file" or "attach" button) lists the share as
+  **"<PC name> <PC IP>"**.
+- The phone can open and copy files out, and delete them (to your Trash, unless turned off). It
+  can't create, rename or change files on the PC.
+
+**From the command line**, with `smartconnectd` running and the phone connected:
 
 ```sh
-smartconnect-files serve --sharedir ~/PhoneShare
+smartconnect-files serve                       # share your home folder
+smartconnect-files serve --sharedir ~/Public   # or another folder
 # Ctrl-C to stop sharing
 ```
 
-`smartconnect-files serve` runs in the foreground until Ctrl-C. It creates the share folder if
-needed (default `~/PhoneShare`), then runs a read-only **NFSv3 server over fingerprint-pinned mutual
-TLS** and answers the phone's `cmd=1001` File Station handshake through the daemon, selecting the
-**SSL** transport (the native QUIC tunnel is not implemented). Options: `--sharedir DIR` (the folder
-to share), `--label /PhoneShare` (the mount name the phone shows), `--port 2049` (the TLS listener
-port) and `--ip ADDR` (override the PC's advertised LAN address, which otherwise comes from the
-daemon's `pcAddress`). Everything served is read-only — the phone cannot modify or delete your files.
+`smartconnect-files serve` runs in the foreground until Ctrl-C or SIGTERM. It answers the phone's
+`cmd=1001` File Station handshake through the daemon and serves the folder over **NFSv3 on
+fingerprint-pinned mutual TLS** (the **SSL** transport; the native QUIC tunnel is not implemented),
+including the Lenovo procedures the Files tab uses. Options:
+
+| Option | Meaning |
+|---|---|
+| `--sharedir DIR` | The folder to share (default: your home folder; created if missing). |
+| `--include-hidden` | Also show hidden (dot) files and folders. |
+| `--read-only` | Refuse deletions too (by default they move files to the Trash with `gio trash`). |
+| `--label /NAME` | The export name the phone sees (default: the folder's name, e.g. `/alice`). |
+| `--port 2049` | The TLS listener port. |
+| `--ip ADDR` | The PC address sent to the phone (default: the daemon's `pcAddress`). |
 
 The phone connects to the PC for this, so the port has to be open: inbound TCP 2049, or your
-`--port`, in the [firewall](installation.md#firewall). The listener is on all interfaces. A running
-`nfs-server` already holds 2049; pass another `--port` then. While `serve` runs, the paired phone
-can read everything under the shared folder (see [Security](security.md#network-exposure)).
+`--port`, in the [firewall](installation.md#firewall) zone of your Wi-Fi. The listener is on all
+interfaces. A running `nfs-server` already holds 2049; pass another `--port` then. While `serve`
+runs, the paired phone can read everything visible under the shared folder (see
+[Security](security.md#network-exposure)).
 
-> **Status:** the server, mutual-TLS pinning and NFS round-trip are covered by automated tests, but
-> this direction has **not yet been verified with a real phone**. If the phone doesn't show the share
-> after `serve` starts, that's the expected gap to report, not a misconfiguration on your side.
+> **Status:** verified on a phone: listing the folder and subfolders, opening files, the Files tab
+> (All files and the category views), image and video thumbnails, and delete-to-Trash. Not tried
+> yet: very large folders.
 
 ## Not supported
 
-- 🟡 Sharing a PC folder to the phone is built (`smartconnect-files serve`) but not yet verified with
-  a phone; writing *to* the phone's storage (modifying its files) is not implemented.
+- ❌ Writing to the other side's storage: the phone's storage is read-only on the PC, and the
+  phone can't create or change files in a shared PC folder (it can only delete them to the Trash).
 - ❌ One-shot file transfer (push/pull), and files or images on the clipboard.
 
 ## Command-line reference
@@ -778,8 +874,9 @@ over the control socket and prints the JSON reply.
 | `--light-terminal` | off | Draw the terminal QR for a light-background terminal. |
 | `--no-ble` | off | Don't start the experimental Bluetooth LE peripheral. Without this flag the daemon powers on the Bluetooth adapter at startup, advertises itself over BLE and puts the adapter's address in the QR. Pairing doesn't need any of that, and the systemd unit passes `--no-ble`. It doesn't affect the Bluetooth wake used by Connect (see `--no-ble-wake`). |
 | `--no-ble-wake` | off | Never use Bluetooth LE to wake the phone for a (re)connect. The wake only runs while the PC's Bluetooth is already on and never changes the adapter's power. With this flag a phone whose Smart Connect app is in the background reconnects only when you open the app. |
-| `--extra-tiles <SVC[=FLAGS],…>` | none | Experimental: extra feature tiles to advertise to the phone, as service ids, optionally with flags (0–255, default 1). `--extra-tiles 1` adds Screen share and Mobile desktop. A service that isn't also in the daemon's `serviceVersions` gets a warning, because its tile won't show. |
+| `--extra-tiles <SVC[=FLAGS],…>` | none | Experimental: extra feature tiles to advertise to the phone, as service ids, optionally with flags (0–255, default 1). `--extra-tiles 20` adds the File explorer tile (Screen share and Mobile desktop, service 1, are on by default). A service that isn't also in the daemon's `serviceVersions` gets a warning, because its tile won't show. |
 | `--session-log` | off | Record every frame exchanged with the phone under `<state dir>/sessions/`, for protocol debugging. Keys, tokens, passwords, clipboard, SMS and notification contents are redacted. |
+| `--lock-command <CMD>` | none | Command (run with `sh -c`) that locks the screen for the PC lock tile. Without it: Noctalia's lock screen when Noctalia runs, else `loginctl lock-session` on the graphical session. |
 | `-h`, `--help` / `-V`, `--version` | | Print help or the version. |
 
 | Command | Effect |
@@ -825,14 +922,16 @@ The host the daemon starts inherits the daemon's environment, so set these for t
 ### `smartconnect-crosscontrol`
 
 ```
-smartconnect-crosscontrol [--edge left|right|top|bottom] [--output NAME] [--gain 1.6]
-                          [--exit-px 12] [--no-in-use-cap] [--accept]
+smartconnect-crosscontrol [--edge left|right|top|bottom] [--span START:END] [--backend auto|layer-shell|portal]
+                          [--output NAME] [--gain 1.6] [--exit-px 12] [--no-in-use-cap] [--accept]
 ```
 
 | Option | Default | Meaning |
 |---|---|---|
-| `--edge` | `right` | The screen edge the phone "sits" behind. |
-| `--output NAME` | first output | The output (connector name, e.g. `eDP-1`) whose edge is used. |
+| `--edge` | from `crosscontrol.json`, else `right` | The screen edge the phone "sits" behind. |
+| `--span START:END` | from `crosscontrol.json`, else `0:1` | The part of the edge the phone touches, as fractions from the top or the left. Only there does the pointer cross over, and it maps onto the phone's whole side. |
+| `--backend` | `auto` | How input is grabbed: `layer-shell` (edge strip + pointer lock), `portal` (InputCapture portal, GNOME), or `auto` (layer-shell when the compositor has it, else the portal). |
+| `--output NAME` | first output | The output (connector name, e.g. `eDP-1`) whose edge is used. Layer-shell only: the portal puts a barrier on that edge of every monitor (edges shared between monitors are refused). |
 | `--gain N` | `1.6` | Pointer speed on the phone: relative mouse motion × N, in phone pixels. |
 | `--exit-px N` | `12` | How far (in phone pixels) to push back past the shared edge to return to the PC. |
 | `--no-in-use-cap` | off | Don't send the phone the "Cross Control in use" status update. |
@@ -856,8 +955,10 @@ defaults below apply when the file doesn't set a value.
 
 | Option | Default | Meaning |
 |---|---|---|
-| `--mode` | `mirror` | `mirror` duplicates the focused output. `extend` turns on a spare or virtual output and shows that on the phone. |
-| `--output NAME`, `--output auto` | first `Virtual-*` | For extend: the output to turn on and share, e.g. `HDMI-A-1` for a dummy plug. |
+| `--mode` | `mirror` | `mirror` duplicates the focused output. `extend` gives the phone a screen of its own (see the table above) and shows that on the phone. |
+| `--output NAME`, `--output auto` | a new screen (niri: first `Virtual-*`) | For extend: an existing output to use instead, e.g. `HDMI-A-1` for a dummy plug. |
+| `--side SIDE` | the Cross Control placement, else `right` | For extend: `left`, `right`, `top` or `bottom` of the main screen. |
+| `--list-outputs` | | Print the desktop, how Extend works there and its outputs as JSON, then exit. |
 | `--size WxH`, `native`, `requested` | `requested` (usually 1920x1080) | Stream size. `native` uses the phone's own panel size in landscape. |
 | `--display-scale N` | `2` | For extend: the virtual monitor's scale, from 0.5 to 4 (or `50%` to `400%`). |
 | `--osk-height PCT` | `45` | Height of the on-screen keyboard (wvkbd) in % of the shared screen, 15 to 80. |
@@ -912,7 +1013,7 @@ Environment variables: `SMARTCONNECT_WEBCAM_OUTPUT` and `SMARTCONNECT_WEBCAM_DEV
 smartconnect-files fingerprint [--state-dir DIR]
 smartconnect-files list  [--path /sdcard] [--state-dir DIR]
 smartconnect-files mount --mountpoint DIR [--path /sdcard] [--state-dir DIR]
-smartconnect-files serve [--sharedir DIR] [--label /PhoneShare] [--port 2049] [--ip ADDR] [--state-dir DIR]
+smartconnect-files serve [--sharedir DIR] [--include-hidden] [--read-only] [--label /NAME] [--port 2049] [--ip ADDR] [--state-dir DIR]
 ```
 
 | Command | Effect |
@@ -920,7 +1021,7 @@ smartconnect-files serve [--sharedir DIR] [--label /PhoneShare] [--port 2049] [-
 | `fingerprint` | Print the SHA-256 fingerprint of this PC's File Station TLS certificate (the `fp` sent in the `cmd=1001` handshake), creating the certificate on first use. |
 | `list` | Handshake with the phone through the daemon and print the export root (default path `/sdcard`). See [Browsing the phone's files](#browsing-the-phones-files). |
 | `mount` | Mount the phone's storage read-only at `--mountpoint` (required; the GTK app and the plugin pass `~/Phone` by default). Runs until Ctrl+C, SIGTERM or SIGHUP, or `fusermount3 -u DIR`. |
-| `serve` | Share `--sharedir` (default `~/PhoneShare`) read-only with the phone as an NFSv3-over-TLS server on `--port` (default 2049, all interfaces; open it in the [firewall](installation.md#firewall)). `--label` is the name the phone shows, `--ip` overrides the PC address sent to the phone. Not verified with a phone. See [Sharing a PC folder](#sharing-a-pc-folder-to-the-phone-phone-browses-the-pc). |
+| `serve` | Share `--sharedir` (default: your home folder) with the phone as an NFSv3-over-TLS server on `--port` (default 2049, all interfaces; open it in the [firewall](installation.md#firewall)). Hidden (dot) entries stay invisible unless `--include-hidden`; deleting from the phone moves files to the Trash unless `--read-only`. `--label` is the name the phone sees (default: the folder's name), `--ip` overrides the PC address sent to the phone. Runs until Ctrl-C or SIGTERM; meanwhile the phone lists this PC in Smart Connect's Files tab (`cap` `"206"`). Remembers the phone's certificate in `<state dir>/phone-fps`. See [Sharing a PC folder](#sharing-a-pc-folder-to-the-phone-phone-browses-the-pc). |
 | `-h`, `--help` | Usage. |
 
 | Option | Meaning |
@@ -1002,7 +1103,7 @@ Read by `smartconnectd`. The helpers it starts inherit its environment, so their
 | `SMARTCONNECT_MIRROR_BIN`, `SMARTCONNECT_CROSSCONTROL_BIN`, `SMARTCONNECT_DISPLAY_BIN`, `SMARTCONNECT_WEBCAM_BIN` | Full path of a helper to start, instead of the one next to `smartconnectd` or on `PATH`. The GTK app reads them too. Any `SMARTCONNECT_<NAME>_BIN` works the same way: the program's name without `smartconnect-`, in capitals. |
 | `SMARTCONNECT_FILES_BIN` | Full path of the `smartconnect-files` the GTK app's *Files* page starts (the daemon doesn't start it). |
 | `SMARTCONNECT_SMARTCONNECTD_BIN` | Full path of the `smartconnectd` the GTK app starts when it can't use the systemd unit, instead of the one next to `smartconnect-gui` or on `PATH`. |
-| `SMARTCONNECT_CROSS_EDGE` | Edge used when the phone's tile starts Cross Control (default `right`). |
+| `SMARTCONNECT_CROSS_EDGE` | Edge used when the phone's tile starts Cross Control, overriding the saved phone position (`crosscontrol.json`). |
 | `SMARTCONNECT_BACKGROUND_ACTIONS=0` | *helper:* notification action buttons open a window. |
 | `SMARTCONNECT_MIRROR_RESIZE=1` | *helper:* resize app displays to their windows. |
 | `SMARTCONNECT_ICE_ADDRESSES` | *helper:* addresses offered for video (mirror, app streaming, phone display). |

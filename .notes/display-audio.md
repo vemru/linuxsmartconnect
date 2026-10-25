@@ -67,3 +67,38 @@ changes: the phone's audio section is answered `inactive`, exactly as verified o
 
 - That the phone plays the audio, how its switch looks after our cmd 0 `setAudio:true`, and A/V
   delay on the phone.
+
+## Latency fix (2026-10-25)
+
+With `--audio` on, the phone showed the PC screen with a clearly visible delay while touch input
+had none. Cause (INFERRED, not measured on the wire): the phone's WebRTC receiver keeps audio and
+video in sync, so late audio holds the video back. `pulsesrc` defaulted to a 200 ms buffer and the
+branch's leaky queue allowed another 200 ms. Now `buffer-time=40000 latency-time=10000` and a 40 ms
+queue. Check on the phone: the delay with audio on should be close to the delay with audio off.
+
+## Stream quality and frame rate (2026-10-25)
+
+Measured on this PC (vah264enc, 1920x1080, Intel VA): the encoder holds a frame ~10 ms (x264
+ultrafast ~2.5 ms), so it is not where a visible delay comes from. To let the user trade quality for
+delay, the GTK *Display* page now has *Stream quality* (2/4/8/16 Mbit/s → `--bitrate`) and
+*Frame rate* (15/30/60 → new `--fps`), stored as `bitrate`/`fps` in `display.json`. `--fps` is a
+`videorate drop-only=true max-rate=N` after the head queue: frames above the cap are dropped as they
+come, none are held back or duplicated. Not yet measured on the phone which setting helps.
+
+## The real cause: a CPU-bound 60 fps pipeline (2026-10-25)
+
+Feedback from the device: bitrate made no difference, 60 → 30 fps helped. Measured on this PC
+(BGRA 1920x1080 at 60 fps scaled to 2712x1220 NV12, then vah264enc, until after h264parse):
+
+| Pipeline | median delay | frames out of ~240 |
+|---|---|---|
+| before: `videoconvert ! videoscale` (1 thread), encoder in the same thread | 53 ms | 137 |
+| `n-threads=0` + 1-frame leaky queue before the encoder | 23 ms | 238 |
+| `vapostproc` (GPU, VA memory into vah264enc) + the queue | 21 ms | 239 |
+
+The CPU convert (~10 ms single-threaded) plus encoding (~10 ms) in one thread did not fit a 60 fps
+frame (16.7 ms), so frames queued and were dropped. Now `convert_description()` in `session.rs` uses
+`vapostproc add-borders=true` with `video/x-raw(memory:VAMemory)` caps when the encoder is
+vah264enc, else multi-threaded `videoconvert`/`videoscale`; a `queue max-size-buffers=1
+leaky=downstream` lets the encoder run in its own thread and drops a stale frame instead of building
+a backlog. The `size` caps keep the VA feature on resize/rotation (`size_caps(w, h, va)`).

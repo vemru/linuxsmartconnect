@@ -507,7 +507,7 @@ impl PhoneFs {
         let mut cookie: u64 = 0;
         let mut verf = cookieverf3::default();
         for _ in 0..MAX_DIR_PAGES {
-            let args = READDIRPLUS3args { dir: dir.clone(), cookie, cookieverf: verf.clone(), dircount: 32768, maxcount: 131072 };
+            let args = READDIRPLUS3args { dir: dir.clone(), cookie, cookieverf: verf, dircount: 32768, maxcount: 131072 };
             let ok = match core.rpc(OP_TIMEOUT, async move |c: &mut NfsConn| c.readdirplus(&args).await) {
                 Some(Nfs3Result::Ok(ok)) => ok,
                 Some(Nfs3Result::Err((nfsstat3::NFS3ERR_STALE, _))) => return Err(DirErr::Stale),
@@ -795,7 +795,7 @@ mod tests {
             let srv_id = Identity::load_or_create(&base.join("server-id")).unwrap();
             let port = rt.block_on(async move {
                 let (listener, port) = server::bind(port).await.unwrap();
-                let srv = server::NfsServer::new(&srv_id, srv_share, "/PhoneShare".into(), srv_pinned).unwrap();
+                let srv = server::NfsServer::new(&srv_id, srv_share, "/PhoneShare".into(), srv_pinned, false, false).unwrap();
                 tokio::spawn(srv.serve(listener));
                 port
             });

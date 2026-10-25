@@ -1,4 +1,4 @@
-//! The main window: a header with a device menu + a Phone / Apps / Display / Files / Notifications
+//! The main window: a header with a device menu + a Phone / Apps / Display (Cross Control and the display) / Files / Notifications
 //! view switcher, driven by daemon status events. Pairing and Preferences live in dialogs opened
 //! from the device menu.
 
@@ -12,6 +12,7 @@ use adw::prelude::*;
 use gtk::{gdk, gio, glib};
 
 use crate::apps::{self, AppsPage};
+use crate::crosscontrol::CrossControlPage;
 use crate::icons::{IconSlot, Query};
 use crate::daemon::{self, Event, Notification, Reply, Status};
 use crate::display::DisplayPage;
@@ -52,6 +53,7 @@ pub struct Ui {
     pair: PairDialog,
     apps: Rc<AppsPage>,
     display: Rc<DisplayPage>,
+    cross: Rc<CrossControlPage>,
     files: Rc<FilesPage>,
     /// The system-tray item, when the desktop has a StatusNotifierHost.
     tray: RefCell<Option<tray::Tray>>,
@@ -70,7 +72,6 @@ struct State {
     mirror: Option<Mirror>,
     /// A whole-screen mirror request to the stream host is in flight.
     mirror_pending: bool,
-    cross: Option<Mirror>,
     show_qr: bool,
     qr_path: Option<String>,
     rows: HashMap<String, NotifRow>,
@@ -168,12 +169,9 @@ struct PhonePage {
     unread_card: gtk::Button,
     unread_label: gtk::Label,
     cross_group: adw::PreferencesGroup,
-    cross: adw::SwitchRow,
-    cross_edge: adw::ComboRow,
+    /// Opens the Cross Control page.
+    cross: adw::ActionRow,
 }
-
-/// `--edge` values for smartconnect-crosscontrol, in the order shown in the edge selector.
-const CROSS_EDGES: [&str; 4] = ["right", "left", "top", "bottom"];
 
 /// The root "Smart Connect service isn't running" page.
 struct DownPage {
@@ -202,6 +200,9 @@ struct PairDialog {
     status: gtk::Label,
     spinner: adw::Spinner,
     button: gtk::Button,
+    /// Firewall hint (kept alive with the dialog).
+    #[allow(dead_code)]
+    firewall: std::rc::Rc<crate::setup::FirewallHint>,
 }
 
 struct NotifRow {
@@ -416,16 +417,14 @@ impl PhonePage {
 
         // ── Cross Control ─────────────────────────────────────────────────────
         let cross_group = adw::PreferencesGroup::builder().title("Cross Control").build();
-        let cross = adw::SwitchRow::builder()
-            .title("Use this PC's mouse and keyboard on the phone")
-            .subtitle("Push the pointer past the phone edge · Ctrl+Alt+Esc to return")
+        let cross = adw::ActionRow::builder()
+            .title("Cross Control")
+            .subtitle("Shared mouse and keyboard, duplicate display or extend display")
+            .activatable(true)
             .build();
-        let cross_edge = adw::ComboRow::builder()
-            .title("Phone edge")
-            .model(&gtk::StringList::new(&["Right", "Left", "Top", "Bottom"]))
-            .build();
+        cross.add_prefix(&gtk::Image::from_icon_name("input-mouse-symbolic"));
+        cross.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));
         cross_group.add(&cross);
-        cross_group.add(&cross_edge);
 
         // Nothing here expands vertically: the unread row and Cross Control sit right under the card.
         let column = gtk::Box::builder()
@@ -461,7 +460,6 @@ impl PhonePage {
             unread_label,
             cross_group,
             cross,
-            cross_edge,
         };
         (page, page_scroller(&column, 1400).upcast())
     }
@@ -542,13 +540,18 @@ impl PairDialog {
             .margin_end(18)
             .build();
         content.append(&top);
+        // Shown only when a firewall may drop the phone's connection (checked when the QR shows).
+        let firewall = crate::setup::FirewallHint::build();
+        content.append(&firewall.widget);
         content.append(&button);
 
         let toolbar = adw::ToolbarView::new();
         toolbar.add_top_bar(&adw::HeaderBar::new());
         toolbar.set_content(Some(&content));
         let dialog = adw::Dialog::builder().title("Pair a new phone").content_width(520).child(&toolbar).build();
-        Self { dialog, qr, qr_box, status, spinner, button }
+        let fw = firewall.clone();
+        dialog.connect_map(move |_| fw.check());
+        Self { dialog, qr, qr_box, status, spinner, button, firewall }
     }
 }
 
@@ -560,6 +563,22 @@ impl Ui {
         let toasts = adw::ToastOverlay::new();
         let (apps, apps_w) = AppsPage::build(&toasts);
         let (display, display_w) = DisplayPage::build(&toasts);
+        let (cross, cross_modes, cross_position) = CrossControlPage::build(&toasts, display.clone());
+        // One Display tab: the Cross Control modes and the phone's position on top, then the
+        // display session and its settings.
+        let display_column = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(24)
+            .margin_top(24)
+            .margin_bottom(24)
+            .margin_start(12)
+            .margin_end(12)
+            .build();
+        display_column.append(&cross_modes);
+        display_column.append(&cross_position);
+        display_column.append(&display_w);
+        let display_clamp = adw::Clamp::builder().maximum_size(1100).tightening_threshold(1100).child(&display_column).build();
+        let display_w = gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).vexpand(true).child(&display_clamp).build();
         let (files, files_w) = FilesPage::build(&toasts);
         views.add_titled_with_icon(&phone_w, Some("phone"), "Phone", "phone-symbolic");
         views.add_titled_with_icon(&apps_w, Some("apps"), "Apps", "view-app-grid-symbolic");
@@ -601,9 +620,9 @@ impl Ui {
             .default_height(760)
             .content(&toolbar)
             .build();
-        // Five page names plus the device menu don't fit a narrow header: then the switcher moves to
+        // Six page names plus the device menu don't fit a narrow header: then the switcher moves to
         // a bar at the bottom and the header keeps the window title and the device menu.
-        let narrow = adw::Breakpoint::new(adw::BreakpointCondition::parse("max-width: 640sp").expect("valid breakpoint condition"));
+        let narrow = adw::Breakpoint::new(adw::BreakpointCondition::parse("max-width: 780sp").expect("valid breakpoint condition"));
         narrow.add_setter(&header, "title-widget", Some(&None::<gtk::Widget>.to_value()));
         narrow.add_setter(&switcher_bar, "reveal", Some(&true.to_value()));
         window.add_breakpoint(narrow);
@@ -626,6 +645,7 @@ impl Ui {
             pair,
             apps,
             display,
+            cross,
             files,
             tray: RefCell::default(),
             daemon_ctl: RefCell::default(),
@@ -643,6 +663,7 @@ impl Ui {
             ui.display.set_visible(name.as_deref() == Some("display"));
             match name.as_deref() {
                 Some("apps") => ui.apps.shown(),
+                Some("display") => ui.cross.refresh(),
                 Some("notifications") => ui.load_muted(),
                 _ => {}
             }
@@ -669,8 +690,8 @@ impl Ui {
         {
             let mut st = self.state.borrow_mut();
             let st = &mut *st;
-            for helper in [st.mirror.as_mut(), st.cross.as_mut()].into_iter().flatten() {
-                helper.stop();
+            if let Some(mirror) = st.mirror.as_mut() {
+                mirror.stop();
             }
             // Still connected at quit: that is when the phone was last seen.
             if st.status.as_ref().is_some_and(|s| s.connected) {
@@ -681,6 +702,7 @@ impl Ui {
             }
         }
         self.files.shutdown();
+        self.cross.shutdown();
     }
 
     fn connect_signals(self: &Rc<Self>) {
@@ -691,9 +713,9 @@ impl Ui {
             }
         });
         let weak = Rc::downgrade(self);
-        self.phone.cross.connect_active_notify(move |row| {
+        self.phone.cross.connect_activated(move |_| {
             if let Some(ui) = weak.upgrade() {
-                ui.set_cross_control(row.is_active());
+                ui.views.set_visible_child_name("display");
             }
         });
         let weak = Rc::downgrade(self);
@@ -974,6 +996,12 @@ impl Ui {
                 match event {
                     Event::Status(status) => ui.apply_status(*status),
                     Event::Down => ui.set_down(),
+                    Event::CrossControlRequested => {
+                        // The phone's tile: show the three modes (the daemon answers the phone itself).
+                        ui.present();
+                        ui.views.set_visible_child_name("display");
+                        ui.cross.refresh();
+                    }
                 }
             }
         });
@@ -1024,6 +1052,7 @@ impl Ui {
         }
         self.apps.set_connected(false);
         self.display.set_connected(false);
+        self.cross.set_connected(false);
         self.files.set_connected(false);
         {
             let mut st = self.state.borrow_mut();
@@ -1074,6 +1103,7 @@ impl Ui {
         };
         self.apps.set_connected(connected);
         self.display.set_connected(connected);
+        self.cross.set_connected(connected);
         self.files.set_connected(connected);
         self.refresh_phone();
         self.refresh_notifications();
@@ -1127,8 +1157,6 @@ impl Ui {
         let busy = st.busy;
         let pending = st.mirror_pending;
         let mirroring = st.mirror.as_ref().is_some_and(Mirror::running) || self.apps.mirror_session().is_some();
-        // A helper that was asked to stop counts as off while it winds down.
-        let crossing = st.cross.as_ref().is_some_and(|c| c.running() && !c.stopping());
         let Some(s) = st.status.clone() else { return };
         let last = st.last.clone();
         let p = &self.phone;
@@ -1220,13 +1248,8 @@ impl Ui {
         p.connect_label.set_label(if busy { "Connecting…" } else { "Connect" });
         p.pair.set_visible(state == PhoneState::Unpaired);
 
-        // Cross Control stays visible for a paired phone, usable only while connected.
+        // Cross Control stays visible for a paired phone (its page says when to connect).
         p.cross_group.set_visible(s.paired);
-        p.cross.set_sensitive(s.connected || crossing);
-        if p.cross.is_active() != crossing {
-            p.cross.set_active(crossing); // re-enters set_cross_control, which is then a no-op
-        }
-        p.cross_edge.set_sensitive(!crossing);
 
         // Device menu button + popover.
         let d = &self.device;
@@ -1443,55 +1466,6 @@ impl Ui {
                     }
                     // A clean exit may be a hand-off to a host that appeared meanwhile.
                     ui.apps.poll_soon();
-                    ui.refresh_phone();
-                    glib::ControlFlow::Break
-                }
-            }
-        });
-    }
-
-    /// Starts/stops smartconnect-crosscontrol to match the switch (SIGINT tells the phone to stop).
-    fn set_cross_control(self: &Rc<Self>, on: bool) {
-        let edge = CROSS_EDGES.get(self.phone.cross_edge.selected() as usize).copied().unwrap_or("right");
-        let started = {
-            let mut st = self.state.borrow_mut();
-            let cross = st.cross.get_or_insert_with(Mirror::cross_control);
-            if on == cross.running() {
-                return;
-            }
-            if on {
-                match cross.start(&["--edge", edge]) {
-                    Ok(()) => true,
-                    Err(e) => {
-                        drop(st);
-                        self.toast(&e);
-                        self.refresh_phone();
-                        return;
-                    }
-                }
-            } else {
-                cross.stop();
-                false
-            }
-        };
-        if started {
-            self.watch_cross();
-        }
-        self.refresh_phone();
-    }
-
-    /// Polls the Cross Control process until it exits, then resets the switch.
-    fn watch_cross(self: &Rc<Self>) {
-        let weak: Weak<Self> = Rc::downgrade(self);
-        glib::timeout_add_local(Duration::from_millis(500), move || {
-            let Some(ui) = weak.upgrade() else { return glib::ControlFlow::Break };
-            let exit = ui.state.borrow_mut().cross.as_mut().and_then(Mirror::poll);
-            match exit {
-                None => glib::ControlFlow::Continue,
-                Some(exit) => {
-                    if let Exit::Failed(msg) = exit {
-                        ui.toast(&msg);
-                    }
                     ui.refresh_phone();
                     glib::ControlFlow::Break
                 }

@@ -31,5 +31,7 @@ nfs3_types = "0.5"
 nfs3_server = { version = "0.11", default-features = false, features = ["__test_reexports", "fs_util"] }
 # Fallback for this PC's LAN IP when the daemon reports no pcAddress.
 if-addrs = "0.15"
+# Thumbnails for the phone's Files tab (Lenovo READTHUMBNAIL): decode, shrink, re-encode as JPEG.
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp"] }
 # Expose the mounted phone as a FUSE filesystem.
 fuser = { version = "0.18", default-features = false }

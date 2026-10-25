@@ -1,6 +1,10 @@
-//! Display page: the phone as a screen for this PC, through `smartconnect-display` (svc 202).
+//! The display part of the Display tab: the phone as a screen for this PC, through
+//! `smartconnect-display` (svc 202). It sits below the Cross Control modes (`crosscontrol.rs`),
+//! whose Duplicate/Extend cards start a session here (`start_mode`); this part shows the session's
+//! status with Stop/Apply, and the display settings.
 //!
-//! *Extend* makes the phone a second monitor (a vkms `Virtual-*` output, or `--output NAME`);
+//! *Extend* makes the phone a second monitor (a virtual screen on GNOME, KDE, Hyprland and sway; a
+//! vkms `Virtual-*` output on niri; or `--output NAME`);
 //! *Duplicate* (`--mode mirror`) shows this PC's screen on the phone, the opposite direction of the
 //! Phone page's Mirror Screen.
 //!
@@ -41,6 +45,7 @@ const BIN: &str = "smartconnect-display";
 /// Session and log poll period while the page is shown or a session is running.
 const POLL: Duration = Duration::from_millis(500);
 /// Output list refresh period while the page is shown (notices `modprobe vkms` or a dummy plug).
+/// The list comes from the helper (`smartconnect-display --list-outputs`), which knows the desktop.
 const OUTPUTS_EVERY: Duration = Duration::from_secs(5);
 /// How long a session gets to exit after SIGINT.
 const STOP_TIMEOUT: Duration = Duration::from_secs(10);
@@ -58,10 +63,18 @@ const WRAPPER: &str = r#"exec >"$1" 2>&1; echo "pid $$"; shift; exec "$@""#;
 const OSK_FLAG: &str = "--osk-height";
 const AUDIO_FLAG: &str = "--audio";
 const NO_AUDIO_FLAG: &str = "--no-audio";
+const BITRATE_FLAG: &str = "--bitrate";
+const FPS_FLAG: &str = "--fps";
+/// Stream quality choices (kbit/s, label), in the order of the row.
+const QUALITIES: [(u32, &str); 4] = [(2000, "Low · 2 Mbit/s"), (4000, "Medium · 4 Mbit/s"), (8000, "High · 8 Mbit/s"), (16000, "Very high · 16 Mbit/s")];
+/// Frame rate choices, in the order of the row.
+const FRAME_RATES: [u32; 3] = [15, 30, 60];
 const ROTATE_FLAG: &str = "--follow-rotation";
 const NO_ROTATE_FLAG: &str = "--no-follow-rotation";
 /// A helper that has this flag reads `display.json` for whatever its command line leaves out.
 const NO_CONFIG_FLAG: &str = "--no-config";
+/// Prints the desktop's outputs and how Extend works there, as JSON.
+const LIST_OUTPUTS_FLAG: &str = "--list-outputs";
 
 // ── Session options ─────────────────────────────────────────────────────────
 
@@ -94,6 +107,9 @@ struct Opts {
     /// Experimental switches, `None` like `osk`.
     audio: Option<bool>,
     rotate: Option<bool>,
+    /// `--bitrate` and `--fps`, `None` like `osk`.
+    bitrate: Option<u32>,
+    fps: Option<u32>,
     /// Arguments the page never sets (e.g. `--test-pattern`); they make a session differ.
     extra: Vec<String>,
 }
@@ -114,6 +130,8 @@ impl Opts {
             osk: Some(p.osk_height),
             audio: Some(p.audio),
             rotate: Some(p.follow_rotation),
+            bitrate: Some(p.bitrate),
+            fps: Some(p.fps),
             extra: Vec::new(),
         }
         .normalized()
@@ -122,7 +140,18 @@ impl Opts {
     /// What a bare `smartconnect-display` does without a settings file (`--no-config`, or an older
     /// helper): duplicate at the phone's size. Unknown keyboard/experimental choices match anything.
     fn cli_defaults() -> Self {
-        Self { mode: Mode::Mirror, size: Size::Phone, scale: 200, output: None, osk: None, audio: None, rotate: None, extra: Vec::new() }
+        Self {
+            mode: Mode::Mirror,
+            size: Size::Phone,
+            scale: 200,
+            output: None,
+            osk: None,
+            audio: None,
+            rotate: None,
+            bitrate: None,
+            fps: None,
+            extra: Vec::new(),
+        }
     }
 
     /// Reads the arguments of a running `smartconnect-display` on top of `base`: what it uses for
@@ -142,7 +171,7 @@ impl Opts {
                 "--config" => {
                     it.next();
                 }
-                "--mode" | "--size" | "--display-scale" | "--output" | OSK_FLAG => {
+                "--mode" | "--size" | "--display-scale" | "--output" | OSK_FLAG | BITRATE_FLAG | FPS_FLAG => {
                     let value = it.next().cloned().unwrap_or_default();
                     if !o.set(flag, &value) {
                         o.extra.extend([arg.clone(), value]);
@@ -175,6 +204,14 @@ impl Opts {
                 Ok(h) => self.osk = Some(h),
                 Err(_) => return false,
             },
+            (BITRATE_FLAG, v) => match v.parse() {
+                Ok(b) => self.bitrate = Some(b),
+                Err(_) => return false,
+            },
+            (FPS_FLAG, v) => match v.parse() {
+                Ok(f) => self.fps = Some(f),
+                Err(_) => return false,
+            },
             _ => return false,
         }
         true
@@ -202,6 +239,8 @@ impl Opts {
             && either(&self.osk, &want.osk)
             && either(&self.audio, &want.audio)
             && either(&self.rotate, &want.rotate)
+            && either(&self.bitrate, &want.bitrate)
+            && either(&self.fps, &want.fps)
     }
 
     /// Command line for the helper `f` describes: optional flags only when it lists them. A helper
@@ -230,6 +269,12 @@ impl Opts {
         }
         if let Some(h) = self.osk.filter(|_| f.has(OSK_FLAG)) {
             a.extend([OSK_FLAG.to_owned(), h.to_string()]);
+        }
+        if let Some(b) = self.bitrate.filter(|_| f.has(BITRATE_FLAG)) {
+            a.extend([BITRATE_FLAG.to_owned(), b.to_string()]);
+        }
+        if let Some(fps) = self.fps.filter(|_| f.has(FPS_FLAG)) {
+            a.extend([FPS_FLAG.to_owned(), fps.to_string()]);
         }
         for (value, on, off) in [(self.audio, AUDIO_FLAG, NO_AUDIO_FLAG), (self.rotate, ROTATE_FLAG, NO_ROTATE_FLAG)] {
             match value {
@@ -425,6 +470,8 @@ struct LogState {
     pid: Option<u32>,
     /// Stream size being sent.
     size: Option<(u32, u32)>,
+    /// How the phone is held, from its last `setOrientation` (1 landscape, 2 portrait).
+    landscape: Option<bool>,
     /// Output being captured (e.g. `Virtual-1`, `eDP-1`).
     output: Option<String>,
     streaming: bool,
@@ -465,6 +512,12 @@ fn parse_log(text: &str) -> LogState {
             s.size = rest.rsplit("sending ").next().and_then(parse_size).or(s.size);
         } else if let Some(rest) = line.strip_prefix("stream size → ") {
             s.size = parse_size(rest).or(s.size);
+        } else if line.starts_with("← phone cmd 7:") {
+            if line.contains("\"setOrientation\":1") {
+                s.landscape = Some(true);
+            } else if line.contains("\"setOrientation\":2") {
+                s.landscape = Some(false);
+            }
         } else if let Some(rest) = line.strip_prefix("capturing ") {
             s.output = rest.split(" (").next().map(str::to_owned);
         } else if let Some(state) = line.strip_prefix("peer connection: ") {
@@ -573,54 +626,83 @@ fn friendly(reason: &str) -> String {
     }
 }
 
-// ── Outputs (niri) and other setup checks ───────────────────────────────────
+// ── Outputs and other setup checks ──────────────────────────────────────────
+
+/// What `smartconnect-display --list-outputs` reports.
+#[derive(Clone, Debug, PartialEq)]
+struct Outputs {
+    /// "GNOME", "KDE Plasma", "Hyprland", "sway", "niri" or "this desktop".
+    desktop: String,
+    /// How Extend gets its screen: "virtual" (the desktop makes one), "spare-output" (niri: a vkms
+    /// output or dummy plug is switched on) or "none".
+    extend: String,
+    list: Vec<Output>,
+}
+
+impl Outputs {
+    fn spare_output(&self) -> bool {
+        self.extend == "spare-output"
+    }
+
+    fn can_extend(&self) -> bool {
+        self.extend != "none"
+    }
+
+    fn has_virtual(&self) -> bool {
+        self.list.iter().any(|o| o.is_virtual)
+    }
+}
 
 #[derive(Clone, Debug, PartialEq)]
 struct Output {
     name: String,
     label: String,
-}
-
-impl Output {
-    fn is_virtual(&self) -> bool {
-        self.name.starts_with("Virtual-")
-    }
-
+    is_virtual: bool,
     /// A laptop's own panel: never offered as an extend target (it would be switched off afterwards).
-    fn is_internal(&self) -> bool {
-        ["eDP", "LVDS", "DSI"].iter().any(|p| self.name.starts_with(p))
-    }
+    is_internal: bool,
 }
 
-fn list_outputs() -> Result<Vec<Output>, String> {
-    let out = Command::new("niri")
-        .args(["msg", "--json", "outputs"])
+fn parse_outputs(json: &[u8]) -> Result<Outputs, String> {
+    let v: Value = serde_json::from_slice(json).map_err(|e| format!("unexpected output list ({e})"))?;
+    let text = |v: &Value, k: &str| v.get(k).and_then(Value::as_str).unwrap_or_default().to_owned();
+    if let Some(e) = v.get("error").and_then(Value::as_str) {
+        return Err(e.lines().next().unwrap_or(e).to_owned());
+    }
+    let list = v
+        .get("outputs")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .map(|o| {
+                    let name = text(o, "name");
+                    let flag = |k: &str| o.get(k).and_then(Value::as_bool).unwrap_or(false);
+                    let what = match text(o, "description") {
+                        _ if flag("virtual") => "virtual".to_owned(),
+                        d if d.is_empty() => "monitor".to_owned(),
+                        d => d,
+                    };
+                    let label = format!("{name} ({what}, {})", if flag("enabled") { "on" } else { "off" });
+                    Output { label, is_virtual: flag("virtual"), is_internal: flag("internal"), name }
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok(Outputs { desktop: text(&v, "desktop"), extend: text(&v, "extend"), list })
+}
+
+fn list_outputs() -> Result<Outputs, String> {
+    let (bin, _) = program();
+    let out = Command::new(&bin)
+        .arg(LIST_OUTPUTS_FLAG)
         .stdin(Stdio::null())
         .output()
-        .map_err(|e| format!("could not run niri msg ({e})"))?;
+        .map_err(|e| format!("could not run {BIN} ({e})"))?;
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr);
-        return Err(err.lines().next().unwrap_or("niri msg failed").trim().to_owned());
+        let first = err.lines().find(|l| !l.trim().is_empty()).unwrap_or("failed").trim().trim_start_matches("Error: ");
+        return Err(format!("{BIN} {LIST_OUTPUTS_FLAG}: {first} (an older {BIN}? reinstall it)"));
     }
-    let v: Value = serde_json::from_slice(&out.stdout).map_err(|e| format!("unexpected niri output ({e})"))?;
-    let map = v.as_object().ok_or("unexpected niri output")?;
-    let mut outputs: Vec<Output> = map
-        .iter()
-        .map(|(name, o)| {
-            let on = o.get("logical").is_some_and(Value::is_object);
-            let text = |k: &str| o.get(k).and_then(Value::as_str).filter(|s| !s.is_empty() && *s != "Unknown");
-            let what = match (text("make"), text("model")) {
-                _ if name.starts_with("Virtual-") => "virtual".to_owned(),
-                (Some(make), Some(model)) => format!("{make} {model}"),
-                (Some(x), None) | (None, Some(x)) => x.to_owned(),
-                (None, None) => "monitor".to_owned(),
-            };
-            let label = format!("{name} ({what}, {})", if on { "on" } else { "off" });
-            Output { name: name.clone(), label }
-        })
-        .collect();
-    outputs.sort_by(|a, b| a.name.cmp(&b.name));
-    Ok(outputs)
+    parse_outputs(&out.stdout)
 }
 
 /// The phone's keyboard button runs `$SMARTCONNECT_OSK` or wvkbd.
@@ -631,7 +713,7 @@ fn osk_missing() -> bool {
 }
 
 struct Checks {
-    outputs: Result<Vec<Output>, String>,
+    outputs: Result<Outputs, String>,
     osk_missing: bool,
     /// Set when the helper changed since `Flags::from`.
     flags: Option<Flags>,
@@ -659,7 +741,7 @@ struct State {
     prefs: Prefs,
     connected: bool,
     /// `None` until listed once.
-    outputs: Option<Result<Vec<Output>, String>>,
+    outputs: Option<Result<Outputs, String>>,
     outputs_at: Option<Instant>,
     /// Output row index → `--output` value ("" = automatic), and the labels shown.
     output_choices: Vec<String>,
@@ -706,6 +788,8 @@ pub struct DisplayPage {
     height: adw::SpinRow,
     scale: adw::ComboRow,
     osk: adw::SpinRow,
+    quality: adw::ComboRow,
+    fps: adw::ComboRow,
     audio: adw::SwitchRow,
     rotate: adw::SwitchRow,
     advanced: adw::ExpanderRow,
@@ -822,6 +906,19 @@ impl DisplayPage {
             "In % of the shared screen, for the keyboard button on the phone",
             (prefs::OSK_MIN, prefs::OSK_MAX, 5),
         );
+        let quality_names: Vec<&str> = QUALITIES.iter().map(|(_, l)| *l).collect();
+        let quality = adw::ComboRow::builder()
+            .title("Stream quality")
+            .subtitle("Lower sends less data per frame, which can cut the delay on a busy Wi-Fi")
+            .model(&gtk::StringList::new(&quality_names))
+            .build();
+        let fps_names: Vec<String> = FRAME_RATES.iter().map(|f| format!("{f} fps")).collect();
+        let fps_refs: Vec<&str> = fps_names.iter().map(String::as_str).collect();
+        let fps = adw::ComboRow::builder()
+            .title("Frame rate")
+            .subtitle("At most this many frames per second; fewer means less to encode and send")
+            .model(&gtk::StringList::new(&fps_refs))
+            .build();
         let audio = adw::SwitchRow::builder().title("Send PC audio to the phone").subtitle("Experimental").build();
         let rotate = adw::SwitchRow::builder()
             .title("Rotate with the phone")
@@ -835,13 +932,24 @@ impl DisplayPage {
 
         // Layout, Experimental and Advanced groups (the phone-as-display card sits above them).
         let layout_group = adw::PreferencesGroup::builder()
-            .title("Layout")
+            .title("Display settings")
             .description(
-                "Extend makes the phone a second monitor; Duplicate shows this PC's screen on it. \
-                 To see the phone's screen on this PC instead, use Mirror Screen on the Phone page.",
+                "For Duplicate display and Extend display above. To see the phone's screen on this PC \
+                 instead, use Mirror Screen on the Phone page.",
             )
             .build();
-        for row in [mode_row.upcast_ref::<gtk::Widget>(), resolution.upcast_ref(), width.upcast_ref(), height.upcast_ref(), scale.upcast_ref(), osk.upcast_ref()] {
+        // The mode is picked with the Cross Control cards above; the row stays for its state.
+        mode_row.set_visible(false);
+        for row in [
+            mode_row.upcast_ref::<gtk::Widget>(),
+            resolution.upcast_ref(),
+            width.upcast_ref(),
+            height.upcast_ref(),
+            scale.upcast_ref(),
+            quality.upcast_ref(),
+            fps.upcast_ref(),
+            osk.upcast_ref(),
+        ] {
             layout_group.add(row);
         }
         let experimental_group = adw::PreferencesGroup::builder().title("Experimental").build();
@@ -862,36 +970,16 @@ impl DisplayPage {
         let card = gtk::Box::builder().css_classes(["card", "sc-card"]).hexpand(true).build();
         card.append(&head);
 
-        // Layout / Experimental / Advanced sit two-up on a wide window, stacked when narrow.
-        let groups = gtk::FlowBox::builder()
-            .selection_mode(gtk::SelectionMode::None)
-            .homogeneous(true)
-            .min_children_per_line(1)
-            .max_children_per_line(2)
-            .column_spacing(18)
-            .row_spacing(18)
-            .valign(gtk::Align::Start)
-            .hexpand(true)
-            .build();
+        // Stacked: in a grid every group took the height of the tallest one, leaving empty space.
+        let groups = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(18).build();
         for g in [&layout_group, &experimental_group, &advanced_group] {
-            g.set_hexpand(true);
-            g.set_width_request(360);
             groups.append(g);
         }
 
-        let column = gtk::Box::builder()
-            .orientation(gtk::Orientation::Vertical)
-            .spacing(18)
-            .margin_top(24)
-            .margin_bottom(24)
-            .margin_start(12)
-            .margin_end(12)
-            .build();
+        let column = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(18).build();
         column.append(&card);
         column.append(&hints);
         column.append(&groups);
-        let clamp = adw::Clamp::builder().maximum_size(1400).tightening_threshold(1400).child(&column).build();
-        let scroller = gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).vexpand(true).child(&clamp).build();
 
         let (exited, exits) = async_channel::unbounded();
         let page = Rc::new(Self {
@@ -911,6 +999,8 @@ impl DisplayPage {
             height,
             scale,
             osk,
+            quality,
+            fps,
             audio,
             rotate,
             advanced,
@@ -939,7 +1029,7 @@ impl DisplayPage {
             glib::ControlFlow::Continue
         });
         page.poll_now();
-        (page, scroller.upcast())
+        (page, column.upcast())
     }
 
     fn connect_signals(self: &Rc<Self>, check_again: &[&gtk::Button]) {
@@ -1008,6 +1098,18 @@ impl DisplayPage {
             }
         });
         let weak = Rc::downgrade(self);
+        self.quality.connect_selected_notify(move |row| {
+            if let (Some(p), Some((b, _))) = (weak.upgrade(), QUALITIES.get(row.selected() as usize)) {
+                p.update_prefs(|d| d.bitrate = *b);
+            }
+        });
+        let weak = Rc::downgrade(self);
+        self.fps.connect_selected_notify(move |row| {
+            if let (Some(p), Some(f)) = (weak.upgrade(), FRAME_RATES.get(row.selected() as usize)) {
+                p.update_prefs(|d| d.fps = *f);
+            }
+        });
+        let weak = Rc::downgrade(self);
         self.audio.connect_active_notify(move |row| {
             if let Some(p) = weak.upgrade() {
                 p.update_prefs(|d| d.audio = row.is_active());
@@ -1060,6 +1162,10 @@ impl DisplayPage {
         let nearest = (0..SCALES.len()).min_by_key(|&i| SCALES[i].abs_diff(d.scale)).unwrap_or(4);
         self.scale.set_selected(nearest as u32);
         self.osk.set_value(f64::from(d.osk_height));
+        let q = (0..QUALITIES.len()).min_by_key(|&i| QUALITIES[i].0.abs_diff(d.bitrate)).unwrap_or(2);
+        self.quality.set_selected(q as u32);
+        let f = (0..FRAME_RATES.len()).min_by_key(|&i| FRAME_RATES[i].abs_diff(d.fps)).unwrap_or(2);
+        self.fps.set_selected(f as u32);
         self.audio.set_active(d.audio);
         self.rotate.set_active(d.follow_rotation);
         self.syncing.set(false);
@@ -1243,16 +1349,22 @@ impl DisplayPage {
         });
     }
 
-    /// Fills the "Extend onto" row: Automatic, every output except the laptop's own panel, and the
-    /// saved choice even while it is unplugged.
+    /// Fills the "Extend onto" row: Automatic, every output except the laptop's own panel (and,
+    /// where the desktop makes its own virtual screen, those screens), and the saved choice even
+    /// while it is unplugged.
     fn rebuild_outputs(&self) {
         let (choices, labels, selected) = {
             let st = self.st.borrow();
             let saved = st.prefs.display.output.clone();
             let mut choices = vec![String::new()];
-            let mut labels = vec!["Automatic (first virtual output)".to_owned()];
-            if let Some(Ok(list)) = &st.outputs {
-                for o in list.iter().filter(|o| !o.is_internal()) {
+            let automatic = match &st.outputs {
+                Some(Ok(o)) if o.spare_output() => "Automatic (first virtual output)",
+                Some(Ok(o)) if !o.can_extend() => "Automatic (not available here)",
+                _ => "Automatic (a new screen for the phone)",
+            };
+            let mut labels = vec![automatic.to_owned()];
+            if let Some(Ok(outs)) = &st.outputs {
+                for o in outs.list.iter().filter(|o| !o.is_internal && (outs.spare_output() || !o.is_virtual)) {
                     choices.push(o.name.clone());
                     labels.push(o.label.clone());
                 }
@@ -1281,6 +1393,51 @@ impl DisplayPage {
 
     // ── Actions ─────────────────────────────────────────────────────────────
 
+    /// For other pages: starts a session in `mode` ("mirror" or "extend") with the saved settings
+    /// and selects that mode here. Nothing happens when a session in that mode already runs; one in
+    /// the other mode is restarted in this one.
+    pub fn start_mode(self: &Rc<Self>, mode: &str) {
+        let mode = if mode == "mirror" { "mirror" } else { "extend" };
+        if self.st.borrow().prefs.display.mode != mode {
+            self.update_prefs(|d| d.mode = mode.to_owned());
+            self.sync_widgets();
+        }
+        match self.running_mode() {
+            Some(m) if m == mode => {}
+            Some(_) => self.restart(),
+            None => self.start(),
+        }
+    }
+
+    /// For other pages: the same as the Stop button.
+    pub fn stop_session(self: &Rc<Self>) {
+        if !self.st.borrow().sessions.is_empty() {
+            self.stop(false);
+        }
+    }
+
+    /// For other pages: whether the phone is held landscape while a session runs (what it last
+    /// reported, else the shape of the stream); `None` when no session runs.
+    pub fn phone_landscape(&self) -> Option<bool> {
+        let st = self.st.borrow();
+        let logged = st.log.pid.is_some_and(|p| st.sessions.iter().any(|r| r.pid == p));
+        if !logged {
+            return None;
+        }
+        st.log.landscape.or(st.log.size.map(|(w, h)| w > h))
+    }
+
+    /// For other pages: `Some("mirror" | "extend")` while a session runs (also one started
+    /// elsewhere, e.g. from the phone or the Noctalia plugin).
+    pub fn running_mode(&self) -> Option<String> {
+        let st = self.st.borrow();
+        let r = st.sessions.first()?;
+        Some(match st.running_opts(r).mode {
+            Mode::Mirror => "mirror".to_owned(),
+            Mode::Extend => "extend".to_owned(),
+        })
+    }
+
     fn start_or_stop(self: &Rc<Self>) {
         if self.st.borrow().sessions.is_empty() {
             self.start();
@@ -1299,8 +1456,9 @@ impl DisplayPage {
         }
         let Some(Ok(outputs)) = &st.outputs else { return None };
         match &opts.output {
-            None if !outputs.iter().any(Output::is_virtual) => Some("Extend needs a virtual output (see the hint below)".into()),
-            Some(name) if !outputs.iter().any(|o| &o.name == name) => Some(format!("{name} is not connected")),
+            None if outputs.spare_output() && !outputs.has_virtual() => Some("Extend needs a virtual output (see the hint below)".into()),
+            None if !outputs.can_extend() => Some(format!("Extend is not available on {} (see the hint below)", outputs.desktop)),
+            Some(name) if !outputs.list.iter().any(|o| &o.name == name) => Some(format!("{name} is not connected")),
             _ => None,
         }
     }
@@ -1479,6 +1637,8 @@ impl DisplayPage {
         };
         self.start.set_label(label);
         self.start.set_sensitive(sensitive);
+        // Sessions are started with the Cross Control cards above; this button only stops one.
+        self.start.set_visible(label != "Start");
         self.start.set_tooltip_text(if running.is_none() { blocked.as_deref() } else { None });
         if destructive {
             self.start.remove_css_class("suggested-action");
@@ -1512,31 +1672,45 @@ impl DisplayPage {
         self.scale.set_sensitive(extend);
         self.rotate.set_sensitive(extend);
         self.advanced.set_sensitive(extend);
-        self.output.set_subtitle(if d.output.is_empty() {
-            "The first virtual (vkms) output, e.g. Virtual-1"
-        } else {
-            "Switched on at the stream size while sharing, off again afterwards"
+        let listed = match &st.outputs {
+            Some(Ok(o)) => Some(o),
+            _ => None,
+        };
+        self.output.set_subtitle(match listed {
+            _ if !d.output.is_empty() => "Switched on at the stream size while sharing, off again afterwards",
+            Some(o) if o.spare_output() => "The first virtual (vkms) output, e.g. Virtual-1",
+            _ => "A screen made for the phone, removed again afterwards",
         });
 
         // Setup hints.
         let outputs = if extend { st.outputs.as_ref() } else { None };
-        let vkms = matches!(outputs, Some(Ok(list)) if d.output.is_empty() && !list.iter().any(Output::is_virtual));
-        let missing = matches!(outputs, Some(Ok(list)) if !d.output.is_empty() && !list.iter().any(|o| o.name == d.output));
-        let niri_error = match outputs {
+        let vkms = matches!(outputs, Some(Ok(o)) if d.output.is_empty() && o.spare_output() && !o.has_virtual());
+        let unsupported = matches!(outputs, Some(Ok(o)) if d.output.is_empty() && !o.can_extend());
+        let missing = matches!(outputs, Some(Ok(o)) if !d.output.is_empty() && !o.list.iter().any(|x| x.name == d.output));
+        let list_error = match outputs {
             Some(Err(e)) => Some(e.clone()),
             _ => None,
         };
         self.vkms_hint.set_visible(vkms);
-        self.output_hint.set_visible(missing || niri_error.is_some());
+        self.output_hint.set_visible(missing || unsupported || list_error.is_some());
         if missing {
             self.output_hint.set_title(&glib::markup_escape_text(&format!("{} is not connected", d.output)));
             self.output_hint.set_subtitle("Plug it in, or choose another output under Advanced.");
-        } else if let Some(e) = &niri_error {
+        } else if unsupported {
+            let desktop = listed.map_or("This desktop", |o| o.desktop.as_str());
+            self.output_hint.set_title(&glib::markup_escape_text(&format!("{desktop} cannot add a screen for the phone")));
+            self.output_hint.set_subtitle(
+                "Extend works on GNOME, KDE Plasma, Hyprland, sway and niri. Here, connect a spare monitor or \
+                 an HDMI dummy plug and choose it under Advanced, or use Duplicate.",
+            );
+        } else if let Some(e) = &list_error {
             self.output_hint.set_title("Could not list the screens");
-            self.output_hint.set_subtitle(&glib::markup_escape_text(&format!("{e}. Extend needs the niri compositor.")));
+            self.output_hint.set_subtitle(&glib::markup_escape_text(e));
         }
-        self.osk_hint.set_visible(st.osk_missing);
-        self.hints.set_visible(vkms || missing || niri_error.is_some() || st.osk_missing);
+        // GNOME: the keyboard button turns on GNOME's own screen keyboard, no wvkbd needed.
+        let osk_missing = st.osk_missing && !listed.is_some_and(|o| o.desktop == "GNOME");
+        self.osk_hint.set_visible(osk_missing);
+        self.hints.set_visible(vkms || unsupported || missing || list_error.is_some() || osk_missing);
     }
 }
 
@@ -1673,6 +1847,16 @@ mod tests {
         assert!(matches!(outcome(&s), Some(Outcome::Stopped(r)) if r == "stopped from this PC"));
         let s = parse_log(&format!("{log}peer connection: Failed\n"));
         assert!(s.lost && !s.streaming);
+    }
+
+    #[test]
+    fn log_orientation() {
+        let s = parse_log("pid 7\nphone panel 1220x2712, asks for 1920x1080@Some(60); sending 2712x1220\n");
+        assert_eq!((s.landscape, s.size), (None, Some((2712, 1220))));
+        let s = parse_log("pid 7\n← phone cmd 7: {\"setOrientation\":2}\n← phone cmd 7: {\"setOrientation\":1}\n");
+        assert_eq!(s.landscape, Some(true));
+        let s = parse_log("pid 7\n← phone cmd 7: {\"setOrientation\":2}\n");
+        assert_eq!(s.landscape, Some(false));
     }
 
     #[test]

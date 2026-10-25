@@ -166,7 +166,7 @@ QtObject {
   readonly property string configHome: Quickshell.env("XDG_CONFIG_HOME") || (Quickshell.env("HOME") + "/.config")
   readonly property string displayConfigPath: configHome + "/smartconnect-linux/display.json"
   readonly property string displayLogPath: (Quickshell.env("XDG_RUNTIME_DIR") || "/tmp") + "/smartconnect-display.log"
-  readonly property var displayDefaults: ({ mode: "extend", size: "native", displayScale: 2.0, oskHeight: 45, output: null, audio: false, followRotation: false })
+  readonly property var displayDefaults: ({ mode: "extend", size: "native", displayScale: 2.0, oskHeight: 45, output: null, audio: false, followRotation: false, bitrate: 8000, fps: 60 })
   property var displayConfig: displayDefaults
   // Running sessions (ours or not): [{ pid, mode }].
   property var displaySessions: []
@@ -240,7 +240,10 @@ QtObject {
       oskHeight: (typeof c.oskHeight === "number" && c.oskHeight >= 15 && c.oskHeight <= 80) ? Math.round(c.oskHeight) : d.oskHeight,
       output: (typeof c.output === "string" && c.output !== "") ? c.output : null,
       audio: c.audio === true,
-      followRotation: c.followRotation === true
+      followRotation: c.followRotation === true,
+      // Set in the GTK app (Stream quality, Frame rate); kept here so a save doesn't drop them.
+      bitrate: (typeof c.bitrate === "number" && c.bitrate >= 500 && c.bitrate <= 50000) ? Math.round(c.bitrate) : d.bitrate,
+      fps: (typeof c.fps === "number" && c.fps >= 10 && c.fps <= 60) ? Math.round(c.fps) : d.fps
     };
   }
 
@@ -250,7 +253,8 @@ QtObject {
     displayConfig = c;
     const json = JSON.stringify({
       mode: c.mode, size: c.size, displayScale: c.displayScale, oskHeight: c.oskHeight,
-      output: c.output, audio: c.audio, followRotation: c.followRotation
+      output: c.output, audio: c.audio, followRotation: c.followRotation,
+      bitrate: c.bitrate, fps: c.fps
     }, null, 2);
     Quickshell.execDetached(["sh", "-c", 'mkdir -p "$(dirname "$1")" && printf "%s\\n" "$2" > "$1.tmp" && mv "$1.tmp" "$1"',
                              "sh", displayConfigPath, json]);

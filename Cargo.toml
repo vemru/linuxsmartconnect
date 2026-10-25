@@ -32,6 +32,8 @@ rsa = { version = "0.9.10", features = ["pem"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 sha2 = "0.11.1"
+# GNOME has no data-control protocol: the clipboard is followed through Xwayland (XFixes) there.
+x11rb = { version = "0.13", features = ["xfixes"] }
 tokio = { version = "1.54.0", features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "io-util", "fs", "process"] }
 tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring", "tls12", "logging"] }
 tokio-tungstenite = { version = "0.30.0", default-features = false, features = ["handshake"] }

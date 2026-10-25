@@ -3,8 +3,8 @@
 **Status in this project:** Implemented and verified on a device. The daemon sends its status and
 tile capability map right after every verify reply, and the phone's device page then shows the App
 streaming, Cross Control, PC lock and Hotspot tiles. The Webcam tile was added later in the same
-way. The Screen share and Mobile desktop tiles (service 1) are only advertised with the daemon's
-experimental `--extra-tiles 1` flag (untested on a device). The phone's own status (battery,
+way. The Screen share and Mobile desktop tiles (service 1) are advertised too; Mobile desktop has been
+started from the phone with this project. The phone's own status (battery,
 signal, wallpaper) is read and shown on the desktop.
 
 **Implementation:** [`src/proto.rs`](../../src/proto.rs) (`device_status_msg`, `device_status_caps`),
@@ -47,7 +47,7 @@ Example PC message, as this project sends it:
   "data": {
     "ver": "1",
     "cmd": 1,
-    "cap": { "3": 1, "13": 1, "15": 1, "22": 1, "26": 1 },
+    "cap": { "1": 1, "3": 1, "13": 1, "15": 1, "22": 1, "26": 1 },
     "battery": 100,
     "deviceName": "My Linux PC",
     "realDeviceName": "My Linux PC",
@@ -89,12 +89,12 @@ refreshes (OBSERVED):
 | Tile | Service | Windows `serviceVersions` | Extra gates | What a tap sends | This project |
 |---|---|---|---|---|---|
 | App streaming | 15 | `"15": 16` | Phone not in a conflicting mode | Opens the phone's own app picker, then service 15 `cmd 2` | Shown, works |
-| Mobile desktop | 1 | `"1": 10` | Peer type bits | Opens a panel (resolution, orientation, Connect); Connect sends service 1 `cmd 0` with `view: 2` and `resolution`, then the service 15 `"desktop"` stream ([mirroring.md](mirroring.md#views-started-on-the-phone)) | Not shown by default; `--extra-tiles 1` adds `"1"` to the map (experimental, untested on a device) |
-| Screen share (phone to PC) | 1 | `"1": 10` | Peer type bits; peer is not a phone | Opens a panel (Mirror or Virtual phone, Connect); Connect sends service 1 `cmd 0` with `view: 1` or `3`, then the service 15 `"mirror"` or `"mobile"` stream | Same tile flag as Mobile desktop (`--extra-tiles 1`) |
+| Mobile desktop | 1 | `"1": 10` | Peer type bits | Opens a panel (resolution, orientation, Connect); Connect sends service 1 `cmd 0` with `view: 2` and `resolution`, then the service 15 `"desktop"` stream ([mirroring.md](mirroring.md#views-started-on-the-phone)) | Shown (`"1"` in the map by default); started from the phone |
+| Screen share (phone to PC) | 1 | `"1": 10` | Peer type bits; peer is not a phone | Opens a panel (Mirror or Virtual phone, Connect); Connect sends service 1 `cmd 0` with `view: 1` or `3`, then the service 15 `"mirror"` or `"mobile"` stream | Shown with Mobile desktop (same `"1"` entry); less tested |
 | Webcam | 3 | `"3": 3` | Phone camera capability | Service 3 `cmd 0` with `srcServiceId 19` | Advertised; see [webcam.md](webcam.md) |
 | Hotspot | 13 | `"13": 1` | A Motorola phone, not a tablet | Service 13 `cmd 0` | Shown |
 | PC lock | 22 | `"22": 2` | - | Service 22 `cmd 1` | Shown |
-| Cross Control | 26 (may be merged with 202 on the dashboard) | `"26": 1` | Phone-side support | Service 26 `cmd 0` | Shown |
+| Cross Control | 26, merged with 202 (PC display) on the dashboard | `"26": 1` | Phone-side support; 202 only if `"202"` is in `cap` | Service 26 `cmd 0`, or service 202 `cmd 50` when 202 connected last and `"202"` is in `cap` ([cross-control.md](cross-control.md#tile-on-the-phone-cross-control-or-the-pc-display)) | Shown; `"202"` deliberately not in `cap`, so a tap is always service 26 |
 | Send files (dashboard only) | 2 | `"2": 5` | - | File transfer | Not documented |
 
 The tile-to-service mapping and the gates are OBSERVED in the phone app; the "Shown" column is
@@ -107,7 +107,7 @@ sequenceDiagram
     participant PC as PC
     P->>PC: svc 0 cmd 0 hello
     PC->>P: svc 0 verify reply (serviceVersions)
-    PC->>P: svc 25 cmd 1 (cap 3, 13, 15, 22, 26 and battery, deviceName)
+    PC->>P: svc 25 cmd 1 (cap 1, 3, 13, 15, 22, 26 and battery, deviceName)
     Note over P: tile shown if the service is in serviceVersions AND in cap
     P->>PC: svc 25 cmd 1 phone status, svc 25 cmd 2 wallpaper
     P->>PC: tile tapped, request on that service (often with srcServiceId 19)

@@ -20,7 +20,11 @@ and [docs/](docs/) for details.
     `nfs_dependency` bit-16 "data channel" the phone opens for write-back.
   - **PC→phone** — the phone *mounts the PC* (it actively requests this with its own `type:0`).
     ~~PC-side NFS server over a rustls listener, replying `type:1`~~ (done: `smartconnect-files
-    serve`). Left: verify it with a real phone.
+    serve`), ~~verify it with a real phone~~ (done: works after the 64-byte handle fix), ~~GTK
+    switch~~ (done: *Share with the phone*). ~~Files tab, thumbnails, delete~~ (done: Lenovo procedures 22/23/27,
+    delete moves to the Trash). Left: a Noctalia panel entry; sharing without a front-end
+    (daemon-supervised `serve`); creating/uploading files from the phone (Lenovo `CREATEPATH` + NFS
+    writes); several shared folders.
   - **Read caching** — every directory and file read is an NFS round-trip over TLS, so large folders
     are slow; cache attributes and directory listings, and read ahead for big files.
   - **Lifecycle & UX** — ~~unmount on SIGINT/SIGTERM~~ (done: SIGINT/SIGTERM/SIGHUP unmount

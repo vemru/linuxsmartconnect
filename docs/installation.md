@@ -4,6 +4,7 @@ This page covers what to install, how to build and install everything, how to ru
 systemd user service, which firewall ports to open, and how to set up the optional front-ends. The
 [README quick start](../README.md#quick-start) is the short version.
 
+- [AppImage](#appimage): the easiest way, any distribution, nothing to build
 - [What you need](#what-you-need)
 - [Packages](#packages): [Arch Linux](#arch-linux), [Debian and Ubuntu](#debian-and-ubuntu-untested), [Fedora](#fedora-untested)
 - [System services](#system-services)
@@ -13,6 +14,50 @@ systemd user service, which firewall ports to open, and how to set up the option
 - [Noctalia plugin](#noctalia-plugin) · [GTK app](#gtk-app) · [Quick-reply window](#quick-reply-window)
 - [Optional: vkms and v4l2loopback](#optional-kernel-modules)
 - [Updating and uninstalling](#updating-and-uninstalling)
+
+## AppImage
+
+One file with every program and library inside (GTK, libadwaita, GStreamer with the WebRTC,
+VA-API and x264 plugins, wl-clipboard, avahi's tools, even glibc), so it doesn't depend on your
+distribution's versions. Built on Arch Linux with
+[quick-sharun](https://github.com/pkgforge-dev/Anylinux-AppImages); x86_64 only.
+
+1. Download `Smart_Connect-<version>-anylinux-x86_64.AppImage` from the
+   [Releases page](https://github.com/rudrahnpatel/smartconnect-linux/releases), make it executable
+   (`chmod +x Smart_Connect-*.AppImage`, or *Executable as program* in the file manager's
+   properties) and open it.
+2. The first time, a welcome window offers **Set up**. That is the same as running
+   `./Smart_Connect-*.AppImage --install --enable` and needs no password:
+   - unpacks itself to `~/.local/opt/smartconnect-linux` (about 600 MB) and links the programs into
+     `~/.local/bin`;
+   - adds *Smart Connect* to your applications, the systemd user service `smartconnectd`
+     (enabled and started), the hidden `dev.smartconnect.Display.desktop` entry KDE Plasma needs
+     to trust the display helper, and the Noctalia plugin when `~/.config/noctalia` exists (its
+     settings are kept);
+   - then opens the installed app. You can delete the AppImage file afterwards.
+
+   **Try without installing** runs it straight from the file instead. The daemon then only runs
+   while the app is open.
+3. Pair: **Pair new phone…** in the device menu, then scan the code with Smart Connect on the phone.
+   If firewalld runs and its default zone doesn't allow port 52020, the pairing window says so;
+   on GNOME and KDE its **Allow** button opens the port (firewalld asks for your password),
+   elsewhere it gives the commands to copy. With ufw it shows the commands to run.
+
+Updating: open the newer AppImage; the welcome window then offers **Update** (or run it with
+`--install`). Uninstalling: `./Smart_Connect-*.AppImage --uninstall` (or
+`~/.local/opt/smartconnect-linux/AppRun --uninstall`) removes the programs, the launcher and the
+service and keeps your pairing and settings. Every bundled program can be run through the file:
+`./Smart_Connect-*.AppImage smartconnectd status`.
+
+Still needed from the system: a Wayland desktop with a systemd user session, `avahi-daemon`
+running (most distributions run it; Arch: `sudo systemctl enable --now avahi-daemon`), a VA-API
+driver for hardware video is optional (the AppImage ships Intel's and Mesa's; NVIDIA falls back to
+software), `fusermount3` for browsing the phone's files, and, only if you use them, the firewall
+rules, `v4l2loopback` for the webcam and `vkms` for Extend on niri (see below).
+
+Building it yourself: `packaging/appimage/make-appimage.sh` (needs Docker or Podman; about 15
+minutes the first time) writes `dist/Smart_Connect-<version>-anylinux-x86_64.AppImage` and its
+`.zsync` file.
 
 ## What you need
 
@@ -29,19 +74,19 @@ What each feature needs on the desktop side:
 |---|---|
 | Reconnect over Wi-Fi, Connect button | avahi: `avahi-daemon` running, plus `avahi-publish` and `avahi-browse` on `PATH`. Inbound mDNS in the firewall. |
 | Bluetooth LE wake | BlueZ (`bluetooth.service`) and a Bluetooth LE adapter that is already powered on. The daemon never switches the adapter on for this. |
-| Clipboard | `wl-copy`/`wl-paste` from wl-clipboard. Linux-to-phone sync uses `wl-paste --watch`, which needs a compositor with the data-control protocol. Check with `wl-paste --watch echo changed`. |
+| Clipboard | `wl-copy`/`wl-paste` from wl-clipboard. Linux-to-phone sync uses `wl-paste --watch`, which needs a compositor with the data-control protocol (check with `wl-paste --watch echo changed`); where it is missing, as on GNOME, the daemon follows the clipboard through Xwayland instead (`DISPLAY` must be set, Xwayland enabled). |
 | Notifications | A notification daemon on the session bus (`org.freedesktop.Notifications`): Noctalia, mako, dunst, swaync, … |
 | Quick-reply window | Quickshell's `qs` on `PATH`. |
 | Mirroring and app streaming | GStreamer 1.22 or newer with `webrtcbin`, the libnice GStreamer plugin and an H.264 decoder (`vah264dec` or `avdec_h264`). Keyboard input in the video windows needs XWayland (`DISPLAY` set; on niri that is `xwayland-satellite`). |
-| Cross Control | Compositor support for `wlr-layer-shell` (required), `pointer-constraints` and `relative-pointer` (strongly recommended), and `keyboard-shortcuts-inhibit` (lets your shortcuts reach the phone). Only tested on niri. |
-| PC lock tile | systemd-logind (`loginctl`) and a screen locker that reacts to logind's Lock signal. |
+| Cross Control | Either compositor support for `wlr-layer-shell`, with `pointer-constraints` and `relative-pointer` (strongly recommended) and `keyboard-shortcuts-inhibit` (lets your shortcuts reach the phone), tested on niri; or, on GNOME 45 or newer, xdg-desktop-portal with InputCapture (not yet tested on a device). |
+| PC lock tile | systemd-logind (`loginctl`) and a screen locker that reacts to logind's Lock signal (GNOME needs GDM as the display manager for its lock screen), or Noctalia, or a locker passed with `--lock-command`. |
 | Hotspot tile | NetworkManager (`nmcli`). |
 | GTK app | GTK 4.18 or newer and libadwaita 1.7 or newer. |
 | Noctalia plugin | Noctalia Shell 4.4.0 or newer. |
-| Phone as display | PipeWire with `pipewiresrc`, and VA-API: `vapostproc` is required to read niri's DMA-BUF frames, and `vah264enc` is the default encoder (`x264enc` is the fallback). Screen capture uses niri's screencast API or xdg-desktop-portal ScreenCast. Touch input needs the virtual-pointer and virtual-keyboard protocols. *Extend* needs niri and the `vkms` module or an HDMI dummy plug. The keyboard button needs `wvkbd`. `--audio` needs PulseAudio or PipeWire's Pulse server (`pulsesrc`) and `opusenc`. |
+| Phone as display | PipeWire with `pipewiresrc`; `vah264enc` (VA-API) is the default encoder, `x264enc` the fallback. GNOME: nothing more (Mutter's own screencast, RemoteDesktop and virtual monitors). KDE Plasma: the `dev.smartconnect.Display.desktop` file `install.sh` installs, so KWin trusts the helper. Hyprland and sway: `wlr-screencopy` and the virtual-pointer/virtual-keyboard protocols (both built in). niri: `vapostproc` (`gst-plugin-va`) to read its DMA-BUF frames, and for *Extend* the `vkms` module or an HDMI dummy plug. The keyboard button needs `wvkbd` (not on GNOME). `--audio` needs PulseAudio or PipeWire's Pulse server (`pulsesrc`) and `opusenc`. |
 | Phone as webcam | The `v4l2loopback` module and `v4l2sink` for a camera every app sees, or PipeWire (`pipewiresink`) as a fallback. An H.264 decoder, as for mirroring. |
 | Browsing the phone's files | `fuse3` (`fusermount3` on `PATH`). Nothing at build time: the FUSE code doesn't link libfuse. |
-| Sharing a PC folder with the phone | Inbound TCP 2049 in the [firewall](#firewall), or the port you pass to `smartconnect-files serve --port` (2049 is also the port of a running `nfs-server`). |
+| Sharing a PC folder with the phone | Inbound TCP 2049 in the [firewall](#firewall), or the port you pass to `smartconnect-files serve --port` (2049 is also the port of a running `nfs-server`). `gio` (from GLib, already there with GTK) for delete-to-Trash. Optional: `ffmpeg` for video thumbnails in the phone's Files tab. |
 
 ## Packages
 
@@ -329,7 +374,7 @@ The phone has to reach the PC on:
 |---|---|
 | TCP 52020 (inbound; change it with `--port`) | The TLS WebSocket the phone connects to, for pairing, sessions and Connect-button triggers. |
 | UDP 5353 (inbound, mDNS) | Lets the phone find the PC and the PC find the phone, for reconnecting without a QR. |
-| TCP 2049 (inbound; only for `smartconnect-files serve`, change it with `--port`) | The phone mounts a shared PC folder over NFS in mutual TLS. A running `nfs-server` also uses 2049; pass another `--port` then. Not needed for browsing the phone's files, where the PC connects out. |
+| TCP 2049 (inbound; only while sharing a PC folder, `smartconnect-files serve` or the GTK app's *Share with the phone*; change it with `--port`) | The phone browses a shared PC folder over NFS in mutual TLS. A running `nfs-server` also uses 2049; pass another `--port` then. Not needed for browsing the phone's files, where the PC connects out. |
 
 Outgoing traffic needs no rules on a typical stateful firewall. That covers the PC dialing the
 phone's discovery port and the WebRTC video, where ICE starts from the PC side. In testing with
@@ -338,15 +383,17 @@ firewalld, mirroring worked with only the two rules above.
 firewalld:
 
 ```sh
-sudo firewall-cmd --permanent --add-port=52020/tcp
-sudo firewall-cmd --permanent --add-service=mdns
-sudo firewall-cmd --permanent --add-port=2049/tcp    # only for sharing a PC folder (serve)
+firewall-cmd --get-active-zones    # find your Wi-Fi interface's zone, e.g. "home" (no sudo needed)
+sudo firewall-cmd --permanent --zone=home --add-port=52020/tcp
+sudo firewall-cmd --permanent --zone=home --add-service=mdns
+sudo firewall-cmd --permanent --zone=home --add-port=2049/tcp    # only for sharing a PC folder (serve)
 sudo firewall-cmd --reload
 ```
 
-Add `--zone=<zone>` to limit the rules to your home network's zone. `firewall-cmd --get-active-zones`
-shows which zone your Wi-Fi connection is in. Runtime-only rules (without `--permanent`) are gone
-after a reboot, and the phone then fails with "host unreachable".
+Use the zone your Wi-Fi interface is in. Without `--zone` the rules go to the *default* zone, which
+is often not the Wi-Fi's (for example the default is `public` while the Wi-Fi is in `home`), and
+the phone then gets "No route to host". Runtime-only rules (without `--permanent`) are gone
+after a reboot, with the same symptom.
 
 ufw:
 
@@ -406,6 +453,9 @@ package.
 ## Optional kernel modules
 
 ### vkms, for extending the desktop onto the phone
+
+Only for niri, which can't create a virtual screen itself. GNOME, KDE Plasma, Hyprland and sway
+need nothing here.
 
 ```sh
 sudo modprobe vkms                                      # adds a virtual connector (Virtual-1)
