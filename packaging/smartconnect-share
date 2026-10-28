@@ -170,7 +170,7 @@ if [ "$count" -gt 0 ]; then
   fi
 
   # If not currently serving, launch smartconnect-files serve in the background
-  if ! pgrep -x smartconnect-files >/dev/null 2>&1; then
+  if ! pgrep -f "smartconnect-files serve" >/dev/null 2>&1; then
     share_log="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/smartconnect-files-share.log"
     FILES_BIN="$(command -v smartconnect-files 2>/dev/null || echo "$HOME/.local/bin/smartconnect-files")"
     if [ -x "$FILES_BIN" ]; then
