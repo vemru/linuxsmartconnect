@@ -28,3 +28,15 @@ __pycache__/
 /packaging/arch/src/
 /packaging/arch/pkg/
 /packaging/arch/*.pkg.tar*
+
+# Secrets, state, and credentials
+*.pem
+*.key
+*.der
+identity.json
+paired.json
+pairing-qr.svg
+sessions/
+*.token
+.env
+files-identity/
