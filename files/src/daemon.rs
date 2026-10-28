@@ -23,8 +23,20 @@ const SERVICE_FILE_STATION: i64 = 168;
 const CMD_HANDSHAKE: i64 = 1001;
 
 pub(crate) fn socket_path() -> PathBuf {
-    let dir = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
-    dir.join("smartconnectd.sock")
+    runtime_dir().join("smartconnectd.sock")
+}
+
+fn runtime_dir() -> PathBuf {
+    if let Some(dir) = std::env::var_os("XDG_RUNTIME_DIR").filter(|v| !v.is_empty()) {
+        return PathBuf::from(dir);
+    }
+    // No session runtime dir: use the private per-user state folder, never the shared /tmp.
+    std::env::var_os("XDG_STATE_HOME")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/state")))
+        .unwrap_or_default()
+        .join("smartconnect-linux/run")
 }
 
 /// Performs the handshake and returns where/how to mount the phone. `our_fp` is our TLS cert

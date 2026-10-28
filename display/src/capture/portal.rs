@@ -4,8 +4,10 @@
 //! is deleted and the picker is shown again. The stream lives on the portal's restricted PipeWire
 //! remote, so the source description carries `fd=<OpenPipeWireRemote fd>` (pipewiresrc dups it).
 
+use std::io::Write;
 use std::os::fd::{AsRawFd, OwnedFd};
-use std::path::PathBuf;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow, bail};
 use ashpd::desktop::{
@@ -86,6 +88,28 @@ fn token_path() -> PathBuf {
     base.join("smartconnect-linux/screencast-token")
 }
 
+/// Saves a portal restore token owner-only (file 0600, app dir 0700). `mode` only applies when the
+/// file is created, so an existing token left world-readable by an older version is tightened too.
+fn write_token(path: &Path, tok: &str) {
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+        let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
+    }
+    let saved = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)
+        .and_then(|mut f| {
+            f.write_all(tok.as_bytes())?;
+            f.set_permissions(std::fs::Permissions::from_mode(0o600))
+        });
+    if let Err(e) = saved {
+        eprintln!("capture: could not save restore token to {}: {e}", path.display());
+    }
+}
+
 pub async fn start_mirror(desk: Desktop) -> Result<PortalCast> {
     let proxy = Screencast::new().await.context("connecting to xdg-desktop-portal ScreenCast")?;
     let tpath = token_path();
@@ -126,13 +150,7 @@ async fn try_start(proxy: &Screencast, token: Option<&str>, desk: Desktop) -> Re
         .context("ScreenCast.Start (picker cancelled?)")?;
 
     if let Some(tok) = streams.restore_token() {
-        let p = token_path();
-        if let Some(dir) = p.parent() {
-            let _ = std::fs::create_dir_all(dir);
-        }
-        if let Err(e) = std::fs::write(&p, tok) {
-            eprintln!("capture: could not save restore token to {}: {e}", p.display());
-        }
+        write_token(&token_path(), tok);
     }
 
     let stream = streams.streams().first().ok_or_else(|| anyhow!("portal returned no streams"))?;
@@ -192,6 +210,29 @@ pub fn match_output<'a>(outs: &'a [Output], pos: Option<(i32, i32)>, size: Optio
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::Path;
+
+    fn mode(p: &Path) -> u32 {
+        std::fs::metadata(p).unwrap().permissions().mode() & 0o777
+    }
+
+    #[test]
+    fn restore_tokens_are_written_owner_only() {
+        let dir = std::env::temp_dir().join(format!("sc-tok-{}", std::process::id()));
+        let p = dir.join("smartconnect-linux/screencast-token");
+        // A token (and folder) left by an older version: world-readable.
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, "old").unwrap();
+        std::fs::set_permissions(p.parent().unwrap(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        write_token(&p, "fresh");
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "fresh");
+        assert_eq!(mode(&p), 0o600);
+        assert_eq!(mode(p.parent().unwrap()), 0o700);
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     #[test]
     fn matches_portal_streams_to_outputs() {

@@ -7,9 +7,11 @@
 //! The first start shows the desktop's "allow input capture" prompt. On portal version 2 the
 //! session is persistent and the restore token is kept, so later starts don't ask again.
 
+use std::io::Write;
 use std::num::NonZero;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::UnixStream;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
@@ -328,4 +330,31 @@ async fn run_async(mut core: Core) -> Result<()> {
     let _ = ic.disable(&session, Default::default()).await;
     let _ = session.close().await;
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    fn mode(p: &Path) -> u32 {
+        std::fs::metadata(p).unwrap().permissions().mode() & 0o777
+    }
+
+    #[test]
+    fn restore_tokens_are_written_owner_only() {
+        let dir = std::env::temp_dir().join(format!("cc-tok-{}", std::process::id()));
+        let p = dir.join("smartconnect-linux/crosscontrol-portal.token");
+        // A token (and folder) left by an older version: world-readable.
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, "old").unwrap();
+        std::fs::set_permissions(p.parent().unwrap(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        write_token(&p, "fresh");
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "fresh");
+        assert_eq!(mode(&p), 0o600);
+        assert_eq!(mode(p.parent().unwrap()), 0o700);
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }

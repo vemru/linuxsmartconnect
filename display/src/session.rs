@@ -42,7 +42,16 @@ const PORTRAIT_MAX: u32 = 1920;
 // Daemon control socket.
 
 fn runtime_dir() -> PathBuf {
-    std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).unwrap_or_else(std::env::temp_dir)
+    if let Some(dir) = std::env::var_os("XDG_RUNTIME_DIR").filter(|v| !v.is_empty()) {
+        return PathBuf::from(dir);
+    }
+    // No session runtime dir: use the private per-user state folder, never the shared /tmp.
+    std::env::var_os("XDG_STATE_HOME")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/state")))
+        .unwrap_or_default()
+        .join("smartconnect-linux/run")
 }
 
 fn socket_path() -> PathBuf {

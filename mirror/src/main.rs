@@ -52,7 +52,16 @@ use keys::*;
 const RESIZE_POLL: Duration = Duration::from_millis(250);
 
 fn runtime_dir() -> PathBuf {
-    std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).unwrap_or_else(std::env::temp_dir)
+    if let Some(dir) = std::env::var_os("XDG_RUNTIME_DIR").filter(|v| !v.is_empty()) {
+        return PathBuf::from(dir);
+    }
+    // No session runtime dir: use the private per-user state folder, never the shared /tmp.
+    std::env::var_os("XDG_STATE_HOME")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/state")))
+        .unwrap_or_default()
+        .join("smartconnect-linux/run")
 }
 fn socket_path() -> PathBuf {
     runtime_dir().join("smartconnectd.sock")
@@ -1330,12 +1339,18 @@ fn host_call(req: &Value) -> Option<Value> {
 }
 
 fn serve_control(tx: mpsc::Sender<Ev>) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
     let path = host_socket_path();
     if UnixStream::connect(&path).is_ok() {
         bail!("a host is already running ({})", path.display());
     }
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+        let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
+    }
     let _ = std::fs::remove_file(&path);
     let listener = UnixListener::bind(&path)?;
+    let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
     std::thread::spawn(move || {
         for conn in listener.incoming().map_while(Result::ok) {
             let tx = tx.clone();

@@ -11,7 +11,8 @@
 //!   `{"service":-1,"data":{"event":"notification_action","kind":"action",…}}`
 //!   (`notifications::click_event`).
 
-use std::path::PathBuf;
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -24,18 +25,55 @@ use tracing::warn;
 use crate::discovery;
 use crate::server::Daemon;
 
+/// The per-user runtime directory, or — when the session has none — a private folder under
+/// `$XDG_STATE_HOME` (`~/.local/state`). Never `/tmp`: it is shared, so another user could
+/// pre-create the socket there and receive the commands meant for the daemon.
+fn runtime_dir() -> PathBuf {
+    if let Some(dir) = std::env::var_os("XDG_RUNTIME_DIR").filter(|v| !v.is_empty()) {
+        return PathBuf::from(dir);
+    }
+    std::env::var_os("XDG_STATE_HOME")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/state")))
+        .unwrap_or_default()
+        .join("smartconnect-linux/run")
+}
+
 pub fn socket_path() -> PathBuf {
-    let dir = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
-    dir.join("smartconnectd.sock")
+    runtime_dir().join("smartconnectd.sock")
+}
+
+/// Creates the socket's directory owner-only (0700), binds, and makes the socket owner-only (0600).
+fn bind_control(path: &Path) -> Result<UnixListener> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+            .with_context(|| format!("securing {}", dir.display()))?;
+    }
+    let _ = std::fs::remove_file(path);
+    let listener = UnixListener::bind(path).with_context(|| format!("binding {}", path.display()))?;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+        .with_context(|| format!("securing {}", path.display()))?;
+    Ok(listener)
+}
+
+/// Whether a connected peer runs as this user (SO_PEERCRED).
+fn same_user(peer_uid: u32) -> bool {
+    // SAFETY: geteuid has no preconditions.
+    peer_uid == unsafe { libc::geteuid() }
 }
 
 pub async fn serve(daemon: Arc<Daemon>) -> Result<()> {
     crate::sms::spawn_collector(daemon.clone());
     let path = socket_path();
-    let _ = std::fs::remove_file(&path);
-    let listener = UnixListener::bind(&path).with_context(|| format!("binding {}", path.display()))?;
+    let listener = bind_control(&path)?;
     loop {
         let (stream, _) = listener.accept().await?;
+        if !stream.peer_cred().is_ok_and(|cred| same_user(cred.uid())) {
+            warn!("control: refusing a connection from another user");
+            continue;
+        }
         let daemon = daemon.clone();
         tokio::spawn(async move {
             if let Err(e) = handle(daemon, stream).await {
@@ -236,8 +274,33 @@ pub async fn request(cmd: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::watched;
+    use super::*;
     use crate::proto::SERVICE_LOCAL_EVENTS;
+    use std::os::unix::fs::PermissionsExt;
+
+    fn mode(p: &std::path::Path) -> u32 {
+        std::fs::metadata(p).unwrap().permissions().mode() & 0o777
+    }
+
+    #[tokio::test]
+    async fn the_control_socket_is_private() {
+        let dir = std::env::temp_dir().join(format!("sc-ctrl-{}", std::process::id()));
+        let path = dir.join("run/smartconnectd.sock");
+        let _listener = bind_control(&path).unwrap();
+        assert_eq!(mode(&path), 0o600);
+        assert_eq!(mode(path.parent().unwrap()), 0o700);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn only_our_own_uid_may_connect() {
+        let me = unsafe { libc::geteuid() };
+        assert!(same_user(me));
+        assert!(!same_user(me.wrapping_add(1)));
+        // SO_PEERCRED on a real socket pair reports this process's uid.
+        let (a, _b) = UnixStream::pair().unwrap();
+        assert!(same_user(a.peer_cred().unwrap().uid()));
+    }
 
     #[test]
     fn local_events_only_when_listed() {
