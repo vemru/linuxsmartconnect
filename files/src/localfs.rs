@@ -363,7 +363,7 @@ pub mod kind {
 /// "Recent" means modified within this long (the phone's own server uses one month).
 const RECENT_WINDOW: Duration = Duration::from_secs(30 * 24 * 3600);
 /// A tree walk for the media/recent categories stops after this many entries or this depth, so a
-/// huge home folder can't stall the phone's request.
+/// huge shared folder can't stall the phone's request.
 const WALK_MAX_ENTRIES: usize = 200_000;
 const WALK_MAX_DEPTH: usize = 16;
 /// How long a tree walk is reused while the phone pages through it.

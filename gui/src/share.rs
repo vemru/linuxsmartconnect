@@ -10,7 +10,7 @@
 //!   - "phone connected for file sharing" → the phone has the folder.
 //!
 //! The choices are remembered in `gui.json` (`files.share`, `files.shareDir`, `files.shareHidden`,
-//! `files.shareReadOnly`). The default folder is your home folder; hidden (dot) entries stay
+//! `files.shareReadOnly`). The default folder is `~/SmartConnect`; hidden (dot) entries stay
 //! invisible to the phone unless *Include hidden files* is on (`--include-hidden`), so `~/.ssh` and
 //! app data aren't exposed. Deleting from the phone moves files to the Trash unless *Let the phone
 //! delete files* is off (`--read-only`). While

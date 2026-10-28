@@ -8,6 +8,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). The READM
 
 ## [Unreleased]
 
+### Changed
+
+- **PC folder share default location moved to `~/SmartConnect`:** `smartconnect-files serve` and the GTK app default to sharing `~/SmartConnect` (created on first use) instead of all of `$HOME`. This keeps `.ssh`, credentials, browser profiles, and personal configuration files out of the phone's view. An explicit `--sharedir` or GUI folder choice continues to override this default. Symlinks pointing outside the share are also rejected.
+
 ### Fixed
 
 - Clipboard Linux → phone on GNOME: GNOME has no data-control protocol, so `wl-paste --watch` refused to run and copies on the PC never reached the phone. The daemon now follows the clipboard through Xwayland (XFixes) there; password-manager copies are still skipped.
