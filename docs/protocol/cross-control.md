@@ -149,9 +149,11 @@ sends every event to the client over libei instead. Returning control is a porta
 cursor position just inside the edge. The first start shows the desktop's permission prompt; with
 portal version 2 the session is persistent and its restore token is kept, so later starts don't ask.
 
-Where the phone sits is PC-side only (the phone gets no position): this project keeps a side and
-the part of that edge the phone touches (`crosscontrol.json`, edited by dragging the phone in the
-GTK app). Only that part of the edge leads to the phone, and it maps onto the phone's whole side.
+Where the phone sits is PC-side only (the phone gets no position): this project keeps the monitor it
+touches, a side of that monitor and the part of that edge the phone covers (`crosscontrol.json`,
+edited by dragging the phone in the GTK app; the monitor's logical rect is stored beside it because
+the InputCapture portal names no outputs). Only that part of that monitor's edge leads to the phone,
+and it maps onto the phone's whole side.
 
 ## Tile on the phone: Cross Control or the PC display
 

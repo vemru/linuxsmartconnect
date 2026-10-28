@@ -7,10 +7,10 @@
 //! The first start shows the desktop's "allow input capture" prompt. On portal version 2 the
 //! session is persistent and the restore token is kept, so later starts don't ask again.
 
-use std::io::Write;
 use std::num::NonZero;
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::UnixStream;
+use std::io::Write;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -38,6 +38,28 @@ fn token_path() -> PathBuf {
         .join("smartconnect-linux/crosscontrol-portal.token")
 }
 
+/// Saves a portal restore token owner-only (file 0600, app dir 0700). `mode` only applies when the
+/// file is created, so an existing token left world-readable by an older version is tightened too.
+fn write_token(path: &Path, tok: &str) {
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+        let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
+    }
+    let saved = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)
+        .and_then(|mut f| {
+            f.write_all(tok.as_bytes())?;
+            f.set_permissions(std::fs::Permissions::from_mode(0o600))
+        });
+    if let Err(e) = saved {
+        eprintln!("portal: could not save restore token to {}: {e}", path.display());
+    }
+}
+
 /// Creates and starts a capture session: version 2 (persistent, restore token) when the portal
 /// has it, else the version 1 call that starts implicitly.
 async fn start_session(ic: &InputCapture) -> Result<Session<InputCapture>> {
@@ -52,11 +74,7 @@ async fn start_session(ic: &InputCapture) -> Result<Session<InputCapture>> {
         match ic.start(&session, None, opts).await.and_then(|r| r.response()) {
             Ok(resp) => {
                 if let Some(t) = resp.restore_token() {
-                    let path = token_path();
-                    if let Some(dir) = path.parent() {
-                        let _ = std::fs::create_dir_all(dir);
-                    }
-                    let _ = std::fs::write(&path, t);
+                    write_token(&token_path(), t);
                 }
                 return Ok(session);
             }
@@ -74,33 +92,68 @@ async fn start_session(ic: &InputCapture) -> Result<Session<InputCapture>> {
     Ok(session)
 }
 
-/// One barrier on the chosen edge of every zone (monitor). Barriers between two monitors are
+/// One barrier on the chosen edge of the monitor the phone sits next to (the GTK app saves its
+/// rect with the position), else of every zone (monitor). Barriers between two monitors are
 /// refused by the desktop, which leaves exactly the outer edge.
-fn barriers(zones: &Zones, edge: Edge, (s, e): (f64, f64)) -> Vec<(Barrier, Region)> {
-    zones
-        .regions()
-        .iter()
-        .enumerate()
-        .filter_map(|(n, &r)| {
-            let (x, y, w, h) = (r.x_offset(), r.y_offset(), r.width() as i32, r.height() as i32);
-            // Only the part of the edge the phone touches.
-            let (y0, y1) = (y + (s * h as f64) as i32, y + ((e * h as f64) as i32).max(1) - 1);
-            let (x0, x1) = (x + (s * w as f64) as i32, x + ((e * w as f64) as i32).max(1) - 1);
-            let pos = match edge {
-                Edge::Left => (x, y0, x, y1),
-                Edge::Right => (x + w, y0, x + w, y1),
-                Edge::Top => (x0, y, x1, y),
-                Edge::Bottom => (x0, y + h, x1, y + h),
+fn barriers(zones: &Zones, edge: Edge, span: (f64, f64), anchor: Option<(i32, i32, u32, u32)>) -> Vec<(Barrier, Region)> {
+    let regions: Vec<(i32, i32, u32, u32)> =
+        zones.regions().iter().map(|r| (r.x_offset(), r.y_offset(), r.width(), r.height())).collect();
+    let zones_list = zones.regions();
+    barrier_positions(&regions, edge, span, anchor)
+        .into_iter()
+        .filter_map(|(i, pos)| Some((Barrier::new(NonZero::new(i as u32 + 1)?, pos), zones_list[i])))
+        .collect()
+}
+
+/// Which zone (monitor) gets a barrier and where, as (zone index, (x1, y1, x2, y2)). The anchor is
+/// the rect the GTK page saved for the monitor the phone touches: only that monitor's edge leads
+/// to the phone. No anchor, or one that no zone matches (the layout changed): every zone, as before.
+fn barrier_positions(
+    regions: &[(i32, i32, u32, u32)],
+    edge: Edge,
+    (s, e): (f64, f64),
+    anchor: Option<(i32, i32, u32, u32)>,
+) -> Vec<(usize, (i32, i32, i32, i32))> {
+    let matching: Vec<usize> =
+        anchor.map(|rect| regions.iter().enumerate().filter(|(_, r)| **r == rect).map(|(i, _)| i).collect()).unwrap_or_default();
+    if anchor.is_some() && matching.is_empty() {
+        eprintln!("portal: the saved monitor position is not among the portal's zones (did the layout change?); arming every monitor edge");
+    }
+    let chosen: Vec<usize> = if matching.is_empty() { (0..regions.len()).collect() } else { matching };
+    chosen
+        .into_iter()
+        .filter_map(|i| {
+            let (x, y, w, h) = regions[i];
+            let (x, y, w, h) = (x, y, w as i32, h as i32);
+            // Only the part of the edge the phone touches. Always at least one pixel, every pixel
+            // of a full span, and never past the monitor's corner (a hand-edited file can say 1.0).
+            let seg = |start: f64, end: f64, size: i32| {
+                let a = ((start * size as f64).round() as i32).clamp(0, size - 1);
+                let b = ((end * size as f64).round() as i32 - 1).clamp(a, size - 1);
+                (a, b)
             };
-            Some((Barrier::new(NonZero::new(n as u32 + 1)?, pos), r))
+            let (a, b) = seg(s, e, if edge.vertical() { h } else { w });
+            let pos = match edge {
+                Edge::Left => (x, y + a, x, y + b),
+                Edge::Right => (x + w, y + a, x + w, y + b),
+                Edge::Top => (x + a, y, x + b, y),
+                Edge::Bottom => (x + a, y + h, x + b, y + h),
+            };
+            Some((i, pos))
         })
         .collect()
 }
 
 /// Sets the barriers and returns the zones that got one.
-async fn arm(ic: &InputCapture, session: &Session<InputCapture>, edge: Edge, span: (f64, f64)) -> Result<Vec<(u32, Region)>> {
+async fn arm(
+    ic: &InputCapture,
+    session: &Session<InputCapture>,
+    edge: Edge,
+    span: (f64, f64),
+    anchor: Option<(i32, i32, u32, u32)>,
+) -> Result<Vec<(u32, Region)>> {
     let zones = ic.zones(session, Default::default()).await?.response().context("InputCapture.GetZones")?;
-    let wanted = barriers(&zones, edge, span);
+    let wanted = barriers(&zones, edge, span, anchor);
     let list: Vec<Barrier> = wanted.iter().map(|(b, _)| Barrier::new(b.barrier_id(), b.position())).collect();
     let resp = ic
         .set_pointer_barriers(session, &list, zones.zone_set(), Default::default())
@@ -167,7 +220,7 @@ async fn run_async(mut core: Core) -> Result<()> {
     let edge = core.opts.edge;
     let ic = InputCapture::new().await.context("no InputCapture portal (needs xdg-desktop-portal with a GNOME 45+ or KDE 6.1+ backend)")?;
     let session = start_session(&ic).await?;
-    let mut armed = arm(&ic, &session, edge, core.opts.span).await?;
+    let mut armed = arm(&ic, &session, edge, core.opts.span, core.opts.anchor).await?;
 
     let fd = ic.connect_to_eis(&session, Default::default()).await.context("InputCapture.ConnectToEIS")?;
     let context = ei::Context::new(UnixStream::from(fd))?;
@@ -224,14 +277,27 @@ async fn run_async(mut core: Core) -> Result<()> {
                     Some(ActivatedBarrier::Barrier(id)) => Some(id.get()),
                     _ => None,
                 };
-                let zone = id.and_then(|id| armed.iter().find(|(b, _)| *b == id)).or(armed.first()).map(|(_, r)| *r);
+                // The monitor that was hit: by barrier id, else by where the cursor is. Only fall
+                // back to "the only armed monitor" — never to the first of several.
+                let zone = id
+                    .and_then(|id| armed.iter().find(|(b, _)| *b == id).map(|(_, r)| *r))
+                    .or_else(|| {
+                        let (x, y) = a.cursor_position()?;
+                        armed.iter().map(|(_, r)| *r).find(|r| {
+                            let (rx, ry) = (r.x_offset() as f32, r.y_offset() as f32);
+                            x >= rx && x < rx + r.width() as f32 && y >= ry && y < ry + r.height() as f32
+                        })
+                    })
+                    .or_else(|| (armed.len() == 1).then(|| armed[0].1));
                 cap.activation = a.activation_id();
                 cap.zone = zone;
-                let f = match (zone, a.cursor_position()) {
-                    (Some(r), Some(pos)) => along(edge, r, pos),
-                    _ => 0.5,
-                };
-                action = core.edge_hit(f);
+                if let Some(r) = zone {
+                    let f = match a.cursor_position() {
+                        Some(pos) => along(edge, r, pos),
+                        None => 0.5,
+                    };
+                    action = core.edge_hit(f);
+                }
             }
             Ev::Deactivated(id) => {
                 // The desktop ended the capture itself (e.g. its own release shortcut).
@@ -248,7 +314,7 @@ async fn run_async(mut core: Core) -> Result<()> {
                 // Monitors changed: re-arm. The portal needs the session disabled for that.
                 core.leave("monitors changed");
                 let _ = ic.disable(&session, Default::default()).await;
-                match arm(&ic, &session, edge, core.opts.span).await {
+                match arm(&ic, &session, edge, core.opts.span, core.opts.anchor).await {
                     Ok(a) => armed = a,
                     Err(e) => break Err(e),
                 }
@@ -334,7 +400,6 @@ async fn run_async(mut core: Core) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::os::unix::fs::PermissionsExt;
 
     fn mode(p: &Path) -> u32 {
@@ -356,5 +421,41 @@ mod tests {
         assert_eq!(mode(&p), 0o600);
         assert_eq!(mode(p.parent().unwrap()), 0o700);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    use super::*;
+
+    /// The user's two-monitor layout: HDMI-1 2560×1440 at (0,0), the laptop panel below it.
+    fn zones() -> Vec<(i32, i32, u32, u32)> {
+        vec![(0, 0, 2560, 1440), (250, 1440, 1920, 1080)]
+    }
+
+    #[test]
+    fn only_the_monitor_the_phone_touches_gets_a_barrier() {
+        let z = zones();
+        // The phone sits next to the laptop panel: one barrier, on eDP-1's right edge only.
+        let got = barrier_positions(&z, Edge::Right, (0.25, 0.75), Some((250, 1440, 1920, 1080)));
+        assert_eq!(got.len(), 1, "the external monitor's right edge must not enter the phone: {got:?}");
+        assert_eq!(got[0].0, 1, "the barrier belongs to eDP-1");
+        // eDP-1's right edge, over the part of the edge the phone covers (25 %..75 % of 1080 px).
+        assert_eq!(got[0].1, (2170, 1710, 2170, 2249));
+        // Other edges work the same way.
+        let got = barrier_positions(&z, Edge::Bottom, (0.0, 1.0), Some((0, 0, 2560, 1440)));
+        assert_eq!(got, vec![(0, (0, 1440, 2559, 1440))]);
+        // No anchor (older position file): every monitor, as before.
+        assert_eq!(barrier_positions(&z, Edge::Right, (0.0, 1.0), None).len(), 2);
+        // The saved monitor is gone / the layout changed: never arm nothing at all.
+        assert_eq!(barrier_positions(&z, Edge::Right, (0.0, 1.0), Some((0, 0, 1, 1))).len(), 2);
+        // A single monitor: the anchor matches or falls back, and only one barrier is set either way.
+        assert_eq!(barrier_positions(&z[..1], Edge::Right, (0.0, 1.0), Some((0, 0, 2560, 1440))).len(), 1);
+    }
+
+    #[test]
+    fn the_span_covers_the_phone_and_nothing_else() {
+        let z = [(0, 0, 2560, 1440)];
+        let got = barrier_positions(&z, Edge::Right, (0.5, 0.5), Some((0, 0, 2560, 1440)));
+        // A zero-width span still yields a 1-px barrier, never an inverted or empty one.
+        assert_eq!(got, vec![(0, (2560, 720, 2560, 720))]);        let got = barrier_positions(&z, Edge::Left, (0.0, 1.0), None);
+        assert_eq!(got, vec![(0, (0, 0, 0, 1439))], "the full height, last pixel inclusive");
     }
 }

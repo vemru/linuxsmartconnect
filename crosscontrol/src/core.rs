@@ -28,6 +28,11 @@ impl Edge {
             Edge::Top => -dy,
         }
     }
+
+    /// Left and right edges run along y, top and bottom along x.
+    pub fn vertical(self) -> bool {
+        matches!(self, Edge::Left | Edge::Right)
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -44,6 +49,9 @@ pub struct Opts {
     /// Only that part of the edge leads to the phone, and it maps onto the phone's whole side.
     pub span: (f64, f64),
     pub output: Option<String>,
+    /// The chosen monitor's logical rect (x, y, w, h), saved with the position by the GTK app.
+    /// The portal has no output names, so this is how it knows which zone the phone touches.
+    pub anchor: Option<(i32, i32, u32, u32)>,
     pub gain: f64,
     /// Outward overshoot (phone px) past the shared edge that returns control.
     pub exit_px: f64,

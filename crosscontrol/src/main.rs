@@ -88,6 +88,22 @@ fn apply_config(o: &mut Opts, v: &Value) {
     {
         o.span = span;
     }
+    if let Some(output) = v.get("output").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty()) {
+        o.output = Some(output.to_owned());
+    }
+    if let Some(rect) = v.get("rect").and_then(parse_rect) {
+        o.anchor = Some(rect);
+    }
+}
+
+/// `[x, y, w, h]` (logical px, the desktop's coordinate space) from the shared position file.
+fn parse_rect(v: &Value) -> Option<(i32, i32, u32, u32)> {
+    let a = v.as_array()?;
+    let n = |i: usize| a.get(i).and_then(Value::as_i64);
+    let (x, y, w, h) = (n(0)?, n(1)?, n(2)?, n(3)?);
+    let (x, y) = (i32::try_from(x).ok()?, i32::try_from(y).ok()?);
+    let (w, h) = (u32::try_from(w).ok()?, u32::try_from(h).ok()?);
+    (w > 0 && h > 0).then_some((x, y, w, h))
 }
 
 fn parse_args() -> Result<Opts> {
@@ -95,6 +111,7 @@ fn parse_args() -> Result<Opts> {
         edge: Edge::Right,
         span: (0.0, 1.0),
         output: None,
+        anchor: None,
         gain: 1.6,
         exit_px: 12.0,
         in_use_cap: true,
@@ -137,7 +154,7 @@ fn parse_args() -> Result<Opts> {
                      Defaults come from {} (the GTK app's Cross Control page writes it).\n\
                      --backend: layer-shell = edge strip + pointer lock (niri, sway, Hyprland, KDE); portal = InputCapture\n\
                      portal (GNOME; asks once for permission); auto (default) = layer-shell when available, else portal.\n\
-                     --output only applies to layer-shell (the portal puts a barrier on that edge of every monitor).",
+                     --output: the monitor the phone sits next to (layer-shell); the portal uses the rect saved with it.",
                     config_path().display()
                 );
                 std::process::exit(0);
@@ -271,11 +288,18 @@ mod tests {
 
     #[test]
     fn config_overrides_defaults() {
-        let mut o = Opts { edge: Edge::Right, span: (0.0, 1.0), output: None, gain: 1.6, exit_px: 12.0, in_use_cap: true, accept: false, backend: Backend::Auto };
+        let mut o =
+            Opts { edge: Edge::Right, span: (0.0, 1.0), output: None, anchor: None, gain: 1.6, exit_px: 12.0, in_use_cap: true, accept: false, backend: Backend::Auto };
         apply_config(&mut o, &json!({"edge": "left", "start": 0.1, "end": 0.6}));
         assert_eq!(o.edge, Edge::Left);
         assert_eq!(o.span, (0.1, 0.6));
         apply_config(&mut o, &json!({"edge": "sideways", "start": 0.9, "end": 0.2}));
         assert_eq!((o.edge, o.span), (Edge::Left, (0.1, 0.6)), "bad values are ignored");
+        // The GTK page's monitor: name for layer-shell, rect for the portal.
+        apply_config(&mut o, &json!({"output": "HDMI-1", "rect": [0, 0, 2560, 1440]}));
+        assert_eq!(o.output.as_deref(), Some("HDMI-1"));
+        assert_eq!(o.anchor, Some((0, 0, 2560, 1440)));
+        apply_config(&mut o, &json!({"rect": [0, 0, 0, 1440]}));
+        assert_eq!(o.anchor, Some((0, 0, 2560, 1440)), "a zero-sized rect is ignored");
     }
 }

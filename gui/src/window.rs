@@ -978,12 +978,25 @@ impl Ui {
         }
     }
 
-    /// Pushes the current state and window visibility to the tray.
+    /// Pushes the current state, window visibility and the device line to the tray.
     fn refresh_tray(&self) {
         let state = self.tray_state();
         let visible = self.window.is_visible();
+        let detail = self.tray_detail();
         if let Some(tray) = self.tray.borrow().as_ref() {
-            tray.set(state, visible);
+            tray.set(state, visible, detail);
+        }
+    }
+
+    /// "Alex's Phone · 63%" while connected, empty otherwise.
+    fn tray_detail(&self) -> String {
+        let st = self.state.borrow();
+        let Some(status) = st.status.as_ref().filter(|s| s.connected) else { return String::new() };
+        let name = status.name.clone().unwrap_or_else(|| "Phone".into());
+        match status.battery {
+            Some(b) if status.charging => format!("{name} · {b}% ⚡"),
+            Some(b) => format!("{name} · {b}%"),
+            None => name,
         }
     }
 

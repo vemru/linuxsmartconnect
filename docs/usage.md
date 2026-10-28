@@ -414,16 +414,24 @@ Cross Control has three modes, as on Windows:
 
 ### Phone position
 
-On the Display tab (*Phone position*), drag the phone around the picture of your screen. It snaps to the
-nearest side; the highlighted part of that edge is where the pointer crosses over, and it maps onto
-the whole height (or width) of the phone. **Extend display** uses the same position: the phone's
-screen goes on that side of the primary monitor, centred on the phone, and a running Extend session
-moves when you drop the phone (`smartconnect-display --side` overrides the side). The position is saved in
-`~/.config/smartconnect-linux/crosscontrol.json` (`{"edge": "left", "start": 0.15, "end": 0.85}`,
-fractions along the edge from the top or the left), which `smartconnect-crosscontrol` reads when it
-starts, also when the daemon starts it for the phone's tile. Moving the phone while shared mouse and
-keyboard runs restarts the client to apply it. `--edge` and `--span START:END` override the file,
-and so does `$SMARTCONNECT_CROSS_EDGE` for clients the daemon starts.
+On the Display tab (*Phone position*), drag the phone around the picture of your monitors — it draws
+them where the desktop has them (sidebar above laptop, side by side, offset…). The phone snaps to a
+*free* edge of the monitor you drop it on (an edge no other monitor sits against; the ones that are
+shared are skipped, because the pointer cannot leave the desktop there). The highlighted part of that
+edge is where the pointer crosses over, and it maps onto the whole height (or width) of the phone.
+**Extend display** puts the phone's screen beside that same monitor, centred on the phone, past any
+other monitor on that side, and every existing monitor keeps the position it had. A running Extend
+session follows when you drop the phone (`smartconnect-display --side` overrides the side).
+**Duplicate display** shows that monitor on the phone. The position is saved in
+`~/.config/smartconnect-linux/crosscontrol.json`
+(`{"edge": "left", "start": 0.15, "end": 0.85, "output": "eDP-1", "rect": [250, 1440, 1920, 1080]}`:
+fractions along that monitor's edge from the top or the left, and the monitor the phone touches plus
+its logical rect — the portal has no output names, so the rect is how the barrier finds the right
+monitor). A file without `output`/`rect` keeps working: the primary monitor is used.
+`smartconnect-crosscontrol` reads it when it starts, also when the daemon starts it for the phone's
+tile. Moving the phone while shared mouse and keyboard runs restarts the client to apply it.
+`--edge` and `--span START:END` override the file, and so does `$SMARTCONNECT_CROSS_EDGE` for
+clients the daemon starts.
 
 Only one client runs at a time. Starting a new one takes over from the old one.
 
@@ -520,17 +528,18 @@ and the phone connected.
   | other Wayland | none: name a connected spare output with `--output` | virtual pointer | ❓ untested |
 
   **Which side:** the phone's screen goes where you put the phone on the GTK app's Cross Control
-  page (left, right, top or bottom of the main screen, centred on the spot you dropped it; saved
-  in `~/.config/smartconnect-linux/crosscontrol.json`), else on the right. A running session
-  follows a change within a second (GNOME, niri, Hyprland, sway; KDE places it itself). `--side
-  left|right|top|bottom` overrides it for one session.
+  page (a free side of any of your monitors, centred on the spot you dropped it, past a monitor that
+  is already on that side; every other monitor keeps its position; saved in
+  `~/.config/smartconnect-linux/crosscontrol.json`), else on the right of the primary one. A running
+  session follows a change within a second (GNOME, niri, Hyprland, sway; KDE places it itself).
+  `--side left|right|top|bottom` overrides it for one session.
 
   `--output NAME` uses an existing connector (e.g. an HDMI dummy plug) instead on every desktop.
   `smartconnect-display --list-outputs` prints what the helper sees.
-- **Duplicate** (✅, `--mode mirror`): shows the focused (or primary) screen, without a picker on
-  GNOME, niri (Mutter screencast API), KDE (KWin) and Hyprland/sway (wlr-screencopy). When that
-  fails it falls back to the xdg-desktop-portal screen picker, which asks once and remembers the
-  choice.
+- **Duplicate** (✅, `--mode mirror`): shows the monitor the phone sits next to (the Cross Control
+  position, else the primary/focused one), without a picker on GNOME, niri (Mutter screencast API),
+  KDE (KWin) and Hyprland/sway (wlr-screencopy). When that fails it falls back to the
+  xdg-desktop-portal screen picker, which asks once and remembers the choice.
 
 ### Starting and stopping
 
@@ -792,6 +801,16 @@ open it. `~/SmartConnect` is created on first use; pick another folder with *Cha
 `--sharedir`. Symlinks inside the shared folder are hidden from the phone, which sees only real
 files and folders inside the share.
 
+### Sharing files from your file manager (context menu)
+
+Select one or more files or folders in your file manager (Nautilus, Dolphin, Nemo, or desktop) and share them directly to the phone:
+
+- **Nautilus (GNOME Files):** Right-click selected file(s) → **Scripts** → **Send to Phone (Smart Connect)** (or right-click → **Open With…** → **Send to Phone (Smart Connect)**).
+- **KDE Dolphin:** Right-click selected file(s) → **Send to Phone (Smart Connect)**.
+- **CLI:** `smartconnect-share <file1> <file2> ...`
+
+Files are hardlinked (or copied if across devices/directories) into `~/SmartConnect` (or your configured shared folder) without duplicating disk space, and `smartconnect-files serve` is activated in the background so the files appear immediately on the connected phone under Smart Connect's **Files tab**. A desktop notification confirms the transfer.
+
 **From the GTK app:** Files page → *Share with the phone* → turn on *Share a folder with the phone*.
 
 | Setting | Default | What it does |
@@ -933,7 +952,7 @@ smartconnect-crosscontrol [--edge left|right|top|bottom] [--span START:END] [--b
 | `--edge` | from `crosscontrol.json`, else `right` | The screen edge the phone "sits" behind. |
 | `--span START:END` | from `crosscontrol.json`, else `0:1` | The part of the edge the phone touches, as fractions from the top or the left. Only there does the pointer cross over, and it maps onto the phone's whole side. |
 | `--backend` | `auto` | How input is grabbed: `layer-shell` (edge strip + pointer lock), `portal` (InputCapture portal, GNOME), or `auto` (layer-shell when the compositor has it, else the portal). |
-| `--output NAME` | first output | The output (connector name, e.g. `eDP-1`) whose edge is used. Layer-shell only: the portal puts a barrier on that edge of every monitor (edges shared between monitors are refused). |
+| `--output NAME` | from `crosscontrol.json`, else the primary | The monitor the phone sits next to. Layer-shell uses that output's edge; the portal arms only the barrier segment on that monitor's rect (edges shared between two monitors are refused by the desktop). |
 | `--gain N` | `1.6` | Pointer speed on the phone: relative mouse motion × N, in phone pixels. |
 | `--exit-px N` | `12` | How far (in phone pixels) to push back past the shared edge to return to the PC. |
 | `--no-in-use-cap` | off | Don't send the phone the "Cross Control in use" status update. |

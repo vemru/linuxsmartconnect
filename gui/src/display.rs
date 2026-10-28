@@ -404,6 +404,13 @@ struct Running {
     args: Vec<String>,
 }
 
+/// Print-and-exit flags: `--list-outputs` is how this page reads the monitors (every 5 s) and
+/// `--help` is how it reads the helper's flags. They run the same binary but are not sessions;
+/// counting them made “Phone as display” flash *Running / Off* on every output refresh.
+fn is_query(args: &[String]) -> bool {
+    args.iter().any(|a| matches!(a.as_str(), "--list-outputs" | "--help" | "-h"))
+}
+
 /// Every running process of the helper `name`, ours or not. Matches the kernel's short command
 /// name first (cheap, at most 15 bytes), then argv[0], or argv[1] for a script run by an interpreter.
 fn running_sessions(name: &str) -> Vec<Running> {
@@ -421,6 +428,9 @@ fn running_sessions(name: &str) -> Vec<Running> {
         let is_us = |a: &String| Path::new(a).file_name().and_then(|f| f.to_str()) == Some(name);
         if let Some(i) = args.iter().take(2).position(is_us) {
             let rest: Vec<String> = args[i + 1..].iter().filter(|a| !a.is_empty()).cloned().collect();
+            if is_query(&rest) {
+                continue;
+            }
             found.push(Running { pid, args: rest });
         }
     }
@@ -651,15 +661,42 @@ impl Outputs {
     fn has_virtual(&self) -> bool {
         self.list.iter().any(|o| o.is_virtual)
     }
+
+    /// The enabled monitors with their logical rects, for drawing the real arrangement.
+    fn screens(&self) -> Vec<Screen> {
+        self.list
+            .iter()
+            .filter_map(|o| {
+                Some(Screen { name: o.name.clone(), description: o.description.clone(), rect: o.rect?, primary: o.primary })
+            })
+            .collect()
+    }
+}
+
+/// One monitor as the Cross Control page draws it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Screen {
+    pub name: String,
+    /// Make and model, or "" when unknown.
+    pub description: String,
+    /// Logical rect (x, y, w, h) in the desktop's coordinate space.
+    pub rect: (i32, i32, u32, u32),
+    /// The desktop's primary/focused monitor (the helper's `focused`). The fallback when the saved
+    /// monitor is gone, and what Duplicate shows without a saved position.
+    pub primary: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 struct Output {
     name: String,
+    description: String,
     label: String,
     is_virtual: bool,
     /// A laptop's own panel: never offered as an extend target (it would be switched off afterwards).
     is_internal: bool,
+    /// Logical rect while it is on.
+    rect: Option<(i32, i32, u32, u32)>,
+    primary: bool,
 }
 
 fn parse_outputs(json: &[u8]) -> Result<Outputs, String> {
@@ -675,14 +712,33 @@ fn parse_outputs(json: &[u8]) -> Result<Outputs, String> {
             a.iter()
                 .map(|o| {
                     let name = text(o, "name");
+                    let description = text(o, "description");
                     let flag = |k: &str| o.get(k).and_then(Value::as_bool).unwrap_or(false);
-                    let what = match text(o, "description") {
+                    let what = match description.as_str() {
                         _ if flag("virtual") => "virtual".to_owned(),
-                        d if d.is_empty() => "monitor".to_owned(),
-                        d => d,
+                        "" => "monitor".to_owned(),
+                        d => d.to_owned(),
                     };
                     let label = format!("{name} ({what}, {})", if flag("enabled") { "on" } else { "off" });
-                    Output { label, is_virtual: flag("virtual"), is_internal: flag("internal"), name }
+                    // The helper lists the logical rect (x, y, w, h) so the GTK page can draw the
+                    // real arrangement; older helpers send none, and then only one screen is drawn.
+                    let num = |k: &str| o.get(k).and_then(Value::as_i64);
+                    let rect = match (num("x"), num("y"), num("width"), num("height")) {
+                        (Some(x), Some(y), Some(w), Some(h)) if w > 0 && h > 0 => {
+                            Some((i32::try_from(x).unwrap_or(0), i32::try_from(y).unwrap_or(0), w as u32, h as u32))
+                        }
+                        _ => None,
+                    };
+                    Output {
+                        name,
+                        description,
+                        label,
+                        is_virtual: flag("virtual"),
+                        is_internal: flag("internal"),
+                        rect,
+                        // "focused" is the primary monitor in the helper's output.
+                        primary: flag("focused"),
+                    }
                 })
                 .collect()
         })
@@ -1194,6 +1250,22 @@ impl DisplayPage {
             }
             self.run_checks();
             self.poll_now();
+        }
+    }
+
+    /// The enabled monitors with their logical rects (the real arrangement), as last listed. Empty
+    /// until the helper has been asked, or on a helper too old to send rects.
+    pub fn screens(&self) -> Vec<Screen> {
+        match &self.st.borrow().outputs {
+            Some(Ok(outputs)) => outputs.screens(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Applies changed settings (Duplicate's mirrored monitor, a new scale) to a running session.
+    pub fn restart_session(self: &Rc<Self>) {
+        if self.running_mode().is_some() {
+            self.restart();
         }
     }
 
@@ -1743,6 +1815,27 @@ mod tests {
     }
 
     #[test]
+    fn output_rects_come_from_the_helper() {
+        // The real answer of `smartconnect-display --list-outputs` on the user's laptop.
+        let json = br#"{"desktop":"GNOME","error":null,"extend":"virtual","outputs":[
+            {"name":"HDMI-1","description":"Microstep 27\"","enabled":true,"virtual":false,"internal":false,"focused":true,"x":0,"y":0,"width":2560,"height":1440},
+            {"name":"eDP-1","description":"Built-in display","enabled":true,"virtual":false,"internal":true,"focused":false,"x":250,"y":1440,"width":1920,"height":1080}
+        ]}"#;
+        let outs = parse_outputs(json).unwrap();
+        let screens = outs.screens();
+        assert_eq!(screens.len(), 2);
+        assert_eq!(screens[0].name, "HDMI-1");
+        assert_eq!(screens[0].description, "Microstep 27\"");
+        assert_eq!(screens[0].rect, (0, 0, 2560, 1440));
+        assert!(screens[0].primary);
+        assert_eq!(screens[1].rect, (250, 1440, 1920, 1080), "the laptop panel is below and offset");
+        assert!(!screens[1].primary);
+        // An older helper sends no rects: no screens to draw (one generic screen is used instead).
+        let old = br#"{"desktop":"GNOME","extend":"virtual","outputs":[{"name":"HDMI-1","description":"x","enabled":true}]}"#;
+        assert!(parse_outputs(old).unwrap().screens().is_empty());
+    }
+
+    #[test]
     fn prefs_to_args_and_back() {
         let mut d = DisplayPrefs::default();
         let o = Opts::from_prefs(&d);
@@ -1938,6 +2031,40 @@ mod tests {
         assert!(snap.sessions.is_empty());
         let (_, state) = snap.log.unwrap();
         assert!(matches!(outcome(&state), Some(Outcome::Stopped(r)) if r == "stopped from this PC"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `--list-outputs` / `--help` run the same helper but are not sessions: the Display page runs
+    /// them itself, and counting them flashed "Phone as display" between Off and Running.
+    #[test]
+    fn output_queries_are_not_sessions() {
+        let dir = std::env::temp_dir().join(format!("smartconnect-gui-query-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let name = format!("fake-query-{}", std::process::id());
+        let bin = dir.join(&name);
+        std::fs::write(&bin, "#!/bin/sh\nwhile :; do sleep 0.05; done\n").unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let mut session = Command::new(&bin).args(["--mode", "mirror"]).spawn().unwrap();
+        let mut listing = Command::new(&bin).arg("--list-outputs").spawn().unwrap();
+        let mut help = Command::new(&bin).arg("--help").spawn().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let found = running_sessions(&name);
+            if found.iter().any(|r| r.pid == session.id()) {
+                assert!(!found.iter().any(|r| r.pid == listing.id()), "--list-outputs is not a session");
+                assert!(!found.iter().any(|r| r.pid == help.id()), "--help is not a session");
+                break;
+            }
+            assert!(Instant::now() < deadline, "the stand-in session never showed up in /proc");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let _ = session.kill();
+        let _ = listing.kill();
+        let _ = help.kill();
+        let _ = session.wait();
+        let _ = listing.wait();
+        let _ = help.wait();
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -152,21 +152,25 @@ impl Edge {
     }
 }
 
-/// Where the phone sits next to the primary screen. The GTK Cross Control page saves it (the user
-/// drags the phone around the PC screen) to `$XDG_CONFIG_HOME/smartconnect-linux/crosscontrol.json`
-/// as `{"edge":"left|right|top|bottom","start":0.15,"end":0.85}`; `start`/`end` are fractions along
-/// that edge, from its top (left/right) or its left (top/bottom). Extend centres the phone's screen
-/// on `(start + end) / 2` of that edge. Missing or invalid: right, centred.
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// Where the phone sits next to the PC's screens. The GTK Cross Control page saves it (the user
+/// drags the phone around the real monitor arrangement) to
+/// `$XDG_CONFIG_HOME/smartconnect-linux/crosscontrol.json` as
+/// `{"edge":"left|right|top|bottom","start":0.15,"end":0.85,"output":"HDMI-1"}`; `start`/`end` are
+/// fractions along that monitor's edge, from its top (left/right) or its left (top/bottom), and
+/// `output` is the monitor the phone touches (missing: the primary). Extend centres the phone's
+/// screen on `(start + end) / 2` of that edge. Missing or invalid: right of the primary, centred.
+#[derive(Clone, Debug, PartialEq)]
 pub struct Placement {
     pub edge: Edge,
     pub start: f64,
     pub end: f64,
+    /// Connector the phone sits next to. `None` = the primary/focused output.
+    pub output: Option<String>,
 }
 
 impl Default for Placement {
     fn default() -> Self {
-        Placement { edge: Edge::Right, start: 0.0, end: 1.0 }
+        Placement { edge: Edge::Right, start: 0.0, end: 1.0, output: None }
     }
 }
 
@@ -201,7 +205,8 @@ impl Placement {
         let mut p = saved.unwrap_or_default();
         if let Some(edge) = SIDE.get() {
             if p.edge != *edge {
-                p = Placement { edge: *edge, ..Placement::default() };
+                // The span belonged to the old edge; keep the monitor the phone sits next to.
+                p = Placement { edge: *edge, start: 0.0, end: 1.0, output: p.output.clone() };
             }
         }
         p
@@ -210,9 +215,10 @@ impl Placement {
     pub fn parse(v: &Value) -> Option<Placement> {
         let edge = Edge::parse(v.get("edge")?.as_str()?)?;
         let f = |k: &str| v.get(k).and_then(Value::as_f64).filter(|x| (0.0..=1.0).contains(x));
+        let output = v.get("output").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned);
         match (f("start"), f("end")) {
-            (Some(start), Some(end)) if start <= end => Some(Placement { edge, start, end }),
-            (None, None) => Some(Placement { edge, ..Placement::default() }),
+            (Some(start), Some(end)) if start <= end => Some(Placement { edge, start, end, output }),
+            (None, None) => Some(Placement { edge, output, ..Placement::default() }),
             _ => None,
         }
     }
@@ -249,16 +255,29 @@ impl Placement {
     }
 }
 
-/// Where the phone's screen `name` (logical `size`) goes among `outs`: next to the primary as the
-/// placement says.
+/// Where the phone's screen `name` (logical `size`) goes among `outs`: next to the monitor the
+/// saved placement names, else the primary one, as the placement says.
 pub fn spot(outs: &[Output], name: Option<&str>, size: (u32, u32)) -> (i32, i32) {
-    let Some(primary) = primary(outs, name).and_then(|o| o.logical.map(|l| (o.name.clone(), l))) else { return (0, 0) };
+    spot_with(outs, name, size, &Placement::current())
+}
+
+/// [`spot`] with the placement given explicitly (tests, and callers that just read it).
+pub fn spot_with(outs: &[Output], name: Option<&str>, size: (u32, u32), placement: &Placement) -> (i32, i32) {
+    let usable = |o: &&Output| o.logical.is_some() && Some(o.name.as_str()) != name;
+    // The monitor the phone is attached to wins over the primary, so a drag on the GTK page
+    // places the phone next to that monitor and not next to whichever one GNOME calls primary.
+    let anchor = placement.output.as_deref().and_then(|want| outs.iter().find(|o| o.name == want)).filter(usable);
+    let Some((primary_name, primary)) =
+        anchor.map(|o| (o.name.clone(), o.logical.unwrap())).or_else(|| primary(outs, name).and_then(|o| o.logical.map(|l| (o.name.clone(), l))))
+    else {
+        return (0, 0);
+    };
     let others: Vec<_> = outs
         .iter()
-        .filter(|o| Some(o.name.as_str()) != name && o.name != primary.0)
+        .filter(|o| Some(o.name.as_str()) != name && o.name != primary_name)
         .filter_map(|o| o.logical)
         .collect();
-    Placement::current().position(primary.1, size, &others)
+    placement.position(primary, size, &others)
 }
 
 /// Logical size of `px` pixels at `scale`.
@@ -300,6 +319,12 @@ pub fn list_json() -> Value {
             "virtual": o.is_virtual,
             "internal": o.is_internal(),
             "focused": o.focused,
+            // Logical rect in the desktop's coordinate space (the GTK page draws the real
+            // arrangement and saves the monitor the phone sits next to). Null when it is off.
+            "x": o.logical.map(|l| l.0),
+            "y": o.logical.map(|l| l.1),
+            "width": o.logical.map(|l| l.2),
+            "height": o.logical.map(|l| l.3),
         })).collect::<Vec<_>>(),
     })
 }
@@ -440,7 +465,7 @@ mod tests {
         // A focused virtual output is never the one to duplicate.
         assert_eq!(primary(&outs, None).unwrap().name, "eDP-1");
         let laptop = (0, 0, 1920, 1080);
-        let p = |edge, start, end| Placement { edge, start, end };
+        let p = |edge, start, end| Placement { edge, start, end, output: None };
         // Right, centred: a 960x540 phone screen sits half-way down the 1080 px edge.
         assert_eq!(p(Edge::Right, 0.0, 1.0).position(laptop, (960, 540), &[]), (1920, 270));
         // Left, low on the edge: centre 0.9 would hang off the bottom, so it is clamped.
@@ -456,5 +481,25 @@ mod tests {
         assert_eq!(Placement::parse(&v), Some(p(Edge::Left, 0.221, 0.921)));
         assert_eq!(Placement::parse(&serde_json::json!({"edge":"up"})), None);
         assert_eq!(Placement::parse(&serde_json::json!({"edge":"top","start":0.9,"end":0.1})), None);
+    }
+
+    #[test]
+    fn the_phone_can_be_anchored_to_any_monitor() {
+        let outs = [
+            out("HDMI-1", Some((0, 0, 2560, 1440)), true, false),
+            out("eDP-1", Some((250, 1440, 1920, 1080)), false, false),
+        ];
+        // Right of the laptop panel (the phone's screen touches that monitor, not the primary).
+        let laptop = Placement { edge: Edge::Right, start: 0.4, end: 0.6, output: Some("eDP-1".into()) };
+        assert_eq!(spot_with(&outs, None, (960, 540), &laptop), (2170, 1710));
+        // Parsing keeps the monitor.
+        let v: Value = serde_json::from_str(r#"{"edge":"right","start":0.4,"end":0.6,"output":"eDP-1"}"#).unwrap();
+        assert_eq!(Placement::parse(&v).unwrap().output.as_deref(), Some("eDP-1"));
+        // A monitor that is gone falls back to the primary, not to (0, 0).
+        let gone = Placement { output: Some("DP-9".into()), ..laptop.clone() };
+        assert_eq!(spot_with(&outs, None, (960, 540), &gone), (2560, 450));
+        // The anchor is never the output being set up.
+        let excluded = Placement { output: Some("eDP-1".into()), ..laptop };
+        assert_eq!(spot_with(&outs, Some("eDP-1"), (960, 540), &excluded), (2560, 450));
     }
 }
