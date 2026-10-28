@@ -1,0 +1,203 @@
+#!/usr/bin/env bash
+# Share one or more files or folders with your phone over Smart Connect.
+#
+# Accepts file paths via command line arguments (%F / "$@") or via Nautilus's
+# $NAUTILUS_SCRIPT_SELECTED_FILE_PATHS environment variable.
+# Files are copied or hardlinked into ~/SmartConnect (or the folder set in Smart Connect preferences)
+# and served to the connected phone over Smart Connect File Station.
+set -euo pipefail
+
+usage() {
+  cat <<'HELP'
+Usage: smartconnect-share [options] FILE...
+
+Shares one or more files or folders with the connected phone.
+Files are linked or copied to ~/SmartConnect (or the folder set in Smart Connect preferences)
+and made immediately accessible in Smart Connect's Files tab on the phone.
+
+Options:
+  --open       open the shared folder in your file manager
+  -h, --help   show this help
+HELP
+}
+
+# Collect files
+declare -a FILES=()
+
+decode_url() {
+  local url="$1"
+  if [[ "$url" =~ ^file:// ]]; then
+    python3 -c "import urllib.parse, sys; print(urllib.parse.unquote(sys.argv[1][7:]))" "$url"
+  else
+    printf '%s\n' "$url"
+  fi
+}
+
+if [ $# -gt 0 ]; then
+  case "$1" in
+    -h|--help) usage; exit 0 ;;
+    --open)
+      CONFIG_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/smartconnect-linux/gui.json"
+      SHARE_DIR=""
+      if [ -f "$CONFIG_FILE" ]; then
+        SHARE_DIR="$(jq -r '.files.shareDir // empty' "$CONFIG_FILE" 2>/dev/null || true)"
+      fi
+      SHARE_DIR="${SHARE_DIR:-$HOME/SmartConnect}"
+      mkdir -p "$SHARE_DIR"
+      exec xdg-open "$SHARE_DIR"
+      ;;
+  esac
+  for arg in "$@"; do
+    [ -n "$arg" ] || continue
+    dec="$(decode_url "$arg")"
+    FILES+=("$dec")
+  done
+elif [ -n "${NAUTILUS_SCRIPT_SELECTED_FILE_PATHS:-}" ]; then
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    FILES+=("$line")
+  done <<< "$NAUTILUS_SCRIPT_SELECTED_FILE_PATHS"
+elif [ -n "${NAUTILUS_SCRIPT_SELECTED_URIS:-}" ]; then
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    dec="$(decode_url "$line")"
+    FILES+=("$dec")
+  done <<< "$NAUTILUS_SCRIPT_SELECTED_URIS"
+fi
+
+notify() {
+  local title="$1"
+  local body="$2"
+  local icon="${3:-dev.smartconnect.Linux}"
+  if command -v notify-send >/dev/null 2>&1; then
+    notify-send -a "Smart Connect" -i "$icon" "$title" "$body" 2>/dev/null || true
+  fi
+}
+
+if [ "${#FILES[@]}" -eq 0 ]; then
+  notify "Smart Connect" "No files selected to share." "dialog-warning"
+  exit 1
+fi
+
+# Determine destination share directory
+CONFIG_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/smartconnect-linux/gui.json"
+SHARE_DIR=""
+if [ -f "$CONFIG_FILE" ]; then
+  SHARE_DIR="$(jq -r '.files.shareDir // empty' "$CONFIG_FILE" 2>/dev/null || true)"
+fi
+SHARE_DIR="${SHARE_DIR:-$HOME/SmartConnect}"
+mkdir -p "$SHARE_DIR"
+REAL_SHARE_DIR="$(realpath "$SHARE_DIR")"
+
+count=0
+skipped=0
+failed=0
+first_file=""
+
+for f in "${FILES[@]}"; do
+  [ -e "$f" ] || { failed=$((failed + 1)); continue; }
+  real_item="$(realpath "$f")"
+  # Don't re-copy files that are already inside the share directory
+  if [[ "$real_item" == "$REAL_SHARE_DIR" ]] || [[ "$real_item" == "$REAL_SHARE_DIR/"* ]]; then
+    skipped=$((skipped + 1))
+    continue
+  fi
+
+  base="$(basename "$real_item")"
+  target="$REAL_SHARE_DIR/$base"
+
+  # Collision handling: if file exists and is same inode/device, skip
+  if [ -e "$target" ]; then
+    if [ "$real_item" -ef "$target" ]; then
+      skipped=$((skipped + 1))
+      continue
+    fi
+    # Generate unique non-colliding name
+    if [ -d "$real_item" ]; then
+      target="${REAL_SHARE_DIR}/${base}_$(date +%s%N | cut -b1-4)"
+    else
+      stem="${base%.*}"
+      ext="${base##*.}"
+      if [ "$stem" = "$ext" ]; then
+        target="${REAL_SHARE_DIR}/${base}_$(date +%s%N | cut -b1-4)"
+      else
+        target="${REAL_SHARE_DIR}/${stem}_$(date +%s%N | cut -b1-4).${ext}"
+      fi
+    fi
+  fi
+
+  if [ -f "$real_item" ]; then
+    if ln "$real_item" "$target" 2>/dev/null || cp -a "$real_item" "$target" 2>/dev/null; then
+      count=$((count + 1))
+      [ -z "$first_file" ] && first_file="$base"
+    else
+      failed=$((failed + 1))
+    fi
+  elif [ -d "$real_item" ]; then
+    if cp -a "$real_item" "$target" 2>/dev/null; then
+      count=$((count + 1))
+      [ -z "$first_file" ] && first_file="$base"
+    else
+      failed=$((failed + 1))
+    fi
+  fi
+done
+
+# Query daemon connection status
+PHONE_NAME=""
+IS_CONNECTED=0
+SOCK="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/smartconnectd.sock"
+if [ -S "$SOCK" ]; then
+  status_json="$(echo "status" | nc -U "$SOCK" -w 1 2>/dev/null || true)"
+  if [ -n "$status_json" ]; then
+    if [ "$(echo "$status_json" | jq -r '.connected // false' 2>/dev/null)" = "true" ]; then
+      IS_CONNECTED=1
+      PHONE_NAME="$(echo "$status_json" | jq -r '.name // empty' 2>/dev/null)"
+    fi
+  fi
+fi
+
+# Ensure smartconnect-files serve is running if files were added
+if [ "$count" -gt 0 ]; then
+  # Set share=true in gui.json so the GUI settings reflect active sharing
+  if [ -f "$CONFIG_FILE" ]; then
+    tmp_json="$(mktemp "${CONFIG_FILE}.XXXXXX")"
+    if jq '.files.share = true' "$CONFIG_FILE" > "$tmp_json" 2>/dev/null; then
+      mv -f "$tmp_json" "$CONFIG_FILE"
+    else
+      rm -f "$tmp_json"
+    fi
+  fi
+
+  # If not currently serving, launch smartconnect-files serve in the background
+  if ! pgrep -x smartconnect-files >/dev/null 2>&1; then
+    share_log="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/smartconnect-files-share.log"
+    FILES_BIN="$(command -v smartconnect-files 2>/dev/null || echo "$HOME/.local/bin/smartconnect-files")"
+    if [ -x "$FILES_BIN" ]; then
+      nohup "$FILES_BIN" serve --sharedir "$REAL_SHARE_DIR" >> "$share_log" 2>&1 &
+    fi
+  fi
+fi
+
+# Display user feedback
+share_name="~/$(basename "$REAL_SHARE_DIR")"
+if [ "$count" -gt 0 ]; then
+  if [ "$IS_CONNECTED" -eq 1 ]; then
+    phone_label="${PHONE_NAME:-Phone}"
+    if [ "$count" -eq 1 ]; then
+      notify "Shared with $phone_label" "\"$first_file\" shared to phone ($share_name)"
+    else
+      notify "Shared with $phone_label" "$count items shared to phone ($share_name)"
+    fi
+  else
+    if [ "$count" -eq 1 ]; then
+      notify "Copied to Smart Connect" "\"$first_file\" copied to $share_name. Connect phone to view."
+    else
+      notify "Copied to Smart Connect" "$count items copied to $share_name. Connect phone to view."
+    fi
+  fi
+elif [ "$skipped" -gt 0 ] && [ "$failed" -eq 0 ]; then
+  notify "Smart Connect" "Selected item(s) are already in $share_name."
+elif [ "$failed" -gt 0 ]; then
+  notify "Smart Connect" "Failed to share selected item(s)." "dialog-error"
+fi

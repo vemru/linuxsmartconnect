@@ -2,7 +2,7 @@
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_ID="dev.smartconnect.Linux"
-BINS=(smartconnectd smartconnect-mirror smartconnect-crosscontrol smartconnect-display smartconnect-webcam smartconnect-files smartconnect-fex smartconnect-gui)
+BINS=(smartconnectd smartconnect-mirror smartconnect-crosscontrol smartconnect-display smartconnect-webcam smartconnect-files smartconnect-fex smartconnect-gui smartconnect-share)
 PLUGIN_ID="smart-connect"
 DRY=0
 

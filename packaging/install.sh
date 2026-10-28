@@ -11,7 +11,7 @@ Usage: packaging/install.sh [options]
 Builds the Cargo workspace in release mode and installs, for the current user:
   binaries            $PREFIX/bin: smartconnectd, smartconnect-mirror, smartconnect-crosscontrol,
                       smartconnect-display, smartconnect-webcam, smartconnect-files,
-                      smartconnect-fex, smartconnect-gui
+                      smartconnect-fex, smartconnect-gui, smartconnect-share
   systemd user unit   ~/.config/systemd/user/smartconnectd.service ($PREFIX/lib/systemd/user
                       for a prefix other than ~/.local); enabled only with --enable
   GTK app launcher    $PREFIX/share/applications/dev.smartconnect.Linux.desktop + icon
@@ -118,7 +118,7 @@ fi
 REL="${TARGET_DIR:-${CARGO_TARGET_DIR:-$ROOT/target}}/release"
 missing=()
 for b in "${BINS[@]}"; do
-  [ -x "$REL/$b" ] || missing+=("$b")
+  [ -x "$REL/$b" ] || [ -x "$ROOT/packaging/$b" ] || missing+=("$b")
 done
 if [ ${#missing[@]} -gt 0 ]; then
   if [ "$DRY" = 1 ]; then
@@ -133,7 +133,11 @@ say "Installing binaries to $BIN_DIR"
 run mkdir -p "$BIN_DIR"
 for b in "${BINS[@]}"; do
   # install(1) replaces the file instead of writing into it, so a running binary is not disturbed.
-  run install -m755 "$REL/$b" "$BIN_DIR/$b"
+  if [ -f "$REL/$b" ]; then
+    run install -m755 "$REL/$b" "$BIN_DIR/$b"
+  elif [ -f "$ROOT/packaging/$b" ]; then
+    run install -m755 "$ROOT/packaging/$b" "$BIN_DIR/$b"
+  fi
 done
 
 # ---- systemd user unit ----
@@ -156,12 +160,14 @@ if printf '%s' "$BIN_DIR" | grep -Eq '^[A-Za-z0-9._/+-]+$'; then
   desktop_script="s|^Exec=smartconnect-gui|Exec=$(sed_escape "$BIN_DIR")/smartconnect-gui|"
   # KWin matches this Exec= against the running binary's path, so it has to be absolute.
   display_script="s|^Exec=smartconnect-display|Exec=$(sed_escape "$BIN_DIR")/smartconnect-display|"
+  share_script="s|^Exec=smartconnect-share|Exec=$(sed_escape "$BIN_DIR")/smartconnect-share|"
 else
   warn "$BIN_DIR has characters a .desktop Exec= line can't hold unquoted; the launcher relies on PATH"
   warn "and on KDE Plasma the phone display will not get screen casting (KWin needs an absolute Exec=)"
 fi
 run install -Dm644 "$ROOT/packaging/$APP_ID.svg" "$ICON_DIR/$APP_ID.svg"
 install_filtered 644 "$ROOT/packaging/$APP_ID.desktop" "$APPS_DIR/$APP_ID.desktop" "$desktop_script"
+install_filtered 644 "$ROOT/packaging/dev.smartconnect.Share.desktop" "$APPS_DIR/dev.smartconnect.Share.desktop" "${share_script:-}"
 if [ -n "$display_script" ]; then
   install_filtered 644 "$ROOT/packaging/dev.smartconnect.Display.desktop" "$APPS_DIR/dev.smartconnect.Display.desktop" "$display_script"
   # KDE reads .desktop files through its sycoca cache; refresh it so KWin sees the new entry.
@@ -176,6 +182,29 @@ if [ -f "$old_desktop" ] && grep -q '^Exec=.*smartconnect-gui' "$old_desktop"; t
 fi
 if command -v update-desktop-database >/dev/null 2>&1; then
   run update-desktop-database -q "$APPS_DIR" || true
+fi
+
+# ---- Nautilus & file manager context menu ----
+nautilus_scripts="${XDG_DATA_HOME:-$HOME/.local/share}/nautilus/scripts"
+if [ -d "$nautilus_scripts" ] || command -v nautilus >/dev/null 2>&1; then
+  run mkdir -p "$nautilus_scripts"
+  if [ "$DRY" = 1 ]; then
+    printf '    would write: %s/Send to Phone (Smart Connect)\n' "$nautilus_scripts"
+  else
+    cat <<'NS' > "$nautilus_scripts/Send to Phone (Smart Connect)"
+#!/usr/bin/env bash
+BIN="$(command -v smartconnect-share 2>/dev/null || echo "$HOME/.local/bin/smartconnect-share")"
+exec "$BIN" "$@"
+NS
+    chmod 755 "$nautilus_scripts/Send to Phone (Smart Connect)"
+  fi
+  did "Nautilus context menu script installed: $nautilus_scripts/Send to Phone (Smart Connect)"
+fi
+
+dolphin_dir="${XDG_DATA_HOME:-$HOME/.local/share}/kio/servicemenus"
+if [ -d "$dolphin_dir" ] || command -v dolphin >/dev/null 2>&1; then
+  run mkdir -p "$dolphin_dir"
+  install_filtered 644 "$ROOT/packaging/smartconnect-share.desktop" "$dolphin_dir/smartconnect-share.desktop" "${share_script:-}"
 fi
 if [ -f "$SHARE_DIR/icons/hicolor/icon-theme.cache" ] && command -v gtk-update-icon-cache >/dev/null 2>&1; then
   run gtk-update-icon-cache -q -t -f "$SHARE_DIR/icons/hicolor" || true

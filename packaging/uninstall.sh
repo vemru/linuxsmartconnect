@@ -52,7 +52,9 @@ fi
 for b in "${BINS[@]}"; do
   remove "$BIN_DIR/$b"
 done
-remove "$APPS_DIR/$APP_ID.desktop" "$APPS_DIR/dev.smartconnect.Display.desktop" "$ICON_DIR/$APP_ID.svg"
+remove "$APPS_DIR/$APP_ID.desktop" "$APPS_DIR/dev.smartconnect.Display.desktop" "$APPS_DIR/dev.smartconnect.Share.desktop" "$ICON_DIR/$APP_ID.svg"
+remove "${XDG_DATA_HOME:-$HOME/.local/share}/nautilus/scripts/Send to Phone (Smart Connect)"
+remove "${XDG_DATA_HOME:-$HOME/.local/share}/kio/servicemenus/smartconnect-share.desktop" 
 old_desktop="$APPS_DIR/smartconnect-gui.desktop"
 if [ -f "$old_desktop" ] && grep -q '^Exec=.*smartconnect-gui' "$old_desktop"; then
   remove "$old_desktop"

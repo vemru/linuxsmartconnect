@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Service
+ServiceTypes=KonqPopupMenu/Plugin
+MimeType=all/allfiles;all/all;*/*;inode/directory;
+Actions=ShareToPhone;
+X-KDE-Priority=TopLevel
+
+[Desktop Action ShareToPhone]
+Name=Send to Phone (Smart Connect)
+Icon=dev.smartconnect.Linux
+Exec=smartconnect-share %F

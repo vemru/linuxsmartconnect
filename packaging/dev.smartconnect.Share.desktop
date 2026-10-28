@@ -1,0 +1,18 @@
+[Desktop Entry]
+Type=Application
+Name=Send to Phone (Smart Connect)
+GenericName=Send to Phone
+Comment=Share selected files with your phone via Smart Connect
+Exec=smartconnect-share %F
+Icon=dev.smartconnect.Linux
+Terminal=false
+Categories=Utility;FileTransfer;Network;
+MimeType=application/octet-stream;inode/directory;*/*;all/allfiles;
+NoDisplay=false
+StartupNotify=false
+Actions=ShareToPhone;
+
+[Desktop Action ShareToPhone]
+Name=Send to Phone (Smart Connect)
+Exec=smartconnect-share %F
+Icon=dev.smartconnect.Linux
