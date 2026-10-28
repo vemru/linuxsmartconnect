@@ -8,7 +8,7 @@
 //! WebSocket through [`Prefixed`], which replays the bytes already read. The phone pins the
 //! certificate by the fingerprint we advertise, which is this listener's own certificate.
 
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
@@ -52,12 +52,33 @@ pub fn is_fex(target: &str) -> bool {
     matches!(target.split('?').next(), Some("/websocket" | "/download"))
 }
 
-/// Answers one fex request on `stream` (whose head was `head`).
-pub async fn serve<S>(registry: &Registry, stream: Prefixed<S>, target: &str, peer: SocketAddr) -> Result<()>
+/// Whether `peer` is the phone's current session address. fex offers exist only for the connected
+/// phone, so a different host — or no session at all — is refused. Addresses are compared
+/// canonically so an IPv4-mapped IPv6 peer matches its IPv4 form.
+pub fn peer_allowed(phone: Option<IpAddr>, peer: SocketAddr) -> bool {
+    phone.is_some_and(|ip| ip.to_canonical() == peer.ip().to_canonical())
+}
+
+/// The 403 for a fex request that did not come from the connected phone.
+fn forbidden() -> Vec<u8> {
+    let body = "forbidden";
+    format!("HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len())
+        .into_bytes()
+}
+
+/// Answers one fex request on `stream` (whose head was `head`), gated on `phone`, the connected
+/// phone's address from the control session.
+pub async fn serve<S>(registry: &Registry, stream: Prefixed<S>, target: &str, peer: SocketAddr, phone: Option<IpAddr>) -> Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     let mut stream = stream;
+    if !peer_allowed(phone, peer) {
+        warn!(%peer, "fex request from an address that is not the connected phone; refusing");
+        stream.write_all(&forbidden()).await?;
+        stream.shutdown().await.ok();
+        return Ok(());
+    }
     if target.starts_with("/download") {
         stream.write_all(&server::download_response(registry, target)).await?;
         stream.shutdown().await.ok();
@@ -115,6 +136,11 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for Prefixed<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use smartconnect_fex::server::OutFile;
+
+    fn png() -> OutFile {
+        OutFile { name: "clipboard.png".into(), mime_type: "image/png".into(), data: b"\x89PNG\r\n\x1a\nfake".to_vec() }
+    }
 
     #[test]
     fn routes_only_fex_paths() {
@@ -125,6 +151,50 @@ mod tests {
         assert!(!is_fex("/readyfor/"));
         assert!(!is_fex("/readyfor/mdns?x=1"));
         assert!(!is_fex("/websocketx"));
+    }
+
+    #[test]
+    fn only_the_connected_phones_address_is_allowed() {
+        let phone: SocketAddr = "192.168.0.141:45000".parse().unwrap();
+        assert!(peer_allowed(Some("192.168.0.141".parse().unwrap()), phone));
+        assert!(!peer_allowed(Some("192.168.0.142".parse().unwrap()), phone));
+        assert!(!peer_allowed(None, phone), "with no session there is no phone to serve");
+    }
+
+    #[tokio::test]
+    async fn a_stranger_gets_no_websocket_and_no_offer_is_claimed() {
+        let registry = Registry::default();
+        let t = registry.offer(&[png()], "", "");
+        let peer: SocketAddr = "192.168.0.9:5555".parse().unwrap();
+        let (mut client, server) = tokio::io::duplex(4096);
+        serve(&registry, Prefixed::new(Vec::new(), server), "/websocket", peer, Some("192.168.0.141".parse().unwrap())).await.unwrap();
+        let mut out = Vec::new();
+        client.read_to_end(&mut out).await.unwrap();
+        assert!(String::from_utf8_lossy(&out).starts_with("HTTP/1.1 403 Forbidden\r\n"), "{}", String::from_utf8_lossy(&out));
+        assert!(registry.has_offers(), "the offer must stay unclaimed");
+        assert!(!out.windows(t.zip.len()).any(|w| w == t.zip.as_slice()));
+    }
+
+    #[tokio::test]
+    async fn a_stranger_cannot_download_but_the_phone_can() {
+        let registry = Registry::default();
+        let t = registry.offer(&[png()], "", "");
+        let download = format!("/download?taskId={}&token={}", t.task_id, t.token);
+
+        let peer: SocketAddr = "192.168.0.9:5555".parse().unwrap();
+        let (mut client, server) = tokio::io::duplex(4096);
+        serve(&registry, Prefixed::new(Vec::new(), server), &download, peer, Some("192.168.0.141".parse().unwrap())).await.unwrap();
+        let mut out = Vec::new();
+        client.read_to_end(&mut out).await.unwrap();
+        assert!(String::from_utf8_lossy(&out).starts_with("HTTP/1.1 403 Forbidden\r\n"), "{}", String::from_utf8_lossy(&out));
+        assert!(!out.ends_with(&t.zip), "the zip must not reach a stranger");
+
+        let peer: SocketAddr = "192.168.0.141:45000".parse().unwrap();
+        let (mut client, server) = tokio::io::duplex(4096);
+        serve(&registry, Prefixed::new(Vec::new(), server), &download, peer, Some("192.168.0.141".parse().unwrap())).await.unwrap();
+        let mut out = Vec::new();
+        client.read_to_end(&mut out).await.unwrap();
+        assert!(out.ends_with(&t.zip), "the phone still gets its download");
     }
 
     #[tokio::test]

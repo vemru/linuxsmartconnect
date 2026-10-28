@@ -20,15 +20,15 @@
 //! [`download_response`]. A [`Registry`] holds the offered transfers until they finish or expire.
 
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use futures_util::{SinkExt, StreamExt};
-use sha2::Digest;
+use rand::RngCore;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::Message;
-use tracing::{debug, info};
+use tracing::debug;
 
 use crate::frame::{self, FileEntry, Frame, Kind, Name, SendRequest, Status, VersionNegotiation};
 use crate::zip;
@@ -66,13 +66,12 @@ pub struct Registry {
     offers: Mutex<Vec<Arc<Transfer>>>,
 }
 
-/// A fresh hex id from the clock and a counter (task ids and tokens only need to be unique).
+/// A fresh hex id from the OS CSPRNG (task ids and tokens). The phone sees the id, and the token
+/// is a bearer secret for the download, so neither may be predictable.
 fn fresh_id(len: usize) -> String {
-    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let t = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_nanos());
-    let digest = sha2::Sha256::digest(format!("{t}-{n}-{}", std::process::id()));
-    hex::encode(digest)[..len].to_owned()
+    let mut bytes = vec![0u8; len.div_ceil(2)];
+    rand::rngs::OsRng.fill_bytes(&mut bytes);
+    hex::encode(bytes)[..len].to_owned()
 }
 
 impl Registry {
@@ -159,7 +158,7 @@ where
     let request = serde_json::to_string(&t.request)?;
     send(ws, &Frame::action("Server1002", Name::SendRequest, Some(request))).await?;
     tokio::time::timeout(STEP_TIMEOUT, wait_ack(ws, "Server1002", &version)).await.context("no sendRequest ack")??;
-    info!(task = %t.task_id, bytes = t.zip.len(), "fex: the phone accepted our offer");
+    debug!(bytes = t.zip.len(), "fex: the phone accepted our offer");
     // The receiver downloads on its own connection, then reports the outcome here.
     tokio::time::timeout(TRANSFER_TIMEOUT, async {
         loop {
@@ -220,19 +219,17 @@ async fn wait_ack<S: AsyncRead + AsyncWrite + Unpin>(ws: &mut WebSocketStream<S>
     }
 }
 
-/// The HTTP/1.1 response for a `GET /download?taskId=…` request `target`: the transfer's zip, or
-/// (like the phone's server) `200 text/plain` naming an unknown task.
+/// The HTTP/1.1 response for a `GET /download?taskId=…&token=…` request `target`: the transfer's
+/// zip, or (like the phone's server) `200 text/plain` naming an unknown task. A token that is
+/// present must match; the phone may omit it (it builds the URL itself), and the caller has
+/// already checked that the peer is the connected phone.
 pub fn download_response(registry: &Registry, target: &str) -> Vec<u8> {
-    let task = target
-        .split_once('?')
-        .map(|(_, q)| q)
-        .unwrap_or_default()
-        .split('&')
-        .find_map(|kv| kv.strip_prefix("taskId="))
-        .unwrap_or_default();
+    let query = target.split_once('?').map(|(_, q)| q).unwrap_or_default();
+    let task = query.split('&').find_map(|kv| kv.strip_prefix("taskId=")).unwrap_or_default();
+    let token = query.split('&').find_map(|kv| kv.strip_prefix("token="));
     match registry.find(task) {
-        Some(t) => {
-            info!(task = %t.task_id, bytes = t.zip.len(), "fex: the phone is downloading our offer");
+        Some(t) if token.is_none_or(|tok| tok == t.token) => {
+            debug!(bytes = t.zip.len(), "fex: the phone is downloading our offer");
             let mut out = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: application/zip\r\nContent-Length: {}\r\nAccept-Ranges: none\r\nConnection: close\r\n\r\n",
                 t.zip.len()
@@ -241,12 +238,22 @@ pub fn download_response(registry: &Registry, target: &str) -> Vec<u8> {
             out.extend_from_slice(&t.zip);
             out
         }
+        Some(_) => {
+            debug!("fex: rejecting a download with a wrong token");
+            forbidden()
+        }
         None => {
             let body = format!("download -> taskId {task} does not exist!");
             format!("HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len())
                 .into_bytes()
         }
     }
+}
+
+fn forbidden() -> Vec<u8> {
+    let body = "forbidden";
+    format!("HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len())
+        .into_bytes()
 }
 
 #[cfg(test)]
@@ -281,6 +288,26 @@ mod tests {
         assert!(resp.ends_with(&t.zip));
         let missing = download_response(&r, "/download?taskId=nope");
         assert!(String::from_utf8_lossy(&missing).ends_with("taskId nope does not exist!"));
+    }
+
+    #[test]
+    fn download_rejects_a_wrong_token() {
+        let r = Registry::default();
+        let t = r.offer(&[png()], "", "");
+        let resp = download_response(&r, &format!("/download?taskId={}&token=deadbeef", t.task_id));
+        let text = String::from_utf8_lossy(&resp);
+        assert!(text.starts_with("HTTP/1.1 403 Forbidden\r\n"), "{text}");
+        assert!(!resp.ends_with(&t.zip), "the zip must not be served on a token mismatch");
+    }
+
+    #[test]
+    fn download_without_a_token_still_works() {
+        // The phone builds the download URL itself and may not have the token; the connected
+        // phone's address is the primary gate (see src/fex_host.rs), this is defence in depth.
+        let r = Registry::default();
+        let t = r.offer(&[png()], "", "");
+        let resp = download_response(&r, &format!("/download?taskId={}", t.task_id));
+        assert!(resp.ends_with(&t.zip));
     }
 
     /// The whole exchange against our own client code's frame handling, over an in-memory pipe.

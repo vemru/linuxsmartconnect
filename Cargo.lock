@@ -2911,6 +2911,7 @@ dependencies = [
  "hex",
  "libc",
  "miniz_oxide 0.8.9",
+ "rand 0.8.8",
  "rcgen",
  "serde",
  "serde_json",

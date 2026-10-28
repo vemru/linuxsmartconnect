@@ -386,7 +386,7 @@ async fn handle(daemon: Arc<Daemon>, acceptor: TlsAcceptor, tcp: TcpStream, peer
     let head = timeout(FIRST_MESSAGE_TIMEOUT, crate::fex_host::read_head(&mut tls)).await.context("no HTTP request")??;
     if let Some(target) = crate::fex_host::target(&head).filter(|t| crate::fex_host::is_fex(t)).map(str::to_owned) {
         info!(%peer, "fex request");
-        return crate::fex_host::serve(daemon.clipboard.fex(), crate::fex_host::Prefixed::new(head, tls), &target, peer).await;
+        return crate::fex_host::serve(daemon.clipboard.fex(), crate::fex_host::Prefixed::new(head, tls), &target, peer, daemon.phone_ip()).await;
     }
     let tls = crate::fex_host::Prefixed::new(head, tls);
 
