@@ -34,7 +34,7 @@ pub struct FilesPrefs {
     pub auto_mount: bool,
     /// Share a PC folder with the phone (`smartconnect-files serve`) while the phone is connected.
     pub share: bool,
-    /// The folder shared with the phone. Empty means the default, your home folder; `~/…` is expanded.
+    /// The folder shared with the phone. Empty means the default, `~/SmartConnect`; `~/…` is expanded.
     pub share_dir: String,
     /// Also show hidden (dot) files and folders to the phone.
     pub share_hidden: bool,
@@ -61,11 +61,11 @@ impl FilesPrefs {
         }
     }
 
-    /// The folder shared with the phone: the configured one (`~/` expanded), else your home folder.
+    /// The folder shared with the phone: the configured one (`~/` expanded), else `~/SmartConnect`.
     pub fn share_path(&self) -> PathBuf {
         let dir = self.share_dir.trim();
         if dir.is_empty() {
-            home_dir()
+            home_dir().join("SmartConnect")
         } else {
             expand_tilde(dir)
         }
@@ -333,7 +333,7 @@ mod tests {
         // A `~/…` path is expanded against $HOME; an absolute path is taken as-is.
         assert_eq!(FilesPrefs { mount_dir: "~/Storage/Phone".into(), ..Default::default() }.mount_path(), home.join("Storage/Phone"));
         assert_eq!(FilesPrefs { mount_dir: "/mnt/phone".into(), ..Default::default() }.mount_path(), PathBuf::from("/mnt/phone"));
-        assert_eq!(FilesPrefs::default().share_path(), home);
+        assert_eq!(FilesPrefs::default().share_path(), home.join("SmartConnect"));
         assert_eq!(FilesPrefs { share_dir: "~/Public".into(), ..Default::default() }.share_path(), home.join("Public"));
     }
 

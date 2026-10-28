@@ -20,14 +20,15 @@
 //! rest; see `crate::router`.
 //!
 //! Safety: lookups only ever join a **single** path component to a known directory, and `..` is
-//! clamped at the root, so every interned path stays inside the share dir. Symlinks are reported as
-//! symlinks (never followed server-side), so a symlink pointing outside the share can't be traversed
-//! through this server — the client would have to re-`LOOKUP` the target through our root, which
-//! stays inside the share.
+//! clamped at the root, so every interned path stays inside the share dir. Symlinks are not exposed
+//! at all (LOOKUP and READDIRPLUS skip them), READ opens with `O_NOFOLLOW`, and batch/thumbnail
+//! paths are walked component by component and canonicalized, so a link to `/etc` or another user's
+//! home can never be traversed, read, trashed or thumbnailed through this server.
 
 use std::collections::HashMap;
 use std::io::{Read, Seek, SeekFrom};
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -202,8 +203,12 @@ impl NfsReadFileSystem for LocalFs {
             return Err(nfsstat3::NFS3ERR_NOENT);
         }
         let child = dir.join(std::ffi::OsStr::from_bytes(name));
-        // Don't traverse symlinks: existence is checked without following the final component.
-        std::fs::symlink_metadata(&child).map_err(|_| nfsstat3::NFS3ERR_NOENT)?;
+        // Don't expose symlinks at all: a lookup only ever resolves to a real entry inside the
+        // share, so a link to /etc or to another user's home can never be opened through us.
+        let meta = std::fs::symlink_metadata(&child).map_err(|_| nfsstat3::NFS3ERR_NOENT)?;
+        if meta.file_type().is_symlink() {
+            return Err(nfsstat3::NFS3ERR_NOENT);
+        }
         Ok(PhoneHandle::new(self.intern(child)))
     }
 
@@ -224,11 +229,17 @@ impl NfsReadFileSystem for LocalFs {
         if meta.is_dir() {
             return Err(nfsstat3::NFS3ERR_ISDIR);
         }
-        let len = meta.len();
+        // O_NOFOLLOW: even a handle interned before a file became a symlink can't follow it.
+        let mut f = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(&path)
+            .map_err(|_| nfsstat3::NFS3ERR_IO)?;
+        // fstat the object we actually opened (not the path we stat'ed a moment ago).
+        let len = f.metadata().map_err(|_| nfsstat3::NFS3ERR_IO)?.len();
         if offset >= len {
             return Ok((Vec::new(), true));
         }
-        let mut f = std::fs::File::open(&path).map_err(|_| nfsstat3::NFS3ERR_IO)?;
         f.seek(SeekFrom::Start(offset)).map_err(|_| nfsstat3::NFS3ERR_IO)?;
         let want = u64::from(count).min(len - offset) as usize;
         let mut buf = vec![0u8; want];
@@ -261,6 +272,10 @@ impl NfsReadFileSystem for LocalFs {
         for ent in rd {
             let ent = ent.map_err(|_| nfsstat3::NFS3ERR_IO)?;
             if !self.visible(ent.file_name().as_bytes()) {
+                continue;
+            }
+            // Symlinks are not entries the phone may see (see `lookup`).
+            if ent.file_type().map_err(|_| nfsstat3::NFS3ERR_IO)?.is_symlink() {
                 continue;
             }
             let path = ent.path();
@@ -304,7 +319,9 @@ impl ReadDirPlusIterator<PhoneHandle> for LocalFsIterator {
             };
             self.index += 1;
             let attr = match std::fs::symlink_metadata(&path) {
-                Ok(meta) => Some(metadata_to_fattr3(id, &meta)),
+                // Some filesystems report DT_UNKNOWN, so re-check here: the phone never sees links.
+                Ok(meta) if !meta.file_type().is_symlink() => Some(metadata_to_fattr3(id, &meta)),
+                Ok(_) => continue,
                 Err(_) => continue, // vanished between readdir and stat — skip it
             };
             return NextResult::Ok(DirEntryPlus {
@@ -576,13 +593,18 @@ impl LocalFs {
                 return None;
             }
             out.push(part);
+            let meta = std::fs::symlink_metadata(&out).ok()?;
+            if meta.file_type().is_symlink() {
+                return None;
+            }
             depth += 1;
         }
         if depth == 0 {
             return None;
         }
-        std::fs::symlink_metadata(&out).ok()?;
-        Some(out)
+        // Defence in depth: the walked path must still canonicalize inside the share.
+        let canon = out.canonicalize().ok()?;
+        canon.starts_with(&self.root).then_some(canon)
     }
 
     /// Moves each path to the desktop Trash (`gio trash`), so a deletion from the phone can be
@@ -615,8 +637,9 @@ impl LocalFs {
     /// `None` for anything else (or a video when `ffmpeg` isn't installed).
     pub fn thumbnail(&self, path: &str, label: &str) -> Option<Arc<Vec<u8>>> {
         let file = self.resolve_phone_path(path, label)?;
-        let meta = std::fs::metadata(&file).ok()?;
-        if !meta.is_file() {
+        // symlink_metadata: never follow a link that replaced the file after the walk.
+        let meta = std::fs::symlink_metadata(&file).ok()?;
+        if !meta.is_file() || meta.file_type().is_symlink() {
             return None;
         }
         let key = (file.clone(), mtime_secs(&meta));
@@ -648,10 +671,21 @@ fn image_thumbnail(file: &Path) -> Option<Vec<u8>> {
     Some(out)
 }
 
-/// Default share dir: the user's home folder (`$HOME`), with hidden entries invisible to the phone
-/// unless `--include-hidden` (see [`LocalFs::show_hidden`]).
+/// The share folder inside `home`.
+fn share_dir_under(home: &Path) -> PathBuf {
+    home.join("SmartConnect")
+}
+
+/// Default share dir: `~/SmartConnect`, created on first use, with hidden entries invisible to the
+/// phone unless `--include-hidden` (see [`LocalFs::show_hidden`]).
+///
+/// It used to be all of `$HOME`. A narrow, obvious folder keeps the rest of the home directory
+/// (`.ssh`, browser profiles, other apps' state) out of the phone's view even if a hidden-entry
+/// check is ever missed, and an app created for this purpose also can't accidentally expose
+/// unrelated files. An explicit `--sharedir` (or the GUI's folder choice) is unchanged.
 pub fn default_share_dir() -> PathBuf {
-    std::env::var_os("HOME").map_or_else(|| PathBuf::from("."), PathBuf::from)
+    let home = std::env::var_os("HOME").map_or_else(|| PathBuf::from("."), PathBuf::from);
+    share_dir_under(&home)
 }
 
 #[cfg(test)]
@@ -720,6 +754,45 @@ mod tests {
         assert_eq!(fs.resolve_phone_path("/share", "/share"), None, "not the root");
         assert_eq!(fs.resolve_phone_path("/missing.txt", "/share"), None);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn default_share_is_a_smartconnect_folder_under_home() {
+        assert_eq!(share_dir_under(Path::new("/home/alice")), PathBuf::from("/home/alice/SmartConnect"));
+    }
+
+    #[tokio::test]
+    async fn symlinks_are_not_exposed_or_followed() {
+        let outside = tempdir();
+        std::fs::write(outside.join("secret.txt"), b"secret").unwrap();
+        image::RgbImage::from_pixel(20, 10, image::Rgb([0, 200, 0])).save(outside.join("pic.png")).unwrap();
+        let dir = tempdir();
+        std::fs::write(dir.join("innocent.txt"), b"ok").unwrap();
+        std::os::unix::fs::symlink(&outside, dir.join("escape")).unwrap();
+        std::os::unix::fs::symlink(outside.join("secret.txt"), dir.join("secret.txt")).unwrap();
+        std::os::unix::fs::symlink(outside.join("pic.png"), dir.join("pic.png")).unwrap();
+
+        let fs = LocalFs::new(dir.clone()).unwrap();
+        let root = fs.root_dir();
+        // LOOKUP refuses a symlink, whether it points at a file or a directory.
+        assert_eq!(fs.lookup(&root, &fname("secret.txt")).await.unwrap_err(), nfsstat3::NFS3ERR_NOENT);
+        assert_eq!(fs.lookup(&root, &fname("escape")).await.unwrap_err(), nfsstat3::NFS3ERR_NOENT);
+        // READDIRPLUS doesn't list it.
+        let names: Vec<_> = drain(fs.readdirplus(&root, 0).await.unwrap()).await.into_iter().map(|e| e.1).collect();
+        assert_eq!(names, vec![b"innocent.txt".to_vec()]);
+        // A handle that already points at one can't be read through.
+        let id = fs.inner.write().unwrap().intern(dir.join("secret.txt"));
+        assert_eq!(fs.read(&PhoneHandle::new(id), 0, 100).await.err(), Some(nfsstat3::NFS3ERR_IO));
+        // Batch paths and thumbnails refuse symlinks, including in a parent component.
+        assert_eq!(fs.resolve_phone_path("/secret.txt", "/share"), None);
+        assert_eq!(fs.resolve_phone_path("/escape/secret.txt", "/share"), None);
+        assert_eq!(fs.resolve_phone_path("/pic.png", "/share"), None);
+        assert!(fs.thumbnail("/pic.png", "/share").is_none());
+        // Category listings skip it too.
+        let listed: Vec<_> = fs.category(ROOT_ID, category::FOLDER, 0, 100).unwrap().into_iter().map(|e| e.name).collect();
+        assert_eq!(listed, ["innocent.txt"]);
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_dir_all(&outside).ok();
     }
 
     #[test]

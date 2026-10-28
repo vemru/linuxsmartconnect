@@ -118,7 +118,7 @@ USAGE (phone → PC, browse the phone's storage):
 
 USAGE (PC → phone, let the phone browse a PC folder):
   smartconnect-files serve [--sharedir DIR] [--include-hidden] [--read-only] [--label /NAME] [--port 2049] [--ip ADDR] [--state-dir DIR]
-      share DIR (default: your home folder) with the connected phone, which browses it in its
+      share DIR (default: ~/SmartConnect) with the connected phone, which browses it in its
       Files app and in Smart Connect's Files tab. The phone can't change files; deleting from
       the Files tab moves them to your Trash (--read-only refuses that too). Hidden (dot) files
       stay invisible unless --include-hidden. --label defaults to the folder's name

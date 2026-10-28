@@ -785,16 +785,18 @@ like the CLI and the GTK app.
 
 ## Sharing a PC folder to the phone (phone browses the PC)
 
-This is the mirror of the mount above: the **PC shares a folder** (by default your home folder)
+This is the mirror of the mount above: the **PC shares a folder** (by default `~/SmartConnect`)
 and the **phone browses it** in Smart Connect's **Files** tab and in Android's file browser.
 Nothing is copied to the phone; it reads a folder listing, a thumbnail or a file only when you
-open it.
+open it. `~/SmartConnect` is created on first use; pick another folder with *Change…* or
+`--sharedir`. Symlinks inside the shared folder are hidden from the phone, which sees only real
+files and folders inside the share.
 
 **From the GTK app:** Files page → *Share with the phone* → turn on *Share a folder with the phone*.
 
 | Setting | Default | What it does |
 |---|---|---|
-| *Shared folder* (Change…) | your home folder | The folder the phone sees. The open button shows it in your file manager. |
+| *Shared folder* (Change…) | `~/SmartConnect` | The folder the phone sees. The open button shows it in your file manager. |
 | *Include hidden files* | off | Show files and folders whose names start with a dot (`~/.ssh`, `~/.config`, …). Off keeps them invisible to the phone: not listed, not openable, not deletable. |
 | *Let the phone delete files* | on | Deleting in the phone's Files tab moves the file to your desktop **Trash**, so you can restore it. Off makes the share fully read-only. |
 
@@ -809,7 +811,7 @@ points at the firewall.
   first). *Recents*, *Images*, *Videos*, *Documents*, *Audio* and *Downloads* search the whole
   shared folder, newest first (*Recents* = changed in the last 30 days; *Downloads* =
   `Downloads/` in the shared folder). Images and videos have thumbnails. Videos need `ffmpeg` on
-  the PC. The first search of a big home folder can take a few seconds.
+  the PC. The first search of a big shared folder can take a few seconds.
 - **Android's file browser** (any app's "open file" or "attach" button) lists the share as
   **"<PC name> <PC IP>"**.
 - The phone can open and copy files out, and delete them (to your Trash, unless turned off). It
@@ -818,7 +820,7 @@ points at the firewall.
 **From the command line**, with `smartconnectd` running and the phone connected:
 
 ```sh
-smartconnect-files serve                       # share your home folder
+smartconnect-files serve                       # share ~/SmartConnect
 smartconnect-files serve --sharedir ~/Public   # or another folder
 # Ctrl-C to stop sharing
 ```
@@ -830,7 +832,7 @@ including the Lenovo procedures the Files tab uses. Options:
 
 | Option | Meaning |
 |---|---|
-| `--sharedir DIR` | The folder to share (default: your home folder; created if missing). |
+| `--sharedir DIR` | The folder to share (default: `~/SmartConnect`; created if missing). |
 | `--include-hidden` | Also show hidden (dot) files and folders. |
 | `--read-only` | Refuse deletions too (by default they move files to the Trash with `gio trash`). |
 | `--label /NAME` | The export name the phone sees (default: the folder's name, e.g. `/alice`). |
@@ -1021,7 +1023,7 @@ smartconnect-files serve [--sharedir DIR] [--include-hidden] [--read-only] [--la
 | `fingerprint` | Print the SHA-256 fingerprint of this PC's File Station TLS certificate (the `fp` sent in the `cmd=1001` handshake), creating the certificate on first use. |
 | `list` | Handshake with the phone through the daemon and print the export root (default path `/sdcard`). See [Browsing the phone's files](#browsing-the-phones-files). |
 | `mount` | Mount the phone's storage read-only at `--mountpoint` (required; the GTK app and the plugin pass `~/Phone` by default). Runs until Ctrl+C, SIGTERM or SIGHUP, or `fusermount3 -u DIR`. |
-| `serve` | Share `--sharedir` (default: your home folder) with the phone as an NFSv3-over-TLS server on `--port` (default 2049, all interfaces; open it in the [firewall](installation.md#firewall)). Hidden (dot) entries stay invisible unless `--include-hidden`; deleting from the phone moves files to the Trash unless `--read-only`. `--label` is the name the phone sees (default: the folder's name), `--ip` overrides the PC address sent to the phone. Runs until Ctrl-C or SIGTERM; meanwhile the phone lists this PC in Smart Connect's Files tab (`cap` `"206"`). Remembers the phone's certificate in `<state dir>/phone-fps`. See [Sharing a PC folder](#sharing-a-pc-folder-to-the-phone-phone-browses-the-pc). |
+| `serve` | Share `--sharedir` (default: `~/SmartConnect`) with the phone as an NFSv3-over-TLS server on `--port` (default 2049, all interfaces; open it in the [firewall](installation.md#firewall)). Hidden (dot) entries stay invisible unless `--include-hidden`; deleting from the phone moves files to the Trash unless `--read-only`. `--label` is the name the phone sees (default: the folder's name), `--ip` overrides the PC address sent to the phone. Runs until Ctrl-C or SIGTERM; meanwhile the phone lists this PC in Smart Connect's Files tab (`cap` `"206"`). Remembers the phone's certificate in `<state dir>/phone-fps`. See [Sharing a PC folder](#sharing-a-pc-folder-to-the-phone-phone-browses-the-pc). |
 | `-h`, `--help` | Usage. |
 
 | Option | Meaning |
