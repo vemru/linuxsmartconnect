@@ -470,7 +470,7 @@ accepted: `Client1001`).
 ```text
 PC → phone   TLS (pin = advert fingerprint), GET /websocket, Upgrade: websocket
 phone → PC   action:Server1001:versionNegotiation?{"version":1}
-PC → phone   ack:Server1001:versionNegotiation?{"version":1}
+PC → phone   ack:Server1001:versionNegotiation?{"version":1,"token":"<token>"}
 phone → PC   action:Server1002:sendRequest?{"id":"<taskId>","senderId":"<device-id>","senderName":"",
                "fileName":"<first file>","fileCount":<n>,"mimeType":"*/*","totalSize":<bytes>,
                "file":[{"name":"<file>","mimeType":"image/png","size":17399,"dir":false,"index":0}, …]}

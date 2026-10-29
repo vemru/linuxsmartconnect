@@ -136,6 +136,8 @@ impl fmt::Display for Frame {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct VersionNegotiation {
     pub version: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
 }
 
 /// `sendRequest` payload: the transfer the phone offers. `id` is the task id for `/download`;
@@ -217,8 +219,17 @@ mod tests {
         assert_eq!(f.kind, Kind::Action);
         assert_eq!(f.id, "Server1001");
         assert_eq!(f.name, Name::VersionNegotiation);
-        assert_eq!(f.json::<VersionNegotiation>().unwrap(), VersionNegotiation { version: 1 });
+        assert_eq!(f.json::<VersionNegotiation>().unwrap(), VersionNegotiation { version: 1, token: None });
         assert_eq!(f.to_string(), VN);
+    }
+
+    #[test]
+    fn serializes_version_negotiation_with_token() {
+        let vn = VersionNegotiation { version: 1, token: Some("abc".into()) };
+        let s = serde_json::to_string(&vn).unwrap();
+        assert_eq!(s, r#"{"version":1,"token":"abc"}"#);
+        let back: VersionNegotiation = serde_json::from_str(&s).unwrap();
+        assert_eq!(back, vn);
     }
 
     #[test]

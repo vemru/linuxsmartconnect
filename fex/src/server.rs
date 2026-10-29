@@ -152,7 +152,7 @@ async fn run_exchange<S>(ws: &mut WebSocketStream<S>, t: &Transfer) -> Result<bo
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    let version = serde_json::to_string(&VersionNegotiation { version: frame::VERSION })?;
+    let version = serde_json::to_string(&VersionNegotiation { version: frame::VERSION, token: None })?;
     send(ws, &Frame::action("Server1001", Name::VersionNegotiation, Some(version.clone()))).await?;
     tokio::time::timeout(STEP_TIMEOUT, wait_ack(ws, "Server1001", &version)).await.context("no versionNegotiation ack")??;
     let request = serde_json::to_string(&t.request)?;

@@ -135,7 +135,7 @@ async fn pulls_a_transfer_and_reports_completion() {
     assert_eq!(
         events,
         [
-            r#"ws ack:Server1001:versionNegotiation?{"version":1}"#.to_owned(),
+            r#"ws ack:Server1001:versionNegotiation?{"version":1,"token":"tok+en/placeholder="}"#.to_owned(),
             "ws ack:Server1002:sendRequest?{}".to_owned(),
             format!("http /download?taskId={TASK}&token=tok%2Ben%2Fplaceholder%3D"),
             format!(r#"ws action:Client1001:status?{{"taskId":"{TASK}","type":1,"reason":""}}"#),

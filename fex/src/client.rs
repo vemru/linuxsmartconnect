@@ -26,7 +26,7 @@ use tokio_tungstenite::tungstenite::Message;
 use tracing::{debug, info, warn};
 
 use crate::frame::{self, ClientIds, Frame, Kind, Name, SendRequest, Status, VersionNegotiation};
-use crate::{http, tls};
+use crate::{http, tls, zip};
 
 /// How long to wait for the server's `sendRequest` after connecting.
 const OFFER_TIMEOUT: Duration = Duration::from_secs(20);
@@ -94,7 +94,10 @@ pub async fn pull(offer: &Offer, max_bytes: usize) -> Result<Pulled> {
                             warn!(offered = v.version, "fex: server offers another protocol version; answering with ours");
                         }
                     }
-                    let body = serde_json::to_string(&VersionNegotiation { version: frame::VERSION })?;
+                    let body = serde_json::to_string(&VersionNegotiation {
+                        version: frame::VERSION,
+                        token: (!offer.token.is_empty()).then(|| offer.token.clone()),
+                    })?;
                     ws.send(Message::text(Frame::ack(&f.id, Name::VersionNegotiation, Some(body)).to_string())).await?;
                 }
                 Name::SendRequest => {
@@ -116,7 +119,7 @@ pub async fn pull(offer: &Offer, max_bytes: usize) -> Result<Pulled> {
         if request.total_size as usize > max_bytes {
             bail!("the offered transfer ({} bytes) is over the {max_bytes}-byte limit", request.total_size);
         }
-        let download = download(addr, config, &host, &request.id, &offer.token, max_bytes);
+        let download = download(addr, config, &host, &request, &offer.token, max_bytes);
         tokio::pin!(download);
         let archive = loop {
             tokio::select! {
@@ -128,9 +131,6 @@ pub async fn pull(offer: &Offer, max_bytes: usize) -> Result<Pulled> {
                 },
             }
         };
-        if request.total_size > 0 && archive.len() as u64 != request.total_size {
-            bail!("downloaded {} bytes but the phone announced {}", archive.len(), request.total_size);
-        }
         Ok(archive)
     }
     .await;
@@ -177,27 +177,60 @@ async fn download(
     addr: SocketAddr,
     config: Arc<ClientConfig>,
     host: &str,
-    task_id: &str,
+    request: &SendRequest,
     token: &str,
     max_bytes: usize,
 ) -> Result<Vec<u8>> {
-    let mut target = format!("/download?taskId={}", http::encode_query_value(task_id));
-    if !token.is_empty() {
-        target.push_str(&format!("&token={}", http::encode_query_value(token)));
-    }
     tokio::time::timeout(DOWNLOAD_TIMEOUT, async {
-        let mut stream = tls::connect(addr, config).await?;
+        // 1. Try /download first (used by SendZipFile, e.g. for app icons and bundled zips).
+        let mut target = format!("/download?taskId={}", http::encode_query_value(&request.id));
+        if !token.is_empty() {
+            target.push_str(&format!("&token={}", http::encode_query_value(token)));
+        }
+        let mut stream = tls::connect(addr, config.clone()).await?;
         let resp = http::get(&mut stream, host, &target, max_bytes).await?;
-        if resp.status != 200 {
-            // The server answers an unknown task with 200 text/plain, so also check the type below.
-            bail!("/download answered HTTP {}", resp.status);
+        if resp.status == 200 && resp.body.starts_with(b"PK") {
+            if request.total_size > 0 && resp.body.len() as u64 != request.total_size {
+                bail!("downloaded {} bytes but the phone announced {}", resp.body.len(), request.total_size);
+            }
+            return Ok(resp.body);
         }
-        if !resp.body.starts_with(b"PK") {
-            let preview = String::from_utf8_lossy(&resp.body[..resp.body.len().min(80)]).into_owned();
-            bail!("/download did not return a zip ({:?})", preview.replace(task_id, "<task>"));
+
+        // 2. Otherwise fallback to /downloadFile (used by SendFilesDirect, e.g. for phone-to-PC file shares).
+        let file_list: Vec<(String, i64, u64)> = if !request.files.is_empty() {
+            request.files.iter().map(|f| (f.name.clone(), f.index, f.size)).collect()
+        } else {
+            vec![(request.file_name.clone(), 0, request.total_size)]
+        };
+
+        let mut entries = Vec::new();
+        let mut total_downloaded = 0u64;
+        for (name, index, _) in file_list {
+            let mut file_target = format!(
+                "/downloadFile?taskId={}&index={}",
+                http::encode_query_value(&request.id),
+                index
+            );
+            if !token.is_empty() {
+                file_target.push_str(&format!("&token={}", http::encode_query_value(token)));
+            }
+            let mut file_stream = tls::connect(addr, config.clone()).await?;
+            let file_resp = http::get(&mut file_stream, host, &file_target, max_bytes.saturating_sub(total_downloaded as usize)).await?;
+            if file_resp.status != 200 {
+                let preview = String::from_utf8_lossy(&file_resp.body[..file_resp.body.len().min(80)]).into_owned();
+                bail!("/downloadFile answered HTTP {}: {:?}", file_resp.status, preview.replace(&request.id, "<task>"));
+            }
+            total_downloaded += file_resp.body.len() as u64;
+            entries.push((name, file_resp.body));
         }
-        Ok(resp.body)
+
+        if request.total_size > 0 && total_downloaded != request.total_size {
+            bail!("downloaded {} bytes across files but the phone announced {}", total_downloaded, request.total_size);
+        }
+
+        let entries_ref: Vec<(&str, &[u8])> = entries.iter().map(|(n, b)| (n.as_str(), b.as_slice())).collect();
+        Ok(zip::write_stored(&entries_ref))
     })
     .await
-    .context("/download timed out")?
+    .context("download timed out")?
 }
