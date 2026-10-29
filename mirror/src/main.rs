@@ -186,6 +186,10 @@ struct SessState {
     last_mouse_move: Option<Instant>,
     /// Most recent un-dispatched mouse coordinate to flush on click or at rest.
     pending_mouse: Option<(i64, i64)>,
+    /// Base stream size reported by the phone (unrotated, from cmd 3).
+    base_stream_size: Option<(u32, u32)>,
+    /// Current rotation reported by the phone in cmd 16 / 23 (0..3).
+    current_rotation: u32,
 }
 
 struct Session {
@@ -436,7 +440,11 @@ impl Session {
     fn learn_stream_size(&self, body: &Value) {
         let dim = |k: &str| body.get(k).and_then(Value::as_u64).and_then(|v| u32::try_from(v).ok());
         if let (Some(w), Some(h)) = (dim("width"), dim("height")) {
-            self.st.lock().unwrap().resize.set_stream_size(w, h);
+            let mut st = self.st.lock().unwrap();
+            st.resize.set_stream_size(w, h);
+            if st.base_stream_size.is_none() {
+                st.base_stream_size = Some((w, h));
+            }
         }
     }
 
@@ -498,7 +506,9 @@ impl Session {
                 let (send, coord) = {
                     let mut st = self.st.lock().unwrap();
                     let now = Instant::now();
-                    st.pending_mouse = Some((x as i64, y as i64));
+                    let cx = (x as i64).max(0);
+                    let cy = (y as i64).max(0);
+                    st.pending_mouse = Some((cx, cy));
                     if st.last_mouse_move.map_or(true, |t| now.duration_since(t) >= Duration::from_millis(8)) {
                         st.last_mouse_move = Some(now);
                         (true, st.pending_mouse.take())
@@ -512,6 +522,8 @@ impl Session {
             }
             N::MouseButtonPress { button: b, x, y, .. } | N::MouseButtonRelease { button: b, x, y, .. } => {
                 self.flush_pending_mouse();
+                let cx = (x as i64).max(0);
+                let cy = (y as i64).max(0);
                 // X11/GTK number buttons 1..9; GL-on-Wayland passes evdev codes (BTN_LEFT = 272…).
                 let b = match b {
                     272 => 1,
@@ -523,7 +535,7 @@ impl Session {
                 };
                 match b {
                     1..=3 => {
-                        input(5, json!({ "displayId": d, "key": b, "x": x as i64, "y": y as i64, "down": pressed }))
+                        input(5, json!({ "displayId": d, "key": b, "x": cx, "y": cy, "down": pressed }))
                     }
                     // Mouse "back" side button → Android BACK.
                     8 if pressed => self.android_key(d, KEYCODE_BACK),
@@ -685,6 +697,14 @@ impl X11 {
         let g = self.conn.get_geometry(win).ok()?.reply().ok()?;
         Some((u32::from(g.width), u32::from(g.height)))
     }
+
+    fn resize_window(&self, win: u32, w: u32, h: u32) {
+        use x11rb::connection::Connection as _;
+        use x11rb::protocol::xproto::{ConfigureWindowAux, ConnectionExt as _};
+        let aux = ConfigureWindowAux::default().width(w).height(h);
+        let _ = self.conn.configure_window(win, &aux);
+        let _ = self.conn.flush();
+    }
 }
 
 /// The X11 window id of a glimagesink's GL window (0 until it exists).
@@ -702,6 +722,28 @@ fn gl_window_handle(sink: &gst::Element) -> u32 {
 
 impl Session {
     /// Applies the current title to the X11 window (finds the window the first time).
+    fn set_rotation(&self, rot: u32, x11: Option<&X11>) {
+        let is_landscape = (rot % 2) == 1;
+        self.st.lock().unwrap().current_rotation = rot;
+        if let Some(x) = x11 {
+            self.adapt_window_orientation(x, is_landscape);
+        }
+    }
+
+    fn adapt_window_orientation(&self, x: &X11, target_landscape: bool) {
+        let win = self.xwin.lock().unwrap().as_ref().map(|(w, _)| *w)
+            .or_else(|| self.sink.lock().unwrap().as_ref().map(gl_window_handle).filter(|w| *w != 0));
+        let Some(win) = win else { return };
+        if let Some((curr_w, curr_h)) = x.window_size(win) {
+            let curr_landscape = curr_w > curr_h;
+            if curr_landscape != target_landscape {
+                let (new_w, new_h) = (curr_h, curr_w);
+                x.resize_window(win, new_w, new_h);
+                println!("[{}] rotation changed: resized window from {curr_w}x{curr_h} to {new_w}x{new_h}", self.sid);
+            }
+        }
+    }
+
     fn sync_x11_title(&self, x: &X11) {
         let title = self.title.lock().unwrap().clone();
         let mut xw = self.xwin.lock().unwrap();
@@ -1065,8 +1107,10 @@ impl Host {
             }
             16 | 23 => {
                 if let Some(s) = mine {
-                    println!("[{}] cmd {cmd}: rotation {} display {}", s.sid, body["rotation"], body["displayId"]);
+                    let rot = body.get("rotation").and_then(Value::as_u64).unwrap_or(0) as u32;
+                    println!("[{}] cmd {cmd}: rotation {rot} display {}", s.sid, body["displayId"]);
                     s.learn_display(&body);
+                    s.set_rotation(rot, self.x11.as_ref());
                 }
             }
             26 => {
@@ -1207,6 +1251,8 @@ impl Host {
         if let Some(x) = &self.x11 {
             for s in self.sessions.values() {
                 s.sync_x11_title(x);
+                let is_landscape = (s.st.lock().unwrap().current_rotation % 2) == 1;
+                s.adapt_window_orientation(x, is_landscape);
             }
             if self.resize && now.duration_since(self.last_resize_poll) >= RESIZE_POLL {
                 self.last_resize_poll = now;
@@ -1822,5 +1868,32 @@ mod tests {
                 assert!(dec.starts_with("avdec_h264"));
             }
         }
+    }
+
+    #[test]
+    fn test_rotation_tracking() {
+        let _ = gst::init();
+        let (ours, _theirs) = UnixStream::pair().unwrap();
+        let s = Arc::new(Session {
+            sid: 12345,
+            pkg: "com.test".into(),
+            user_id: json!(0),
+            cmp: Value::Null,
+            shortcut_id: Value::Null,
+            headless: false,
+            d: Arc::new(Daemon { cmd: Mutex::new(ours) }),
+            st: Mutex::default(),
+            pipeline: gst::Pipeline::with_name("test"),
+            webrtc: gst::ElementFactory::make("identity").build().unwrap(),
+            title: Mutex::new("Test".into()),
+            tag: Mutex::new(None),
+            sink: Mutex::new(None),
+            xwin: Mutex::new(None),
+        });
+        assert_eq!(s.st.lock().unwrap().current_rotation, 0);
+        s.set_rotation(1, None);
+        assert_eq!(s.st.lock().unwrap().current_rotation, 1);
+        s.set_rotation(0, None);
+        assert_eq!(s.st.lock().unwrap().current_rotation, 0);
     }
 }
