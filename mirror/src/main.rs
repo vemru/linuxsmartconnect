@@ -207,6 +207,7 @@ struct Session {
     title: Mutex<String>,
     tag: Mutex<Option<gst::Element>>,
     sink: Mutex<Option<gst::Element>>,
+    flip: Mutex<Option<gst::Element>>,
     /// The video window's X11 id once known, and the title last written to it.
     xwin: Mutex<Option<(u32, String)>>,
 }
@@ -249,6 +250,7 @@ impl Session {
             title: Mutex::new(title),
             tag: Mutex::new(None),
             sink: Mutex::new(None),
+            flip: Mutex::new(None),
             xwin: Mutex::new(None),
         });
         {
@@ -309,7 +311,7 @@ impl Session {
         }
         println!("[{}] video arriving: {:?}", self.sid, pad.current_caps().map(|c| c.to_string()));
         let desc = format!(
-            "queue ! rtph264depay ! h264parse ! {} ! videoconvert name=conv n-threads=2 ! queue max-size-buffers=1 max-size-time=0 max-size-bytes=0 leaky=downstream ! taginject name=tag ! {} name=sink sync=false",
+            "queue ! rtph264depay ! h264parse ! {} ! videoconvert name=conv n-threads=2 ! videoflip name=flip ! queue max-size-buffers=1 max-size-time=0 max-size-bytes=0 leaky=downstream ! taginject name=tag ! {} name=sink sync=false",
             pick_decoder(),
             pick_sink()
         );
@@ -318,7 +320,7 @@ impl Session {
             Err(e) => {
                 eprintln!("[{}] could not construct decoder bin with {}: {e}; falling back to avdec_h264", self.sid, pick_decoder());
                 let fallback = format!(
-                    "queue ! rtph264depay ! h264parse ! avdec_h264 thread-type=slice max-threads=4 ! videoconvert name=conv n-threads=2 ! queue max-size-buffers=1 max-size-time=0 max-size-bytes=0 leaky=downstream ! taginject name=tag ! {} name=sink sync=false",
+                    "queue ! rtph264depay ! h264parse ! avdec_h264 thread-type=slice max-threads=4 ! videoconvert name=conv n-threads=2 ! videoflip name=flip ! queue max-size-buffers=1 max-size-time=0 max-size-bytes=0 leaky=downstream ! taginject name=tag ! {} name=sink sync=false",
                     pick_sink()
                 );
                 gst::parse::bin_from_description(&fallback, true)?
@@ -328,6 +330,12 @@ impl Session {
         tag.set_property("tags", title_tags(&self.title.lock().unwrap()));
         *self.tag.lock().unwrap() = Some(tag);
         *self.sink.lock().unwrap() = bin.by_name("sink");
+        if let Some(flip) = bin.by_name("flip") {
+            let rot = self.st.lock().unwrap().current_rotation;
+            let dir = rotation_to_direction(rot);
+            let _ = flip.set_property_from_str("video-direction", dir);
+            *self.flip.lock().unwrap() = Some(flip);
+        }
         self.pipeline.add(&bin)?;
         // Link before starting the bin, then bring it up to the pipeline's state.
         pad.link(&bin.static_pad("sink").context("decoder bin has no sink pad")?)?;
@@ -720,11 +728,27 @@ fn gl_window_handle(sink: &gst::Element) -> u32 {
     unsafe { gst_gl::ffi::gst_gl_window_get_window_handle(win.to_glib_none().0) as u32 }
 }
 
+/// Maps Android display rotation (0 = natural, 1 = 90° CCW / landscape, 2 = 180°, 3 = 270°)
+/// to GStreamer videoflip direction string.
+fn rotation_to_direction(rot: u32) -> &'static str {
+    match rot {
+        1 => "90l",
+        2 => "180",
+        3 => "90r",
+        _ => "identity",
+    }
+}
+
 impl Session {
-    /// Applies the current title to the X11 window (finds the window the first time).
+    /// Applies rotation to the video stream (via videoflip) and the X11 window.
     fn set_rotation(&self, rot: u32, x11: Option<&X11>) {
         let is_landscape = (rot % 2) == 1;
         self.st.lock().unwrap().current_rotation = rot;
+        if let Some(flip) = self.flip.lock().unwrap().as_ref() {
+            let dir = rotation_to_direction(rot);
+            let _ = flip.set_property_from_str("video-direction", dir);
+            println!("[{}] stream rotation → {rot} ({dir})", self.sid);
+        }
         if let Some(x) = x11 {
             self.adapt_window_orientation(x, is_landscape);
         }
@@ -1874,6 +1898,7 @@ mod tests {
     fn test_rotation_tracking() {
         let _ = gst::init();
         let (ours, _theirs) = UnixStream::pair().unwrap();
+        let flip = gst::ElementFactory::make("videoflip").build().unwrap();
         let s = Arc::new(Session {
             sid: 12345,
             pkg: "com.test".into(),
@@ -1888,12 +1913,17 @@ mod tests {
             title: Mutex::new("Test".into()),
             tag: Mutex::new(None),
             sink: Mutex::new(None),
+            flip: Mutex::new(Some(flip)),
             xwin: Mutex::new(None),
         });
         assert_eq!(s.st.lock().unwrap().current_rotation, 0);
         s.set_rotation(1, None);
         assert_eq!(s.st.lock().unwrap().current_rotation, 1);
+        assert_eq!(rotation_to_direction(1), "90l");
+        assert_eq!(rotation_to_direction(2), "180");
+        assert_eq!(rotation_to_direction(3), "90r");
         s.set_rotation(0, None);
         assert_eq!(s.st.lock().unwrap().current_rotation, 0);
+        assert_eq!(rotation_to_direction(0), "identity");
     }
 }
