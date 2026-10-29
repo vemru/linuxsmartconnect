@@ -86,6 +86,11 @@ These are the kinds of things the Windows app allows too. A paired phone can:
   invisible to it unless you turn on *Include hidden files* (`--include-hidden`): don't, unless
   the folder you share holds nothing secret. Without `serve` running, nothing on the PC is
   exported. Browsing the phone's own files (`mount`) gives the phone nothing on the PC;
+- **send a link, text or a file to your desktop** (phone share sheet / File explorer). It cannot
+  open or run anything by itself: you get a notification with the content and must choose **Open**
+  (which still asks the portal and app picker) or **Save as…**. Only `http`/`https` links offer
+  Open; other text is shown but never launched. Received files wait in a private runtime directory
+  and are deleted on Dismiss, after Open/Save, when replaced, or after 30 minutes;
 - **start a phone-display session by itself** (when the PC's screen is started from the phone), as
   it can with the Windows app: the daemon then starts `smartconnect-display`, and the phone sees the
   duplicated or extended screen, can move the pointer and type on the PC, and hears the PC's audio
@@ -140,6 +145,7 @@ Elsewhere:
 | Location | Contents | Lifetime |
 |---|---|---|
 | `$XDG_RUNTIME_DIR/smartconnectd/icons/` | App icons, contact photos and pictures from notifications (JPEG) | tmpfs, cleared at logout/reboot |
+| `$XDG_RUNTIME_DIR/smartconnectd/shares/` | Files the phone shared, each in a 0700 directory until you Open, Save as…, Dismiss, replace it, or 30 minutes pass | tmpfs, cleared at logout/reboot |
 | `$XDG_RUNTIME_DIR/smartconnectd/phone-wallpaper.*` | The phone's wallpaper | same |
 | `$XDG_RUNTIME_DIR/smartconnectd/*.log` | Output of helpers the daemon started | same |
 | `$XDG_RUNTIME_DIR/smartconnect-display.log` | Output of the phone display session the GTK app or the plugin started | same |

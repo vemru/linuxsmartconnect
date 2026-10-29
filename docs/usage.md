@@ -868,11 +868,53 @@ runs, the paired phone can read everything visible under the shared folder (see
 > (All files and the category views), image and video thumbnails, and delete-to-Trash. Not tried
 > yet: very large folders.
 
+## Sending a link or a file from the phone (phone → PC)
+
+The phone's share sheet and **File explorer** can send a link, some text or a file to the PC.
+Nothing opens or runs on arrival: the daemon shows a GNOME notification titled **Smart Connect**
+with the content visible, and the action you pick goes through the desktop portal (the same
+native chooser and app picker every other app uses).
+
+- **Link or text:** the notification shows the link/text with **Open** and **Dismiss**. Only
+  `http://` and `https://` links get an Open button; anything else (`file:`, `javascript:`,
+  `smb://`, …) is shown as text and can never be launched. Open asks the portal which app to use
+  (`Open With` dialog, no default-app guessing) and never opens anything by itself.
+- **File or folder:** the notification shows the name and size with **Open**, **Save as…** and
+  **Dismiss**. *Open* on a file hands the staged copy to the portal so you pick the app; *Open* on a
+  folder opens it in your file manager (the portal has no app picker for folders) and keeps the
+  staged copy for a day so the window doesn't go empty. *Save as…* opens the native save dialog with
+  the received name (sanitized) preselected under `~/Downloads`; a folder is saved as a folder
+  (`FileChooser.SelectFolder` when the portal has it, otherwise a `SaveFile` dialog whose chosen
+  name becomes the folder).
+
+While a share is pending the copy lives in a private directory under
+`$XDG_RUNTIME_DIR/smartconnectd/shares/` (mode 0700). It is deleted on **Dismiss**, after a
+successful **Open**/**Save as…** (except a folder you opened, kept for a day), when a newer share
+replaces it, or after 30 minutes without an action. Files are capped at 256 MiB. The notification
+stays in GNOME's message tray until you act on it.
+
+Received files arrive in the phone's zip transport and are unpacked only into the staging
+directory, with traversal and symlink protection, never directly into `~/Downloads`.
+
+This needs `xdg-desktop-portal`; on GNOME that is `xdg-desktop-portal-gnome` (usually installed).
+Without a portal, Open falls back to `xdg-open`/`gio open` and Save to `zenity`, and the daemon
+logs which path it used. Shares are accepted only from the paired, connected phone, and
+notification actions are rate-limited.
+
+> **Status:** the notification and the OpenURI, FileChooser (SaveFile, and the SaveFile fallback
+> for a missing SelectFolder) and OpenDirectory portals are verified against GNOME Shell 50.6 on
+> Wayland: the dialogs open and are closed through the portal, and Escape sent to the focused
+> Open With dialog cancels it. GNOME logs `Failed to associate portal window with parent window`
+> for the daemon's empty parent, so raising the dialog above the current window is up to the
+> shell. The share frame is implemented from the documented service 2 `FileExSendData` carrier
+> and tested with simulated shares; it has not yet been captured from a real phone's share
+> button.
+
 ## Not supported
 
 - ❌ Writing to the other side's storage: the phone's storage is read-only on the PC, and the
   phone can't create or change files in a shared PC folder (it can only delete them to the Trash).
-- ❌ One-shot file transfer (push/pull), and files or images on the clipboard.
+- ❌ Sending files from the PC to the phone (one-shot push), and files or images on the clipboard.
 
 ## Command-line reference
 

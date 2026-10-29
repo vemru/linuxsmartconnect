@@ -13,12 +13,12 @@ pub const SERVICE_DEVICE_PAIRED: i64 = 19;
 /// it and only brings a service up when the PC lists it (no entry for 9 = no clipboard NEGO), so
 /// list only services the daemon answers. Versions are the Windows 09.0.3.013 values.
 pub fn service_versions() -> Value {
-    json!({ "0": 3, "1": 10, "3": 3, "9": 4, "13": 1, "15": 16, "22": 2, "25": 1, "26": 1, "202": 1 })
+    json!({ "0": 3, "1": 10, "2": 5, "3": 3, "9": 4, "13": 1, "15": 16, "22": 2, "25": 1, "26": 1, "202": 1 })
 }
 
 /// Per-service capability levels advertised as `device.caps` (Windows sends 3 for clipboard).
 pub fn service_caps() -> Value {
-    json!({ "1": 2, "9": 3, "15": 3, "16": 3, "26": 2, "202": 1 })
+    json!({ "1": 2, "2": 3, "9": 3, "15": 3, "16": 3, "26": 2, "202": 1 })
 }
 
 /// Service 25 (device status) id.
@@ -43,7 +43,7 @@ pub fn device_status_caps() -> Value {
 }
 
 fn caps_with_extra(extra: &[(String, i64)]) -> Value {
-    let mut cap = json!({ "1": 1, "3": 1, "13": 1, "15": 1, "22": 1, "26": 1 });
+    let mut cap = json!({ "1": 1, "2": 1, "3": 1, "13": 1, "15": 1, "22": 1, "26": 1 });
     if let Some(map) = cap.as_object_mut() {
         map.extend(extra.iter().map(|(svc, flags)| (svc.clone(), json!(flags))));
     }

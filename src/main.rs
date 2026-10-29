@@ -189,6 +189,16 @@ async fn main() -> Result<()> {
         }
         Err(e) => tracing::warn!("notifications: no desktop notification server, phone notifications won't show: {e:#}"),
     }
+    // Phone → PC sharing: links/files arrive on service 2/24 (or a URL copied on the phone) and
+    // become a notification whose Open/Save actions go through the desktop portal.
+    match smartconnect::share::SystemDesktop::connect().await {
+        Ok(desktop) => {
+            let shares = smartconnect::share::ShareManager::new(desktop, smartconnect::status::runtime_dir().join("shares"));
+            shares.start();
+            let _ = daemon.share.set(shares);
+        }
+        Err(e) => tracing::warn!("sharing: no desktop integration, phone shares won't show: {e:#}"),
+    }
 
     // Wi-Fi reconnect: advertise ourselves (phone's Connect button) and watch for the phone's own
     // advert to dial it back (daemon restart). Needs inbound mDNS (udp 5353) through the firewall.

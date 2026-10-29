@@ -18,6 +18,7 @@ pub mod pc_lock;
 pub mod proto;
 pub mod reconnect;
 pub mod server;
+pub mod share;
 pub mod sms;
 pub mod status;
 pub mod webcam;

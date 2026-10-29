@@ -14,6 +14,8 @@ const METHOD_STORE: u16 = 0;
 const METHOD_DEFLATE: u16 = 8;
 /// Refuse to inflate any single entry past this, whatever its header claims.
 const MAX_ENTRY: usize = 256 * 1024 * 1024;
+/// ...and the whole archive past this, so a 256 MiB download can't inflate to gigabytes.
+const MAX_TOTAL: usize = 512 * 1024 * 1024;
 const MAX_ENTRIES: usize = 65_535;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -75,6 +77,7 @@ pub fn read_all(archive: &[u8]) -> Result<Vec<Entry>> {
     }
     let mut at = cd_offset as usize;
     let mut out = Vec::with_capacity(count);
+    let mut total = 0usize;
     for _ in 0..count {
         if u32_at(archive, at)? != CDH_SIG {
             bail!("zip: bad central directory header at {at}");
@@ -103,6 +106,12 @@ pub fn read_all(archive: &[u8]) -> Result<Vec<Entry>> {
         }
         if usize_ > MAX_ENTRY {
             bail!("zip: {name} is too large ({usize_} bytes)");
+        }
+        total = total
+            .checked_add(usize_)
+            .context("zip: the declared sizes overflow")?;
+        if total > MAX_TOTAL {
+            bail!("zip: the archive expands past {MAX_TOTAL} bytes");
         }
         if u32_at(archive, local)? != LFH_SIG {
             bail!("zip: bad local header for {name}");

@@ -172,7 +172,7 @@ Noctalia Shell on Arch Linux. Other phones, app versions and desktops may behave
 | Phone files in the Noctalia panel | 🟡 | The *Phone files* tile: **Mount**, then **Open** and **Unmount**, with the mount folder in the plugin settings. Wraps the verified helper. |
 | Share a PC folder to the phone | ✅ | `smartconnect-files serve`, or *Share with the phone* on the GTK app's Files page: the phone browses a folder (default: `~/SmartConnect`, hidden files excluded) in Smart Connect's **Files tab** (All files, Recents, Images, Videos, …, with thumbnails) and Android's file browser. It can open and copy files, and delete them to your Trash (switchable off). Verified on a phone. Needs TCP 2049 open in your Wi-Fi's firewall zone; video thumbnails need `ffmpeg`. |
 | Writing to the phone | 🟡 | Reverse-engineered; the NFS write path is not implemented yet. |
-| File transfer (push/pull single files) | ❌ | Separate "fex" transport; see [file-exchange.md](docs/protocol/file-exchange.md). No send/receive UI; `smartconnect-fex pull` only fetches an offer whose coordinates you already have. |
+| File transfer (push/pull single files) | 🟡 | Phone → PC only: a link, text or a file sent from the phone's share sheet becomes a GNOME notification with **Open** and **Dismiss** (and **Save as…** for files), with every launch going through the desktop portal. See [Sending a link or a file from the phone](docs/usage.md#sending-a-link-or-a-file-from-the-phone-phone--pc). Tested with simulated shares and live GNOME notifications; not yet captured from a real phone. No PC → phone push. |
 
 **Desktop app**
 

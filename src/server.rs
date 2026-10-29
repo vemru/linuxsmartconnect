@@ -88,6 +88,8 @@ pub struct Daemon {
     /// mirror viewer relaying WebRTC signalling.
     pub from_phone: broadcast::Sender<PhoneCommand>,
     pub notifier: std::sync::OnceLock<Arc<Notifier>>,
+    /// Phone → PC link/file sharing (notification + portal actions).
+    pub share: std::sync::OnceLock<Arc<crate::share::ShareManager<crate::share::SystemDesktop>>>,
     /// Per-service svc 25 `cap` flags set by helpers (e.g. cross control's in-use bit), merged over
     /// `proto::device_status_caps()` so the phone always gets the full tile map.
     pub cap_overrides: Mutex<serde_json::Map<String, Value>>,
@@ -136,6 +138,7 @@ impl Daemon {
             to_phone: broadcast::channel(32).0,
             from_phone: broadcast::channel(256).0,
             notifier: std::sync::OnceLock::new(),
+            share: std::sync::OnceLock::new(),
             cap_overrides: Mutex::default(),
         }
     }
@@ -565,6 +568,9 @@ where
                             }
                             if msg.service_id == clipboard::SERVICE_FILE_EX {
                                 clipboard::on_file_ex(peer.ip().to_canonical(), d, daemon.clipboard.clone());
+                            }
+                            if let Some(share) = daemon.share.get() {
+                                share.on_frame(msg.service_id, d, peer.ip().to_canonical()).await;
                             }
                             if matches!(msg.service_id, notifications::SERVICE_NOTIFY | notifications::SERVICE_NOTIFY_WIDGET) {
                                 if let Some(n) = daemon.notifier.get() {
