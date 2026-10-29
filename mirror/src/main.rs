@@ -309,7 +309,17 @@ impl Session {
             pick_decoder(),
             pick_sink()
         );
-        let bin = gst::parse::bin_from_description(&desc, true)?;
+        let bin = match gst::parse::bin_from_description(&desc, true) {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("[{}] could not construct decoder bin with {}: {e}; falling back to avdec_h264", self.sid, pick_decoder());
+                let fallback = format!(
+                    "queue ! rtph264depay ! h264parse ! avdec_h264 thread-type=slice max-threads=4 ! videoconvert name=conv n-threads=2 ! queue max-size-buffers=1 max-size-time=0 max-size-bytes=0 leaky=downstream ! taginject name=tag ! {} name=sink sync=false",
+                    pick_sink()
+                );
+                gst::parse::bin_from_description(&fallback, true)?
+            }
+        };
         let tag = bin.by_name("tag").context("no taginject")?;
         tag.set_property("tags", title_tags(&self.title.lock().unwrap()));
         *self.tag.lock().unwrap() = Some(tag);
@@ -1349,19 +1359,36 @@ environment:
   SMARTCONNECT_BACKGROUND_ACTIONS=0   notification action buttons open a window like Open does
   SMARTCONNECT_ICE_ADDRESSES=IP,...   local ICE addresses to offer (IPs, IPv4 CIDRs, or all)
   MIRROR_LATENCY=ms                   webrtc jitterbuffer latency in ms (default: 30)
-  MIRROR_DECODER=...                  custom GStreamer H.264 decoder element
+  MIRROR_DECODER=...                  custom H.264 decoder (or cpu, vaapi, nvdec)
   MIRROR_SINK=...                     custom GStreamer video sink element";
 
-/// Hardware H.264 decoding when available (VA-API), else slice-threaded libav. Override: MIRROR_DECODER=…
+/// Hardware H.264 decoding when available (VA-API for Intel/AMD, NVDEC with cudadownload for NVIDIA),
+/// else slice-threaded libav. Supports integrated, discrete, and hybrid dual-GPU systems.
+/// Override: MIRROR_DECODER=… (or "cpu", "vaapi", "nvdec")
 fn pick_decoder() -> String {
-    if let Ok(d) = std::env::var("MIRROR_DECODER") {
-        return d;
-    }
     let ok = |n: &str| gst::ElementFactory::find(n).is_some();
+    if let Ok(d) = std::env::var("MIRROR_DECODER") {
+        match d.as_str() {
+            "cpu" => return "avdec_h264 thread-type=slice max-threads=4".into(),
+            "nvdec" | "nvidia" => return "nvh264dec max-display-delay=0 ! cudadownload ! video/x-raw".into(),
+            "vaapi" => {
+                if ok("vah264dec") {
+                    return "vah264dec".into();
+                } else if ok("vaapih264dec") {
+                    return "vaapih264dec".into();
+                }
+            }
+            _ => return d,
+        }
+    }
     if ok("vah264dec") {
         "vah264dec".into()
     } else if ok("vaapih264dec") {
         "vaapih264dec".into()
+    } else if ok("nvh264dec") && ok("cudadownload") {
+        // Dedicated NVIDIA GPU: decode via NVDEC, then download to system RAM (video/x-raw)
+        // so it renders universally across all display configurations (single dGPU or hybrid iGPU/dGPU).
+        "nvh264dec max-display-delay=0 ! cudadownload ! video/x-raw".into()
     } else {
         "avdec_h264 thread-type=slice max-threads=4".into()
     }
@@ -1789,7 +1816,11 @@ mod tests {
         let dec = pick_decoder();
         assert!(!dec.is_empty());
         if gst::ElementFactory::find("vah264dec").is_none() && gst::ElementFactory::find("vaapih264dec").is_none() {
-            assert!(dec.starts_with("avdec_h264"));
+            if gst::ElementFactory::find("nvh264dec").is_some() && gst::ElementFactory::find("cudadownload").is_some() {
+                assert!(dec.contains("nvh264dec") && dec.contains("cudadownload"));
+            } else {
+                assert!(dec.starts_with("avdec_h264"));
+            }
         }
     }
 }
