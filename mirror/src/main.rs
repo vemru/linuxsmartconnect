@@ -182,6 +182,10 @@ struct SessState {
     /// Headless (background action) sessions: when to close.
     headless: Option<actions::HeadlessTimer>,
     resize: resize::ResizeDebouncer,
+    /// Last mouse motion timestamp for throttling to ~125 Hz (8ms).
+    last_mouse_move: Option<Instant>,
+    /// Most recent un-dispatched mouse coordinate to flush on click or at rest.
+    pending_mouse: Option<(i64, i64)>,
 }
 
 struct Session {
@@ -218,7 +222,14 @@ impl Session {
     fn new(info: SessionInfo, filter: ice::CandidateFilter, d: Arc<Daemon>) -> Result<Arc<Self>> {
         let SessionInfo { sid, pkg, user_id, cmp, shortcut_id, title, headless } = info;
         let pipeline = gst::Pipeline::with_name(&format!("session-{sid}"));
-        let webrtc = gst::ElementFactory::make("webrtcbin").property_from_str("bundle-policy", "max-bundle").build()?;
+        let latency: u32 = std::env::var("MIRROR_LATENCY")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(10);
+        let webrtc = gst::ElementFactory::make("webrtcbin")
+            .property_from_str("bundle-policy", "max-bundle")
+            .property("latency", latency)
+            .build()?;
         pipeline.add(&webrtc)?;
         let s = Arc::new(Session {
             sid,
@@ -294,7 +305,7 @@ impl Session {
         }
         println!("[{}] video arriving: {:?}", self.sid, pad.current_caps().map(|c| c.to_string()));
         let desc = format!(
-            "queue ! rtph264depay ! h264parse ! {} ! videoconvert name=conv ! taginject name=tag ! {} name=sink sync=false",
+            "queue max-size-buffers=1 max-size-time=0 max-size-bytes=0 leaky=downstream ! rtph264depay ! h264parse ! {} ! videoconvert name=conv n-threads=2 ! taginject name=tag ! {} name=sink sync=false",
             pick_decoder(),
             pick_sink()
         );
@@ -457,6 +468,13 @@ impl Session {
         Some(resize::payload(&t, wanted))
     }
 
+    fn flush_pending_mouse(&self) {
+        let Some(d) = self.display_id() else { return };
+        if let Some((x, y)) = self.st.lock().unwrap().pending_mouse.take() {
+            self.d.input(4, json!({ "displayId": d, "x": x, "y": y }));
+        }
+    }
+
     /// Window pointer/keyboard events (GstNavigation from the video sink) → phone input (svc 16).
     /// Coordinates are already in video-frame pixels, which is what the phone expects.
     fn on_navigation(&self, ev: &gst::EventRef) {
@@ -466,8 +484,24 @@ impl Session {
         let pressed = matches!(nav, N::MouseButtonPress { .. } | N::KeyPress { .. });
         let input = |cmd, data| self.d.input(cmd, data);
         match nav {
-            N::MouseMove { x, y, .. } => input(4, json!({ "displayId": d, "x": x as i64, "y": y as i64 })),
+            N::MouseMove { x, y, .. } => {
+                let (send, coord) = {
+                    let mut st = self.st.lock().unwrap();
+                    let now = Instant::now();
+                    st.pending_mouse = Some((x as i64, y as i64));
+                    if st.last_mouse_move.map_or(true, |t| now.duration_since(t) >= Duration::from_millis(8)) {
+                        st.last_mouse_move = Some(now);
+                        (true, st.pending_mouse.take())
+                    } else {
+                        (false, None)
+                    }
+                };
+                if let (true, Some((x, y))) = (send, coord) {
+                    input(4, json!({ "displayId": d, "x": x, "y": y }));
+                }
+            }
             N::MouseButtonPress { button: b, x, y, .. } | N::MouseButtonRelease { button: b, x, y, .. } => {
+                self.flush_pending_mouse();
                 // X11/GTK number buttons 1..9; GL-on-Wayland passes evdev codes (BTN_LEFT = 272…).
                 let b = match b {
                     272 => 1,
@@ -1146,6 +1180,9 @@ impl Host {
 
     /// Periodic work on the main loop.
     fn tick(&mut self) {
+        for s in self.sessions.values() {
+            s.flush_pending_mouse();
+        }
         let now = Instant::now();
         let dead: Vec<(i64, String)> =
             self.sessions.values().filter_map(|s| s.poll_dead().map(|w| (s.sid, w))).collect();
@@ -1310,15 +1347,26 @@ const USAGE: &str = "usage: smartconnect-mirror [--host [--resize] | --desktop |
   --close SID      close one host session
 environment:
   SMARTCONNECT_BACKGROUND_ACTIONS=0   notification action buttons open a window like Open does
-  SMARTCONNECT_ICE_ADDRESSES=IP,...   local ICE addresses to offer (IPs, IPv4 CIDRs, or all)";
+  SMARTCONNECT_ICE_ADDRESSES=IP,...   local ICE addresses to offer (IPs, IPv4 CIDRs, or all)
+  MIRROR_LATENCY=ms                   webrtc jitterbuffer latency in ms (default: 10)
+  MIRROR_DECODER=...                  custom GStreamer H.264 decoder element
+  MIRROR_SINK=...                     custom GStreamer video sink element";
 
-/// Hardware H.264 decoding (VA-API) when available, else libav. Override: MIRROR_DECODER=…
+/// Hardware H.264 decoding when available (VA-API / NVDEC), else slice-threaded libav. Override: MIRROR_DECODER=…
 fn pick_decoder() -> String {
     if let Ok(d) = std::env::var("MIRROR_DECODER") {
         return d;
     }
     let ok = |n: &str| gst::ElementFactory::find(n).is_some();
-    if ok("vah264dec") { "vah264dec".into() } else { "avdec_h264".into() }
+    if ok("vah264dec") {
+        "vah264dec".into()
+    } else if ok("vaapih264dec") {
+        "vaapih264dec".into()
+    } else if ok("nvh264dec") {
+        "nvh264dec max-display-delay=0".into()
+    } else {
+        "avdec_h264 thread-type=slice max-threads=4".into()
+    }
 }
 
 /// glimagesink forwards wheel events on Wayland (waylandsink has no scroll support). Override: MIRROR_SINK=…
@@ -1735,5 +1783,18 @@ mod tests {
         assert_eq!((r.cmp.as_str(), r.user_id.as_i64(), r.source), (Some("com.example.Main"), Some(10), 0));
         assert_eq!(r.name.as_deref(), Some("Example"));
         assert!(!r.headless, "PC-initiated starts always get a window");
+    }
+
+    #[test]
+    fn test_pick_decoder() {
+        let _ = gst::init();
+        let dec = pick_decoder();
+        assert!(!dec.is_empty());
+        if gst::ElementFactory::find("nvh264dec").is_some()
+            && gst::ElementFactory::find("vah264dec").is_none()
+            && gst::ElementFactory::find("vaapih264dec").is_none()
+        {
+            assert_eq!(dec, "nvh264dec max-display-delay=0");
+        }
     }
 }
