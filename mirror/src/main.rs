@@ -311,7 +311,7 @@ impl Session {
         }
         println!("[{}] video arriving: {:?}", self.sid, pad.current_caps().map(|c| c.to_string()));
         let desc = format!(
-            "queue ! rtph264depay ! h264parse ! {} ! videoconvert name=conv n-threads=2 ! videoflip name=flip ! queue max-size-buffers=1 max-size-time=0 max-size-bytes=0 leaky=downstream ! taginject name=tag ! {} name=sink sync=false",
+            "queue ! rtph264depay ! h264parse ! {} ! videoconvert name=conv n-threads=2 ! videoflip name=flip ! videoconvert n-threads=2 ! queue max-size-buffers=1 max-size-time=0 max-size-bytes=0 leaky=downstream ! taginject name=tag ! {} name=sink sync=false",
             pick_decoder(),
             pick_sink()
         );
@@ -320,7 +320,7 @@ impl Session {
             Err(e) => {
                 eprintln!("[{}] could not construct decoder bin with {}: {e}; falling back to avdec_h264", self.sid, pick_decoder());
                 let fallback = format!(
-                    "queue ! rtph264depay ! h264parse ! avdec_h264 thread-type=slice max-threads=4 ! videoconvert name=conv n-threads=2 ! videoflip name=flip ! queue max-size-buffers=1 max-size-time=0 max-size-bytes=0 leaky=downstream ! taginject name=tag ! {} name=sink sync=false",
+                    "queue ! rtph264depay ! h264parse ! avdec_h264 thread-type=slice max-threads=4 ! videoconvert name=conv n-threads=2 ! videoflip name=flip ! videoconvert n-threads=2 ! queue max-size-buffers=1 max-size-time=0 max-size-bytes=0 leaky=downstream ! taginject name=tag ! {} name=sink sync=false",
                     pick_sink()
                 );
                 gst::parse::bin_from_description(&fallback, true)?
@@ -740,14 +740,33 @@ fn rotation_to_direction(rot: u32) -> &'static str {
 }
 
 impl Session {
+    fn request_keyframe(&self) {
+        if let Some(sink) = self.sink.lock().unwrap().as_ref() {
+            let ev = gst_video::UpstreamForceKeyUnitEvent::builder()
+                .all_headers(true)
+                .build();
+            let _ = sink.send_event(ev);
+        }
+    }
+
     /// Applies rotation to the video stream (via videoflip) and the X11 window.
     fn set_rotation(&self, rot: u32, x11: Option<&X11>) {
         let is_landscape = (rot % 2) == 1;
-        self.st.lock().unwrap().current_rotation = rot;
+        let changed = {
+            let mut st = self.st.lock().unwrap();
+            let old = st.current_rotation;
+            st.current_rotation = rot;
+            old != rot
+        };
         if let Some(flip) = self.flip.lock().unwrap().as_ref() {
             let dir = rotation_to_direction(rot);
             let _ = flip.set_property_from_str("video-direction", dir);
             println!("[{}] stream rotation → {rot} ({dir})", self.sid);
+        }
+        if changed {
+            // Unpause encoder if the phone paused it on orientation change
+            self.d.send15(6, Some(json!({ "sessionId": self.sid })));
+            self.request_keyframe();
         }
         if let Some(x) = x11 {
             self.adapt_window_orientation(x, is_landscape);
@@ -1087,6 +1106,15 @@ impl Host {
                     (0, None) => {
                         let why = format!("reason {} {}", body["reason"], body["msg"]);
                         self.finish_inflight(&pkg, false, &why);
+                    }
+                    (2, Some(s)) => {
+                        println!("[{}] phone paused encoder (state 2 reason {}); resuming with cmd 6", s.sid, body["reason"]);
+                        self.d.send15(6, Some(json!({ "sessionId": s.sid })));
+                        s.request_keyframe();
+                    }
+                    (3, Some(s)) => {
+                        println!("[{}] phone resumed encoder (state 3)", s.sid);
+                        s.request_keyframe();
                     }
                     (st, Some(s)) => println!("[{}] state {st} reason {}", s.sid, body["reason"]),
                     _ => {}
