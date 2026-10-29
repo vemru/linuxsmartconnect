@@ -225,7 +225,7 @@ impl Session {
         let latency: u32 = std::env::var("MIRROR_LATENCY")
             .ok()
             .and_then(|s| s.parse().ok())
-            .unwrap_or(10);
+            .unwrap_or(30);
         let webrtc = gst::ElementFactory::make("webrtcbin")
             .property_from_str("bundle-policy", "max-bundle")
             .property("latency", latency)
@@ -305,7 +305,7 @@ impl Session {
         }
         println!("[{}] video arriving: {:?}", self.sid, pad.current_caps().map(|c| c.to_string()));
         let desc = format!(
-            "queue max-size-buffers=1 max-size-time=0 max-size-bytes=0 leaky=downstream ! rtph264depay ! h264parse ! {} ! videoconvert name=conv n-threads=2 ! taginject name=tag ! {} name=sink sync=false",
+            "queue ! rtph264depay ! h264parse ! {} ! videoconvert name=conv n-threads=2 ! queue max-size-buffers=1 max-size-time=0 max-size-bytes=0 leaky=downstream ! taginject name=tag ! {} name=sink sync=false",
             pick_decoder(),
             pick_sink()
         );
@@ -1348,11 +1348,11 @@ const USAGE: &str = "usage: smartconnect-mirror [--host [--resize] | --desktop |
 environment:
   SMARTCONNECT_BACKGROUND_ACTIONS=0   notification action buttons open a window like Open does
   SMARTCONNECT_ICE_ADDRESSES=IP,...   local ICE addresses to offer (IPs, IPv4 CIDRs, or all)
-  MIRROR_LATENCY=ms                   webrtc jitterbuffer latency in ms (default: 10)
+  MIRROR_LATENCY=ms                   webrtc jitterbuffer latency in ms (default: 30)
   MIRROR_DECODER=...                  custom GStreamer H.264 decoder element
   MIRROR_SINK=...                     custom GStreamer video sink element";
 
-/// Hardware H.264 decoding when available (VA-API / NVDEC), else slice-threaded libav. Override: MIRROR_DECODER=…
+/// Hardware H.264 decoding when available (VA-API), else slice-threaded libav. Override: MIRROR_DECODER=…
 fn pick_decoder() -> String {
     if let Ok(d) = std::env::var("MIRROR_DECODER") {
         return d;
@@ -1362,8 +1362,6 @@ fn pick_decoder() -> String {
         "vah264dec".into()
     } else if ok("vaapih264dec") {
         "vaapih264dec".into()
-    } else if ok("nvh264dec") {
-        "nvh264dec max-display-delay=0".into()
     } else {
         "avdec_h264 thread-type=slice max-threads=4".into()
     }
@@ -1790,11 +1788,8 @@ mod tests {
         let _ = gst::init();
         let dec = pick_decoder();
         assert!(!dec.is_empty());
-        if gst::ElementFactory::find("nvh264dec").is_some()
-            && gst::ElementFactory::find("vah264dec").is_none()
-            && gst::ElementFactory::find("vaapih264dec").is_none()
-        {
-            assert_eq!(dec, "nvh264dec max-display-delay=0");
+        if gst::ElementFactory::find("vah264dec").is_none() && gst::ElementFactory::find("vaapih264dec").is_none() {
+            assert!(dec.starts_with("avdec_h264"));
         }
     }
 }
