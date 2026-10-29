@@ -1,4 +1,4 @@
-//! The main window: a header with a device menu + a Phone / Apps / Display (Cross Control and the display) / Files / Notifications
+//! The main window: a header with a device menu + a Phone (with inline notifications and Cross Control) / Apps / Display / Files
 //! view switcher, driven by daemon status events. Pairing and Preferences live in dialogs opened
 //! from the device menu.
 
@@ -40,16 +40,14 @@ pub struct Ui {
     root: gtk::Stack,
     /// Label under the spinner on the "connecting" page ("Connecting…" / "Starting smartconnectd…").
     connecting_label: gtk::Label,
-    /// The five-view stack, kept so pages can be switched programmatically (the unread shortcut).
+    /// The four-view stack: Phone, Apps, Display, Files.
     views: adw::ViewStack,
     switcher: adw::ViewSwitcher,
     switcher_bar: adw::ViewSwitcherBar,
-    notif_page: adw::ViewStackPage,
     device: DeviceMenu,
     /// The "service isn't running" page (with the last device and a Start button).
     down: DownPage,
     phone: PhonePage,
-    notifs: NotifPage,
     pair: PairDialog,
     apps: Rc<AppsPage>,
     display: Rc<DisplayPage>,
@@ -100,8 +98,8 @@ struct State {
 }
 
 /// What the Phone page shows: the live phone, the last one while it is away, or the pairing prompt.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum PhoneState {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PhoneState {
     Connected,
     Disconnected,
     Unpaired,
@@ -166,11 +164,15 @@ struct PhonePage {
     connect_label: gtk::Label,
     /// Shown when no phone is paired.
     pair: gtk::Button,
-    unread_card: gtk::Button,
-    unread_label: gtk::Label,
     cross_group: adw::PreferencesGroup,
     /// Opens the Cross Control page.
     cross: adw::ActionRow,
+    notif_title: gtk::Label,
+    clear_all: gtk::Button,
+    notif_stack: gtk::Stack,
+    notif_list: gtk::ListBox,
+    muted_group: adw::PreferencesGroup,
+    muted: adw::ExpanderRow,
 }
 
 /// The root "Smart Connect service isn't running" page.
@@ -182,15 +184,6 @@ struct DownPage {
     name: gtk::Label,
     sub: gtk::Label,
     start: gtk::Button,
-}
-
-struct NotifPage {
-    empty: adw::StatusPage,
-    today: gtk::Box,
-    clear_all: gtk::Button,
-    list: gtk::ListBox,
-    muted_group: adw::PreferencesGroup,
-    muted: adw::ExpanderRow,
 }
 
 struct PairDialog {
@@ -210,6 +203,7 @@ struct NotifRow {
     icon: IconSlot,
     header: gtk::Label,
     sub: gtk::Label,
+    time: gtk::Label,
     body: gtk::Label,
     reply_box: gtk::Box,
     entry: gtk::Entry,
@@ -220,19 +214,9 @@ struct NotifRow {
     /// Mutes/unmutes the app's desktop popups (hidden without a package name).
     mute_item: gtk::Button,
     data: Notification,
+    received_secs: u64,
 }
 
-fn page_scroller(child: &impl IsA<gtk::Widget>, max: i32) -> gtk::ScrolledWindow {
-    // A generous clamp: content fills a wide/maximized window instead of sitting in a thin strip.
-    // threshold == maximum_size: the content simply fills the width up to `max` (like CSS max-width),
-    // instead of AdwClamp's default halving of growth past the threshold.
-    let clamp = adw::Clamp::builder().maximum_size(max).tightening_threshold(max).child(child).build();
-    gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).vexpand(true).child(&clamp).build()
-}
-
-/// A wallpaper thumbnail of exactly `w`×`h` (cropped to fill, aspect kept), with a phone placeholder.
-/// A `GtkPicture`'s natural size is the image's own size, so it is clamped in both directions —
-/// otherwise a full-resolution wallpaper inflates the card.
 fn wallpaper_thumb(w: i32, h: i32) -> (gtk::Widget, gtk::Picture, gtk::Stack) {
     let picture = gtk::Picture::builder()
         .content_fit(gtk::ContentFit::Cover)
@@ -407,15 +391,7 @@ impl PhonePage {
         hero.append(&info);
         hero.append(&actions);
 
-        // ── Unread shortcut ──────────────────────────────────────────────────
-        let unread_label = gtk::Label::builder().xalign(0.0).hexpand(true).build();
-        let unread_link = gtk::Label::builder().label("Open notifications ›").css_classes(["accent"]).build();
-        let unread_row = gtk::Box::builder().spacing(8).build();
-        unread_row.append(&unread_label);
-        unread_row.append(&unread_link);
-        let unread_card = gtk::Button::builder().css_classes(["card", "sc-card"]).visible(false).child(&unread_row).build();
-
-        // ── Cross Control ─────────────────────────────────────────────────────
+        // ── Cross Control (compact row directly below hero card) ───────────
         let cross_group = adw::PreferencesGroup::builder().title("Cross Control").build();
         let cross = adw::ActionRow::builder()
             .title("Cross Control")
@@ -426,19 +402,101 @@ impl PhonePage {
         cross.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));
         cross_group.add(&cross);
 
-        // Nothing here expands vertically: the unread row and Cross Control sit right under the card.
+        // ── Notifications section (fills remaining space and scrolls internally) ──
+        let notif_title = gtk::Label::builder()
+            .label("Notifications")
+            .xalign(0.0)
+            .hexpand(true)
+            .css_classes(["heading"])
+            .build();
+        let clear_all = gtk::Button::builder()
+            .label("Clear all")
+            .css_classes(["flat"])
+            .visible(false)
+            .build();
+        let notif_header = gtk::Box::builder().spacing(8).build();
+        notif_header.append(&notif_title);
+        notif_header.append(&clear_all);
+
+        let muted = adw::ExpanderRow::builder().title("Muted apps").build();
+        let muted_group = adw::PreferencesGroup::builder().visible(false).build();
+        muted_group.add(&muted);
+
+        let notif_list = gtk::ListBox::builder()
+            .selection_mode(gtk::SelectionMode::None)
+            .css_classes(["boxed-list"])
+            .build();
+
+        let notif_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(12)
+            .build();
+        notif_box.append(&muted_group);
+        notif_box.append(&notif_list);
+
+        let notif_scroller = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vexpand(true)
+            .child(&notif_box)
+            .build();
+
+        let notif_empty = adw::StatusPage::builder()
+            .icon_name("preferences-system-notifications-symbolic")
+            .title("No Notifications")
+            .description("Notifications from your phone will appear here.")
+            .vexpand(true)
+            .build();
+
+        let notif_disconnected = adw::StatusPage::builder()
+            .icon_name("network-offline-symbolic")
+            .title("Phone Disconnected")
+            .description("Connect your phone to view and manage notifications.")
+            .vexpand(true)
+            .build();
+
+        let notif_unpaired = adw::StatusPage::builder()
+            .icon_name("phone-symbolic")
+            .title("No Phone Paired")
+            .description("Pair a phone to see notifications here.")
+            .vexpand(true)
+            .build();
+
+        let notif_stack = gtk::Stack::builder()
+            .transition_type(gtk::StackTransitionType::Crossfade)
+            .vexpand(true)
+            .build();
+        notif_stack.add_named(&notif_scroller, Some("list"));
+        notif_stack.add_named(&notif_empty, Some("empty"));
+        notif_stack.add_named(&notif_disconnected, Some("disconnected"));
+        notif_stack.add_named(&notif_unpaired, Some("unpaired"));
+
+        let notif_section = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(10)
+            .vexpand(true)
+            .build();
+        notif_section.append(&notif_header);
+        notif_section.append(&notif_stack);
+
         let column = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .spacing(18)
-            .valign(gtk::Align::Start)
             .margin_top(24)
             .margin_bottom(24)
             .margin_start(12)
             .margin_end(12)
+            .vexpand(true)
             .build();
         column.append(&hero);
-        column.append(&unread_card);
         column.append(&cross_group);
+        column.append(&notif_section);
+
+        let clamp = adw::Clamp::builder()
+            .maximum_size(1400)
+            .tightening_threshold(1400)
+            .vexpand(true)
+            .child(&column)
+            .build();
 
         let page = Self {
             thumb,
@@ -456,49 +514,16 @@ impl PhonePage {
             connect_spinner,
             connect_label,
             pair,
-            unread_card,
-            unread_label,
             cross_group,
             cross,
+            notif_title,
+            clear_all,
+            notif_stack,
+            notif_list,
+            muted_group,
+            muted,
         };
-        (page, page_scroller(&column, 1400).upcast())
-    }
-}
-
-impl NotifPage {
-    fn build() -> (Self, gtk::Widget) {
-        // "Muted apps" sits above the list (or the empty state) so it is reachable either way.
-        let muted = adw::ExpanderRow::builder().title("Muted apps").build();
-        let muted_group = adw::PreferencesGroup::builder().visible(false).build();
-        muted_group.add(&muted);
-        let empty = adw::StatusPage::builder()
-            .icon_name("preferences-system-notifications-symbolic")
-            .title("No Notifications")
-            .description("Notifications from the phone show up here while it is connected.")
-            .vexpand(true)
-            .build();
-
-        // The day header: "Today" + Clear all (we have no timestamps, so everything is Today).
-        let today_label = gtk::Label::builder().label("Today").xalign(0.0).hexpand(true).css_classes(["heading"]).build();
-        let clear_all = gtk::Button::builder().label("Clear all").css_classes(["flat"]).build();
-        let today = gtk::Box::builder().spacing(8).visible(false).build();
-        today.append(&today_label);
-        today.append(&clear_all);
-
-        let list = gtk::ListBox::builder().selection_mode(gtk::SelectionMode::None).css_classes(["boxed-list"]).visible(false).build();
-        let column = gtk::Box::builder()
-            .orientation(gtk::Orientation::Vertical)
-            .spacing(12)
-            .margin_top(24)
-            .margin_bottom(24)
-            .margin_start(12)
-            .margin_end(12)
-            .build();
-        column.append(&muted_group);
-        column.append(&empty);
-        column.append(&today);
-        column.append(&list);
-        (Self { empty, today, clear_all, list, muted_group, muted }, page_scroller(&column, 1400).upcast())
+        (page, clamp.upcast())
     }
 }
 
@@ -559,7 +584,6 @@ impl Ui {
     pub fn new(app: &adw::Application) -> Rc<Self> {
         let views = adw::ViewStack::new();
         let (phone, phone_w) = PhonePage::build();
-        let (notifs, notifs_w) = NotifPage::build();
         let toasts = adw::ToastOverlay::new();
         let (apps, apps_w) = AppsPage::build(&toasts);
         let (display, display_w) = DisplayPage::build(&toasts);
@@ -584,7 +608,6 @@ impl Ui {
         views.add_titled_with_icon(&apps_w, Some("apps"), "Apps", "view-app-grid-symbolic");
         views.add_titled_with_icon(&display_w, Some("display"), "Display", "video-display-symbolic");
         views.add_titled_with_icon(&files_w, Some("files"), "Files", "folder-symbolic");
-        let notif_page = views.add_titled_with_icon(&notifs_w, Some("notifications"), "Notifications", "preferences-system-notifications-symbolic");
 
         let (down_page, down) = DownPage::build();
         let spinner = adw::Spinner::builder().width_request(48).height_request(48).build();
@@ -637,11 +660,9 @@ impl Ui {
             views: views.clone(),
             switcher,
             switcher_bar,
-            notif_page,
             device,
             down: down_page,
             phone,
-            notifs,
             pair,
             apps,
             display,
@@ -662,9 +683,9 @@ impl Ui {
             let name = views.visible_child_name();
             ui.display.set_visible(name.as_deref() == Some("display"));
             match name.as_deref() {
+                Some("phone") => ui.load_muted(),
                 Some("apps") => ui.apps.shown(),
                 Some("display") => ui.cross.refresh(),
-                Some("notifications") => ui.load_muted(),
                 _ => {}
             }
         });
@@ -716,12 +737,6 @@ impl Ui {
         self.phone.cross.connect_activated(move |_| {
             if let Some(ui) = weak.upgrade() {
                 ui.views.set_visible_child_name("display");
-            }
-        });
-        let weak = Rc::downgrade(self);
-        self.phone.unread_card.connect_clicked(move |_| {
-            if let Some(ui) = weak.upgrade() {
-                ui.views.set_visible_child_name("notifications");
             }
         });
         // Phone card: Connect (phone away) and Pair a phone (none paired).
@@ -780,7 +795,7 @@ impl Ui {
         });
         // Clear all notifications from this PC's list.
         let weak = Rc::downgrade(self);
-        self.notifs.clear_all.connect_clicked(move |_| {
+        self.phone.clear_all.connect_clicked(move |_| {
             if let Some(ui) = weak.upgrade() {
                 ui.clear_all_notifications();
             }
@@ -1229,14 +1244,6 @@ impl Ui {
         }
         set_dimmed(&p.stats, state != PhoneState::Connected);
 
-        // Unread shortcut.
-        let unread = s.unread.unwrap_or(0).max(0);
-        p.unread_card.set_visible(state == PhoneState::Connected && unread > 0);
-        p.unread_label.set_label(&match unread {
-            1 => "1 unread message".to_owned(),
-            n => format!("{n} unread messages"),
-        });
-
         // The card's action: Mirror screen (connected, or a mirror still open), Connect (phone
         // away), or Pair a phone (none paired).
         p.mirror.set_visible(state == PhoneState::Connected || mirroring);
@@ -1486,29 +1493,51 @@ impl Ui {
         });
     }
 
-    // ── Notifications page ──────────────────────────────────────────────────
+    // ── Notifications section (inside Phone page) ───────────────────────────
 
     fn refresh_notifications(self: &Rc<Self>) {
-        let raw = match &self.state.borrow().status {
-            Some(s) => s.notifications.clone(),
-            None => return,
+        let (s_opt, connected) = {
+            let st = self.state.borrow();
+            (st.status.clone(), st.status.as_ref().is_some_and(|s| s.connected))
         };
-        let connected = self.state.borrow().status.as_ref().is_some_and(|s| s.connected);
+        let Some(s) = s_opt else {
+            self.phone.notif_stack.set_visible_child_name("disconnected");
+            self.phone.notif_title.set_label("Notifications");
+            self.phone.clear_all.set_visible(false);
+            return;
+        };
+
+        let phone_state = if connected {
+            PhoneState::Connected
+        } else if s.paired {
+            PhoneState::Disconnected
+        } else {
+            PhoneState::Unpaired
+        };
+
+        let raw = s.notifications.clone();
 
         // Drop dismissed keys that the phone no longer reports, then hide dismissed ones.
         let notifications: Vec<Notification> = {
             let mut st = self.state.borrow_mut();
-            let present: HashSet<&String> = raw.iter().map(|n| &n.key).collect();
-            st.dismissed.retain(|k| present.contains(k));
-            raw.iter().filter(|n| !st.dismissed.contains(&n.key)).cloned().collect()
+            filter_notifications(&raw, &mut st.dismissed)
         };
 
-        let count = u32::try_from(notifications.len()).unwrap_or(u32::MAX);
-        self.notif_page.set_badge_number(count);
-        self.notif_page.set_needs_attention(count > 0);
-        self.notifs.empty.set_visible(notifications.is_empty());
-        self.notifs.today.set_visible(!notifications.is_empty());
-        self.notifs.list.set_visible(!notifications.is_empty());
+        let view_name = notification_stack_view(phone_state, notifications.len());
+        self.phone.notif_stack.set_visible_child_name(view_name);
+
+        if phone_state != PhoneState::Connected {
+            self.phone.notif_title.set_label("Notifications");
+            self.phone.clear_all.set_visible(false);
+            return;
+        }
+
+        let unread = s.unread.unwrap_or(0).max(0);
+        self.phone.notif_title.set_label(&notification_header_label(Some(unread)));
+
+        let has_notifications = !notifications.is_empty();
+        self.phone.clear_all.set_visible(has_notifications);
+        self.phone.clear_all.set_sensitive(has_notifications);
 
         // Rows are kept per key (and re-ordered) so a half-typed reply survives status updates.
         let mut st = self.state.borrow_mut();
@@ -1518,7 +1547,7 @@ impl Ui {
         st.rows.retain(|key, row| {
             let keep = notifications.iter().any(|n| &n.key == key);
             if !keep {
-                self.notifs.list.remove(&row.row);
+                self.phone.notif_list.remove(&row.row);
             }
             keep
         });
@@ -1538,7 +1567,7 @@ impl Ui {
             row.set_muted(muted);
         }
         // Re-insert in daemon order (newest first) only when the order actually changed.
-        let mut child = self.notifs.list.first_child();
+        let mut child = self.phone.notif_list.first_child();
         let in_order = notifications.iter().all(|n| {
             let ok = child.as_ref() == Some(st.rows[&n.key].row.upcast_ref());
             child = child.as_ref().and_then(|c| c.next_sibling());
@@ -1548,11 +1577,11 @@ impl Ui {
             for n in &notifications {
                 let row = &st.rows[&n.key].row;
                 if row.parent().is_some() {
-                    self.notifs.list.remove(row);
+                    self.phone.notif_list.remove(row);
                 }
             }
             for n in &notifications {
-                self.notifs.list.append(&st.rows[&n.key].row);
+                self.phone.notif_list.append(&st.rows[&n.key].row);
             }
         }
     }
@@ -1565,6 +1594,13 @@ impl Ui {
         let name_col = gtk::Box::builder().orientation(gtk::Orientation::Vertical).hexpand(true).build();
         name_col.append(&header);
         name_col.append(&sub);
+
+        let received_secs = lastdevice::now_secs();
+        let time = gtk::Label::builder()
+            .css_classes(["caption", "dim-label"])
+            .valign(gtk::Align::Start)
+            .margin_top(2)
+            .build();
 
         // ⋯ menu: Open on phone / Dismiss / Mute <app>.
         let open_item = menu_item("Open on phone");
@@ -1585,6 +1621,7 @@ impl Ui {
         let header_box = gtk::Box::builder().spacing(10).build();
         header_box.append(icon.widget());
         header_box.append(&name_col);
+        header_box.append(&time);
         header_box.append(&menu);
 
         let body = gtk::Label::builder()
@@ -1675,7 +1712,22 @@ impl Ui {
         entry.connect_activate(move |_| f());
         send.connect_clicked(move |_| send_reply());
 
-        let mut r = NotifRow { row, icon, header, sub, body, reply_box, entry, send, menu, open_item, mute_item, data: Notification::default() };
+        let mut r = NotifRow {
+            row,
+            icon,
+            header,
+            sub,
+            time,
+            body,
+            reply_box,
+            entry,
+            send,
+            menu,
+            open_item,
+            mute_item,
+            data: Notification::default(),
+            received_secs,
+        };
         r.update(n, &self.apps.icon_query(&n.pkg, &n.app));
         r.set_muted(false);
         r
@@ -1761,7 +1813,7 @@ impl Ui {
         }
         let old_rows = std::mem::take(&mut self.state.borrow_mut().muted_rows);
         for row in old_rows {
-            self.notifs.muted.remove(&row);
+            self.phone.muted.remove(&row);
         }
         let mut rows = Vec::new();
         for pkg in &list {
@@ -1780,14 +1832,14 @@ impl Ui {
                 }
             });
             row.add_suffix(&unmute);
-            self.notifs.muted.add_row(&row);
+            self.phone.muted.add_row(&row);
             rows.push(row);
         }
-        self.notifs.muted.set_subtitle(&match list.len() {
+        self.phone.muted.set_subtitle(&match list.len() {
             1 => "1 app shows no desktop popups".to_owned(),
             n => format!("{n} apps show no desktop popups"),
         });
-        self.notifs.muted_group.set_visible(!list.is_empty());
+        self.phone.muted_group.set_visible(!list.is_empty());
         {
             let mut st = self.state.borrow_mut();
             st.muted_rows = rows;
@@ -1870,6 +1922,9 @@ impl NotifRow {
         self.body.set_visible(!n.body.is_empty());
         self.reply_box.set_visible(n.replyable);
         self.mute_item.set_visible(!n.pkg.is_empty());
+        let time_str = format_notification_time(self.received_secs, lastdevice::now_secs());
+        self.time.set_label(&time_str);
+        self.time.set_tooltip_text(Some(&lastdevice::relative(self.received_secs, lastdevice::now_secs())));
         self.data = n.clone();
     }
 
@@ -1880,5 +1935,104 @@ impl NotifRow {
             label.set_label(&if muted { format!("Unmute {app}") } else { format!("Mute {app}") });
         }
         self.menu.set_tooltip_text(Some(if muted { "Muted · more actions" } else { "More actions" }));
+    }
+}
+
+pub(crate) fn notification_header_label(unread: Option<i64>) -> String {
+    match unread.unwrap_or(0).max(0) {
+        0 => "Notifications".to_owned(),
+        1 => "Notifications · 1 unread".to_owned(),
+        n => format!("Notifications · {n} unread"),
+    }
+}
+
+pub(crate) fn notification_stack_view(state: PhoneState, count: usize) -> &'static str {
+    match state {
+        PhoneState::Unpaired => "unpaired",
+        PhoneState::Disconnected => "disconnected",
+        PhoneState::Connected if count == 0 => "empty",
+        PhoneState::Connected => "list",
+    }
+}
+
+pub(crate) fn filter_notifications(raw: &[Notification], dismissed: &mut HashSet<String>) -> Vec<Notification> {
+    let present: HashSet<&String> = raw.iter().map(|n| &n.key).collect();
+    dismissed.retain(|k| present.contains(k));
+    raw.iter().filter(|n| !dismissed.contains(&n.key)).cloned().collect()
+}
+
+pub(crate) fn format_notification_time(received_secs: u64, now_secs: u64) -> String {
+    glib::DateTime::from_unix_local(received_secs as i64)
+        .ok()
+        .and_then(|dt| dt.format("%R").ok().map(|s| s.to_string()))
+        .unwrap_or_else(|| lastdevice::relative(received_secs, now_secs))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn header_label_unread_counts() {
+        assert_eq!(notification_header_label(None), "Notifications");
+        assert_eq!(notification_header_label(Some(0)), "Notifications");
+        assert_eq!(notification_header_label(Some(-1)), "Notifications");
+        assert_eq!(notification_header_label(Some(1)), "Notifications · 1 unread");
+        assert_eq!(notification_header_label(Some(32)), "Notifications · 32 unread");
+    }
+
+    #[test]
+    fn stack_views_for_phone_states() {
+        assert_eq!(notification_stack_view(PhoneState::Unpaired, 0), "unpaired");
+        assert_eq!(notification_stack_view(PhoneState::Unpaired, 10), "unpaired");
+        assert_eq!(notification_stack_view(PhoneState::Disconnected, 0), "disconnected");
+        assert_eq!(notification_stack_view(PhoneState::Disconnected, 10), "disconnected");
+        assert_eq!(notification_stack_view(PhoneState::Connected, 0), "empty");
+        assert_eq!(notification_stack_view(PhoneState::Connected, 1), "list");
+        assert_eq!(notification_stack_view(PhoneState::Connected, 15), "list");
+    }
+
+    #[test]
+    fn filter_and_dismiss_logic() {
+        let n1 = Notification { key: "k1".into(), title: "Title 1".into(), ..Default::default() };
+        let n2 = Notification { key: "k2".into(), title: "Title 2".into(), ..Default::default() };
+        let raw = vec![n1.clone(), n2.clone()];
+        let mut dismissed = HashSet::new();
+
+        // Initially no dismissed notifications
+        let active = filter_notifications(&raw, &mut dismissed);
+        assert_eq!(active.len(), 2);
+        assert_eq!(active[0].key, "k1");
+        assert_eq!(active[1].key, "k2");
+
+        // Dismiss one notification
+        dismissed.insert("k1".into());
+        let active = filter_notifications(&raw, &mut dismissed);
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].key, "k2");
+
+        // Clear all notifications
+        dismissed.extend(raw.iter().map(|n| n.key.clone()));
+        let active = filter_notifications(&raw, &mut dismissed);
+        assert!(active.is_empty());
+
+        // When phone removes k1 and sends a new one k3
+        let n3 = Notification { key: "k3".into(), title: "Title 3".into(), ..Default::default() };
+        let raw2 = vec![n3.clone(), n2.clone()];
+        let active = filter_notifications(&raw2, &mut dismissed);
+        // k1 was pruned from dismissed because it is no longer in raw2; k2 was dismissed; k3 is new
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].key, "k3");
+        assert!(!dismissed.contains("k1"));
+        assert!(dismissed.contains("k2"));
+    }
+
+    #[test]
+    fn time_formatting() {
+        let now = 1_700_000_000u64;
+        let formatted = format_notification_time(now, now + 10);
+        assert!(!formatted.is_empty());
+        assert_eq!(lastdevice::relative(now, now + 30), "just now");
+        assert_eq!(lastdevice::relative(now, now + 120), "2 min ago");
     }
 }
