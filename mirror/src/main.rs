@@ -190,6 +190,8 @@ struct SessState {
     base_stream_size: Option<(u32, u32)>,
     /// Current rotation reported by the phone in cmd 16 / 23 (0..3).
     current_rotation: u32,
+    /// Last rotation value for which window orientation was adapted.
+    last_adapted_rotation: Option<u32>,
 }
 
 struct Session {
@@ -777,10 +779,23 @@ impl Session {
         let win = self.xwin.lock().unwrap().as_ref().map(|(w, _)| *w)
             .or_else(|| self.sink.lock().unwrap().as_ref().map(gl_window_handle).filter(|w| *w != 0));
         let Some(win) = win else { return };
+        let rot = self.st.lock().unwrap().current_rotation;
+        if self.st.lock().unwrap().last_adapted_rotation == Some(rot) {
+            return;
+        }
+        self.st.lock().unwrap().last_adapted_rotation = Some(rot);
         if let Some((curr_w, curr_h)) = x.window_size(win) {
             let curr_landscape = curr_w > curr_h;
             if curr_landscape != target_landscape {
-                let (new_w, new_h) = (curr_h, curr_w);
+                let (new_w, new_h) = if target_landscape {
+                    let h = curr_h.min(600).max(400);
+                    let w = ((h as f64) * (1336.0 / 600.0)) as u32;
+                    (w, h)
+                } else {
+                    let h = curr_h.max(curr_w).min(960).max(600);
+                    let w = ((h as f64) * (600.0 / 1336.0)) as u32;
+                    (w, h)
+                };
                 x.resize_window(win, new_w, new_h);
                 println!("[{}] rotation changed: resized window from {curr_w}x{curr_h} to {new_w}x{new_h}", self.sid);
             }
@@ -1303,8 +1318,6 @@ impl Host {
         if let Some(x) = &self.x11 {
             for s in self.sessions.values() {
                 s.sync_x11_title(x);
-                let is_landscape = (s.st.lock().unwrap().current_rotation % 2) == 1;
-                s.adapt_window_orientation(x, is_landscape);
             }
             if self.resize && now.duration_since(self.last_resize_poll) >= RESIZE_POLL {
                 self.last_resize_poll = now;
