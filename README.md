@@ -18,7 +18,7 @@ It is a Rust daemon (`smartconnectd`) plus small helper programs, a GTK4/libadwa
 [Noctalia Shell](https://github.com/noctalia-dev/noctalia) plugin.
 
 > **Unofficial project.** Not affiliated with, endorsed by or sponsored by Motorola or Lenovo. See
-> the [disclaimer](#disclaimer).
+> the [disclaimer](#disclaimer). This is a fork of [`rudrahnpatel/smartconnect-linux`](https://github.com/rudrahnpatel/smartconnect-linux).
 
 ## Contents
 
@@ -40,7 +40,7 @@ It is a Rust daemon (`smartconnectd`) plus small helper programs, a GTK4/libadwa
 **Easiest: the AppImage** (any distribution from about 2022 on, nothing to build or install first):
 
 1. Download `Smart_Connect-…-x86_64.AppImage` from the
-   [Releases page](https://github.com/rudrahnpatel/smartconnect-linux/releases).
+   [Releases page](https://github.com/vemru/linuxsmartconnect/releases).
 2. Make it executable (file manager: *Properties → Executable as program*, or
    `chmod +x Smart_Connect-*.AppImage`) and open it.
 3. Press **Set up** (no password needed). Smart Connect opens: choose **Pair new phone…**, then on
@@ -57,7 +57,7 @@ sudo pacman -S --needed git base-devel rust avahi bluez wl-clipboard gstreamer \
   gst-plugins-{base,good,bad} libnice gst-libav gst-plugin-va gtk4 libadwaita fuse3
 sudo systemctl enable --now avahi-daemon bluetooth
 
-git clone https://github.com/rudrahnpatel/smartconnect-linux.git && cd smartconnect-linux
+git clone https://github.com/vemru/linuxsmartconnect.git && cd linuxsmartconnect
 ./packaging/install.sh --enable           # build, install to ~/.local, start the user service
 
 # firewalld example; see docs/installation.md for ufw

@@ -23,7 +23,7 @@ distribution's versions. Built on Arch Linux with
 [quick-sharun](https://github.com/pkgforge-dev/Anylinux-AppImages); x86_64 only.
 
 1. Download `Smart_Connect-<version>-anylinux-x86_64.AppImage` from the
-   [Releases page](https://github.com/rudrahnpatel/smartconnect-linux/releases), make it executable
+   [Releases page](https://github.com/vemru/linuxsmartconnect/releases), make it executable
    (`chmod +x Smart_Connect-*.AppImage`, or *Executable as program* in the file manager's
    properties) and open it.
 2. The first time, a welcome window offers **Set up**. That is the same as running

@@ -4,6 +4,8 @@ version = "0.2.0"
 edition = "2024"
 license = "MIT"
 description = "Phone-screen mirror viewer for smartconnectd (GStreamer webrtcbin answerer)"
+repository = "https://github.com/vemru/linuxsmartconnect"
+homepage = "https://github.com/vemru/linuxsmartconnect"
 
 [dependencies]
 anyhow = "1"

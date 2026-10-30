@@ -4,6 +4,8 @@ version = "0.2.0"
 edition = "2024"
 license = "MIT"
 description = "Client for the phone's \"fex\" file-transfer server (HTTPS + WebSocket, fingerprint-pinned): pulls the app icons Smart Connect offers on service 17, reusable for clipboard images"
+repository = "https://github.com/vemru/linuxsmartconnect"
+homepage = "https://github.com/vemru/linuxsmartconnect"
 
 [lib]
 name = "smartconnect_fex"

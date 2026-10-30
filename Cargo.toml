@@ -4,6 +4,8 @@ version = "0.2.0"
 edition = "2024"
 license = "MIT"
 description = "smartconnectd: unofficial Linux peer for the Motorola Smart Connect phone app (pairing, sessions, notifications, clipboard, SMS, control socket for the helpers)"
+repository = "https://github.com/vemru/linuxsmartconnect"
+homepage = "https://github.com/vemru/linuxsmartconnect"
 
 # The daemon is the root package. Each helper and front-end is a member crate with its own binary;
 # `cargo build --release --workspace` builds them all into one target directory, next to each other,

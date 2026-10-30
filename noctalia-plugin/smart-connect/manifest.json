@@ -6,7 +6,7 @@
   "author": "Rudra",
   "official": false,
   "license": "MIT",
-  "repository": "",
+  "repository": "https://github.com/vemru/linuxsmartconnect",
   "description": "Motorola Smart Connect on Linux: phone status, connect/disconnect, pairing, notifications, mirroring, Cross Control and the phone as a display, via the smartconnectd daemon",
   "tags": [
     "Bar",

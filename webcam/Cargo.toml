@@ -4,6 +4,8 @@ version = "0.2.0"
 edition = "2024"
 license = "MIT"
 description = "Use the phone's camera as a Linux webcam (Smart Connect svc 3: WebRTC H.264 -> v4l2loopback or a PipeWire camera node)"
+repository = "https://github.com/vemru/linuxsmartconnect"
+homepage = "https://github.com/vemru/linuxsmartconnect"
 
 [dependencies]
 anyhow = "1"
