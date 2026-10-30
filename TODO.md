@@ -12,6 +12,24 @@ and [docs/](docs/) for details.
   the server likely accepts a single active connection). Decide whether to allow several concurrent
   connections or just make switching between paired phones seamless.
 
+## Security & Hardening backlog
+
+- **Pin discovery TLS certificate fingerprint:** In `src/discovery.rs`, replace the permissive
+  `AcceptAny` rustls certificate verifier in `push_invite` with certificate fingerprint verification
+  pinned to the phone's advertised mDNS TXT `fp=...` record.
+- **Harmonize UNIX socket runtime paths:** Standardize socket path resolution across the QML shell
+  plugin (`SmartConnect.qml`) and auxiliary scripts to eliminate `/tmp` fallbacks and match
+  `src/control.rs`'s secure `$XDG_STATE_HOME/smartconnect-linux/run/` (mode 0700) fallback.
+- **Zenity overwrite confirmation:** Add `--confirm-overwrite` to the fallback `zenity --save` file
+  selection dialog in `src/share.rs` to protect against accidental file overwrites when
+  `xdg-desktop-portal` is absent.
+- **Mirror socket peer credential validation:** Add `SO_PEERCRED` validation in
+  `mirror/src/main.rs:serve_control` matching the current user's EUID, aligning with
+  `src/control.rs`.
+- **Reconnect authentication challenge-response:** Implement proof-of-possession verification
+  (e.g., encrypted challenge nonce or AEAD signature) for reconnecting paired phones on `/readyfor/`
+  to mitigate potential static `realDeviceId` spoofing on shared Wi-Fi networks.
+
 ## Features in progress
 
 - **File access.** Phone→PC browsing **works** (`smartconnect-files mount`, read-only FUSE mount of

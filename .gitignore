@@ -40,3 +40,6 @@ sessions/
 *.token
 .env
 files-identity/
+
+# Audit reports
+RELEASE_AUDIT.md

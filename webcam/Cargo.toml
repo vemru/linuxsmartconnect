@@ -1,6 +1,6 @@
 [package]
 name = "smartconnect-webcam"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 license = "MIT"
 description = "Use the phone's camera as a Linux webcam (Smart Connect svc 3: WebRTC H.264 -> v4l2loopback or a PipeWire camera node)"

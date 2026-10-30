@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SHARE_SCRIPT="/home/user/src/smartconnect-linux/packaging/smartconnect-share"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SHARE_SCRIPT="${SHARE_SCRIPT:-"$SCRIPT_DIR/../packaging/smartconnect-share"}"
 [ -x "$SHARE_SCRIPT" ] || { echo "error: $SHARE_SCRIPT not found or not executable" >&2; exit 1; }
 
 TMP_DIR="$(mktemp -d /tmp/sc-share-test.XXXXXX)"

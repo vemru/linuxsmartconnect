@@ -1,6 +1,6 @@
 [package]
 name = "smartconnect-files"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 license = "MIT"
 description = "Mount the phone's storage over NFSv3-on-mutual-TLS (Smart Connect File Station) as a FUSE filesystem"
