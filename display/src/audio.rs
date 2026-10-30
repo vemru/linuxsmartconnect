@@ -23,10 +23,12 @@ pub fn source_description() -> String {
         // frames on the system clock and should stay on it. A small buffer (40 ms, 10 ms periods
         // instead of pulsesrc's 200 ms): the phone holds the video back to keep it in sync with
         // late audio, so audio latency becomes display latency.
-        "pulsesrc device=@DEFAULT_MONITOR@ provide-clock=false buffer-time=40000 latency-time=10000".to_owned()
+        "pulsesrc device=@DEFAULT_MONITOR@ provide-clock=false buffer-time=40000 latency-time=10000"
+            .to_owned()
     } else {
         // PipeWire without its Pulse server: a capture stream on the default sink's monitor.
-        "pipewiresrc stream-properties=\"props,stream.capture.sink=true\" do-timestamp=true".to_owned()
+        "pipewiresrc stream-properties=\"props,stream.capture.sink=true\" do-timestamp=true"
+            .to_owned()
     }
 }
 
@@ -79,15 +81,18 @@ pub fn preflight(src: &str) -> Result<()> {
         }
         gst::PadProbeReturn::Ok
     });
-    p.set_state(gst::State::Playing).context("starting the audio source")?;
+    p.set_state(gst::State::Playing)
+        .context("starting the audio source")?;
     let bus = p.bus().context("no bus")?;
     let deadline = std::time::Instant::now() + Duration::from_secs(2);
     let result = loop {
         if rx.try_recv().is_ok() {
             break Ok(());
         }
-        if let Some(msg) = bus.timed_pop_filtered(gst::ClockTime::from_mseconds(50), &[gst::MessageType::Error])
-            && let gst::MessageView::Error(e) = msg.view()
+        if let Some(msg) = bus.timed_pop_filtered(
+            gst::ClockTime::from_mseconds(50),
+            &[gst::MessageType::Error],
+        ) && let gst::MessageView::Error(e) = msg.view()
         {
             break Err(anyhow::anyhow!("{} ({:?})", e.error(), e.debug()));
         }
@@ -101,7 +106,13 @@ pub fn preflight(src: &str) -> Result<()> {
 
 /// Fails if an element named in `desc` is not installed (gives a clearer error than parse::launch).
 pub fn check_elements() -> Result<()> {
-    for e in ["opusenc", "rtpopuspay", "audioconvert", "audioresample", "volume"] {
+    for e in [
+        "opusenc",
+        "rtpopuspay",
+        "audioconvert",
+        "audioresample",
+        "volume",
+    ] {
         if gst::ElementFactory::find(e).is_none() {
             bail!("GStreamer element {e} is missing (gst-plugins-base/good)");
         }
@@ -119,8 +130,14 @@ mod tests {
 a=rtpmap:111 opus/48000/2\r\na=fmtp:111 minptime=10;stereo=1;useinbandfec=1\r\na=rtpmap:63 red/48000/2\r\n\
 m=video 9 UDP/TLS/RTP/SAVPF 108\r\na=rtpmap:108 H264/90000\r\n";
         assert_eq!(pick_opus(sdp), Some(111));
-        assert_eq!(pick_opus("m=video 9 X 96\r\na=rtpmap:96 opus/48000/2\r\n"), None);
-        assert_eq!(pick_opus("m=audio 9 X 100\r\na=rtpmap:100 OPUS/48000/2\r\n"), Some(100));
+        assert_eq!(
+            pick_opus("m=video 9 X 96\r\na=rtpmap:96 opus/48000/2\r\n"),
+            None
+        );
+        assert_eq!(
+            pick_opus("m=audio 9 X 100\r\na=rtpmap:100 OPUS/48000/2\r\n"),
+            Some(100)
+        );
     }
 
     /// Live: the default output's monitor delivers audio here (reads it for at most 2 s).
@@ -138,7 +155,8 @@ m=video 9 UDP/TLS/RTP/SAVPF 108\r\na=rtpmap:108 H264/90000\r\n";
         let p = gst::parse::launch(&desc).unwrap();
         p.set_state(gst::State::Playing).unwrap();
         let bus = p.bus().unwrap();
-        let err = bus.timed_pop_filtered(gst::ClockTime::from_seconds(1), &[gst::MessageType::Error]);
+        let err =
+            bus.timed_pop_filtered(gst::ClockTime::from_seconds(1), &[gst::MessageType::Error]);
         p.set_state(gst::State::Null).unwrap();
         assert!(err.is_none(), "{err:?}");
     }

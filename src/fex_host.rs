@@ -29,7 +29,10 @@ pub async fn read_head<S: AsyncRead + Unpin>(s: &mut S) -> Result<Vec<u8>> {
         if buf.len() >= MAX_HEAD {
             bail!("request head over {MAX_HEAD} bytes");
         }
-        let n = s.read(&mut chunk).await.context("reading the request head")?;
+        let n = s
+            .read(&mut chunk)
+            .await
+            .context("reading the request head")?;
         if n == 0 {
             bail!("connection closed before a request head");
         }
@@ -68,7 +71,13 @@ fn forbidden() -> Vec<u8> {
 
 /// Answers one fex request on `stream` (whose head was `head`), gated on `phone`, the connected
 /// phone's address from the control session.
-pub async fn serve<S>(registry: &Registry, stream: Prefixed<S>, target: &str, peer: SocketAddr, phone: Option<IpAddr>) -> Result<()>
+pub async fn serve<S>(
+    registry: &Registry,
+    stream: Prefixed<S>,
+    target: &str,
+    peer: SocketAddr,
+    phone: Option<IpAddr>,
+) -> Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
@@ -80,11 +89,15 @@ where
         return Ok(());
     }
     if target.starts_with("/download") {
-        stream.write_all(&server::download_response(registry, target)).await?;
+        stream
+            .write_all(&server::download_response(registry, target))
+            .await?;
         stream.shutdown().await.ok();
         return Ok(());
     }
-    let ws = tokio_tungstenite::accept_async(stream).await.context("fex WebSocket upgrade")?;
+    let ws = tokio_tungstenite::accept_async(stream)
+        .await
+        .context("fex WebSocket upgrade")?;
     match server::serve_websocket(ws, registry).await {
         Ok(true) => info!(%peer, "fex: the phone received our files"),
         Ok(false) => warn!(%peer, "fex: the phone reported the transfer as failed"),
@@ -102,12 +115,20 @@ pub struct Prefixed<S> {
 
 impl<S> Prefixed<S> {
     pub fn new(prefix: Vec<u8>, inner: S) -> Self {
-        Self { prefix, pos: 0, inner }
+        Self {
+            prefix,
+            pos: 0,
+            inner,
+        }
     }
 }
 
 impl<S: AsyncRead + Unpin> AsyncRead for Prefixed<S> {
-    fn poll_read(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<std::io::Result<()>> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
         let this = &mut *self;
         if this.pos < this.prefix.len() {
             let n = (this.prefix.len() - this.pos).min(buf.remaining());
@@ -120,7 +141,11 @@ impl<S: AsyncRead + Unpin> AsyncRead for Prefixed<S> {
 }
 
 impl<S: AsyncWrite + Unpin> AsyncWrite for Prefixed<S> {
-    fn poll_write(mut self: Pin<&mut Self>, cx: &mut Context<'_>, data: &[u8]) -> Poll<std::io::Result<usize>> {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        data: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
         Pin::new(&mut self.inner).poll_write(cx, data)
     }
 
@@ -139,7 +164,11 @@ mod tests {
     use smartconnect_fex::server::OutFile;
 
     fn png() -> OutFile {
-        OutFile { name: "clipboard.png".into(), mime_type: "image/png".into(), data: b"\x89PNG\r\n\x1a\nfake".to_vec() }
+        OutFile {
+            name: "clipboard.png".into(),
+            mime_type: "image/png".into(),
+            data: b"\x89PNG\r\n\x1a\nfake".to_vec(),
+        }
     }
 
     #[test]
@@ -160,7 +189,10 @@ mod tests {
         // A different host in the exact same /24 subnet is refused:
         assert!(!peer_allowed(Some("192.168.1.35".parse().unwrap()), phone));
         assert!(!peer_allowed(Some("192.168.1.1".parse().unwrap()), phone));
-        assert!(!peer_allowed(None, phone), "with no session there is no phone to serve");
+        assert!(
+            !peer_allowed(None, phone),
+            "with no session there is no phone to serve"
+        );
     }
 
     #[tokio::test]
@@ -170,10 +202,22 @@ mod tests {
         // 192.168.1.35 is a neighbor in the same /24 as phone 192.168.1.30:
         let peer: SocketAddr = "192.168.1.35:5555".parse().unwrap();
         let (mut client, server) = tokio::io::duplex(4096);
-        serve(&registry, Prefixed::new(Vec::new(), server), "/websocket", peer, Some("192.168.1.30".parse().unwrap())).await.unwrap();
+        serve(
+            &registry,
+            Prefixed::new(Vec::new(), server),
+            "/websocket",
+            peer,
+            Some("192.168.1.30".parse().unwrap()),
+        )
+        .await
+        .unwrap();
         let mut out = Vec::new();
         client.read_to_end(&mut out).await.unwrap();
-        assert!(String::from_utf8_lossy(&out).starts_with("HTTP/1.1 403 Forbidden\r\n"), "{}", String::from_utf8_lossy(&out));
+        assert!(
+            String::from_utf8_lossy(&out).starts_with("HTTP/1.1 403 Forbidden\r\n"),
+            "{}",
+            String::from_utf8_lossy(&out)
+        );
         assert!(registry.has_offers(), "the offer must stay unclaimed");
         assert!(!out.windows(t.zip.len()).any(|w| w == t.zip.as_slice()));
     }
@@ -187,16 +231,39 @@ mod tests {
         // 192.168.1.35 is a neighbor in the same /24 as phone 192.168.1.30:
         let peer: SocketAddr = "192.168.1.35:5555".parse().unwrap();
         let (mut client, server) = tokio::io::duplex(4096);
-        serve(&registry, Prefixed::new(Vec::new(), server), &download, peer, Some("192.168.1.30".parse().unwrap())).await.unwrap();
+        serve(
+            &registry,
+            Prefixed::new(Vec::new(), server),
+            &download,
+            peer,
+            Some("192.168.1.30".parse().unwrap()),
+        )
+        .await
+        .unwrap();
         let mut out = Vec::new();
         client.read_to_end(&mut out).await.unwrap();
-        assert!(String::from_utf8_lossy(&out).starts_with("HTTP/1.1 403 Forbidden\r\n"), "{}", String::from_utf8_lossy(&out));
-        assert!(!out.ends_with(&t.zip), "the zip must not reach a stranger in the same /24");
+        assert!(
+            String::from_utf8_lossy(&out).starts_with("HTTP/1.1 403 Forbidden\r\n"),
+            "{}",
+            String::from_utf8_lossy(&out)
+        );
+        assert!(
+            !out.ends_with(&t.zip),
+            "the zip must not reach a stranger in the same /24"
+        );
 
         // The phone itself at 192.168.1.30:
         let peer: SocketAddr = "192.168.1.30:45000".parse().unwrap();
         let (mut client, server) = tokio::io::duplex(4096);
-        serve(&registry, Prefixed::new(Vec::new(), server), &download, peer, Some("192.168.1.30".parse().unwrap())).await.unwrap();
+        serve(
+            &registry,
+            Prefixed::new(Vec::new(), server),
+            &download,
+            peer,
+            Some("192.168.1.30".parse().unwrap()),
+        )
+        .await
+        .unwrap();
         let mut out = Vec::new();
         client.read_to_end(&mut out).await.unwrap();
         assert!(out.ends_with(&t.zip), "the phone still gets its download");
@@ -205,7 +272,9 @@ mod tests {
     #[tokio::test]
     async fn prefixed_replays_what_was_read() {
         let (mut a, b) = tokio::io::duplex(1024);
-        a.write_all(b"GET /readyfor/ HTTP/1.1\r\nHost: x\r\n\r\nrest").await.unwrap();
+        a.write_all(b"GET /readyfor/ HTTP/1.1\r\nHost: x\r\n\r\nrest")
+            .await
+            .unwrap();
         drop(a);
         let mut b = b;
         let head = read_head(&mut b).await.unwrap();

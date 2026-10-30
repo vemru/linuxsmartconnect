@@ -72,7 +72,10 @@ struct Shared {
 
 impl Backend for KwinCapture {
     fn source_description(&self) -> String {
-        format!("pipewiresrc path={} do-timestamp=true keepalive-time=1000 ! {SHM_CONVERT}", self.node_id)
+        format!(
+            "pipewiresrc path={} do-timestamp=true keepalive-time=1000 ! {SHM_CONVERT}",
+            self.node_id
+        )
     }
 
     fn size(&self) -> (u32, u32) {
@@ -92,10 +95,16 @@ impl Backend for KwinCapture {
     }
 
     fn reconfigure_extend(&mut self, width: u32, height: u32) -> Result<()> {
-        let Request::Virtual { scale, .. } = self.request else { bail!("only an extend capture can be resized") };
+        let Request::Virtual { scale, .. } = self.request else {
+            bail!("only an extend capture can be resized")
+        };
         // Same name: the old output has to go first.
         self.shutdown();
-        *self = start_request(Request::Virtual { width, height, scale })?;
+        *self = start_request(Request::Virtual {
+            width,
+            height,
+            scale,
+        })?;
         Ok(())
     }
 
@@ -123,10 +132,26 @@ pub fn start(mode: &Mode) -> Result<KwinCapture> {
     let request = match mode {
         Mode::Mirror => {
             let outs = desktop::wl_outputs()?;
-            Request::Output(desktop::primary(&outs, None).ok_or_else(|| anyhow!("no enabled output to mirror"))?.name.clone())
+            Request::Output(
+                desktop::primary(&outs, None)
+                    .ok_or_else(|| anyhow!("no enabled output to mirror"))?
+                    .name
+                    .clone(),
+            )
         }
-        Mode::Extend { output: Some(name), .. } => Request::Output(name.clone()),
-        Mode::Extend { width, height, output: None, scale } => Request::Virtual { width: *width, height: *height, scale: scale.unwrap_or(1.0) },
+        Mode::Extend {
+            output: Some(name), ..
+        } => Request::Output(name.clone()),
+        Mode::Extend {
+            width,
+            height,
+            output: None,
+            scale,
+        } => Request::Virtual {
+            width: *width,
+            height: *height,
+            scale: scale.unwrap_or(1.0),
+        },
     };
     start_request(request)
 }
@@ -145,7 +170,14 @@ fn start_request(request: Request) -> Result<KwinCapture> {
             }
         })
         .context("starting the KWin screencast thread")?;
-    let mut cap = KwinCapture { request, node_id: 0, size: (0, 0), shared, stop, thread: Some(thread) };
+    let mut cap = KwinCapture {
+        request,
+        node_id: 0,
+        size: (0, 0),
+        shared,
+        stop,
+        thread: Some(thread),
+    };
     match rx.recv_timeout(Duration::from_secs(5)) {
         Ok(Ok((node, size))) => {
             cap.node_id = node;
@@ -194,15 +226,28 @@ fn run(
     let (globals, mut queue) = registry_queue_init::<State>(&conn).context("Wayland registry")?;
     let qh = queue.handle();
     let mut state = State::default();
-    let mgr: ZkdeScreencastUnstableV1 =
-        globals.bind(&qh, 1..=4, ()).with_context(|| format!("KWin did not offer zkde_screencast_unstable_v1. {}", kwin_trust_hint()))?;
+    let mgr: ZkdeScreencastUnstableV1 = globals.bind(&qh, 1..=4, ()).with_context(|| {
+        format!(
+            "KWin did not offer zkde_screencast_unstable_v1. {}",
+            kwin_trust_hint()
+        )
+    })?;
     state.xdg = globals.bind(&qh, 1..=3, ()).ok();
-    for g in globals.contents().clone_list().into_iter().filter(|g| g.interface == "wl_output") {
+    for g in globals
+        .contents()
+        .clone_list()
+        .into_iter()
+        .filter(|g| g.interface == "wl_output")
+    {
         bind_output(&mut state, globals.registry(), g.name, g.version, &qh);
     }
     queue.roundtrip(&mut state)?;
     queue.roundtrip(&mut state)?;
-    let before: Vec<String> = state.outputs.iter().filter_map(|(_, o)| o.name.clone()).collect();
+    let before: Vec<String> = state
+        .outputs
+        .iter()
+        .filter_map(|(_, o)| o.name.clone())
+        .collect();
 
     let (stream, size) = match &request {
         Request::Output(name) => {
@@ -210,22 +255,56 @@ fn run(
                 .outputs
                 .iter()
                 .find(|(_, o)| o.name.as_deref() == Some(name))
-                .ok_or_else(|| anyhow!("output {name:?} is not connected (KWin sees: {})", before.join(", ")))?;
-            *shared.lock().unwrap() = Shared { output: name.clone(), geometry: info.rect };
+                .ok_or_else(|| {
+                    anyhow!(
+                        "output {name:?} is not connected (KWin sees: {})",
+                        before.join(", ")
+                    )
+                })?;
+            *shared.lock().unwrap() = Shared {
+                output: name.clone(),
+                geometry: info.rect,
+            };
             (mgr.stream_output(wl, POINTER_EMBEDDED, &qh, ()), info.mode)
         }
-        Request::Virtual { width, height, scale } => {
+        Request::Virtual {
+            width,
+            height,
+            scale,
+        } => {
             let s = scale.max(0.25);
-            let (lw, lh) = ((f64::from(*width) / s).round() as i32, (f64::from(*height) / s).round() as i32);
+            let (lw, lh) = (
+                (f64::from(*width) / s).round() as i32,
+                (f64::from(*height) / s).round() as i32,
+            );
             let stream = if mgr.version() >= 4 {
-                mgr.stream_virtual_output_with_description(VIRTUAL_NAME.into(), "Phone (Smart Connect)".into(), lw, lh, s, POINTER_EMBEDDED, &qh, ())
+                mgr.stream_virtual_output_with_description(
+                    VIRTUAL_NAME.into(),
+                    "Phone (Smart Connect)".into(),
+                    lw,
+                    lh,
+                    s,
+                    POINTER_EMBEDDED,
+                    &qh,
+                    (),
+                )
             } else if mgr.version() >= 2 {
                 mgr.stream_virtual_output(VIRTUAL_NAME.into(), lw, lh, s, POINTER_EMBEDDED, &qh, ())
             } else {
-                bail!("this KWin is too old for virtual outputs (zkde_screencast v{})", mgr.version());
+                bail!(
+                    "this KWin is too old for virtual outputs (zkde_screencast v{})",
+                    mgr.version()
+                );
             };
-            let (x, y) = desktop::spot(&desktop::wl_outputs().unwrap_or_default(), None, (lw as u32, lh as u32));
-            *shared.lock().unwrap() = Shared { output: "virtual output".into(), geometry: (x, y, lw as u32, lh as u32) };
+            let (x, y) = desktop::spot(
+                &desktop::wl_outputs().unwrap_or_default(),
+                None,
+                (lw as u32, lh as u32),
+            );
+            *shared.lock().unwrap() = Shared {
+                output: "virtual output".into(),
+                geometry: (x, y, lw as u32, lh as u32),
+            };
             (stream, (*width, *height))
         }
     };
@@ -245,11 +324,17 @@ fn run(
     while !stop.load(Ordering::Relaxed) && !state.closed {
         dispatch(&conn, &mut queue, &mut state, Duration::from_millis(200))?;
         if !announced
-            && let Some((_, o)) = state.outputs.iter().find(|(_, o)| o.name.as_ref().is_some_and(|n| !before.contains(n)) && o.rect.2 > 0)
+            && let Some((_, o)) = state
+                .outputs
+                .iter()
+                .find(|(_, o)| o.name.as_ref().is_some_and(|n| !before.contains(n)) && o.rect.2 > 0)
         {
             let name = o.name.clone().unwrap_or_default();
             println!("{name}: KWin virtual output at {:?}", o.rect);
-            *shared.lock().unwrap() = Shared { output: name, geometry: o.rect };
+            *shared.lock().unwrap() = Shared {
+                output: name,
+                geometry: o.rect,
+            };
             announced = true;
         }
     }
@@ -261,7 +346,13 @@ fn run(
     Ok(())
 }
 
-fn bind_output(state: &mut State, registry: &WlRegistry, name: u32, version: u32, qh: &QueueHandle<State>) {
+fn bind_output(
+    state: &mut State,
+    registry: &WlRegistry,
+    name: u32,
+    version: u32,
+    qh: &QueueHandle<State>,
+) {
     let idx = state.outputs.len();
     let out: WlOutput = registry.bind(name, version.min(4), qh, idx);
     if let Some(m) = &state.xdg {
@@ -271,9 +362,20 @@ fn bind_output(state: &mut State, registry: &WlRegistry, name: u32, version: u32
 }
 
 impl Dispatch<WlRegistry, GlobalListContents> for State {
-    fn event(s: &mut Self, reg: &WlRegistry, ev: wl_registry::Event, _: &GlobalListContents, _: &Connection, qh: &QueueHandle<Self>) {
+    fn event(
+        s: &mut Self,
+        reg: &WlRegistry,
+        ev: wl_registry::Event,
+        _: &GlobalListContents,
+        _: &Connection,
+        qh: &QueueHandle<Self>,
+    ) {
         // A virtual output appears as a new wl_output global.
-        if let wl_registry::Event::Global { name, interface, version } = ev
+        if let wl_registry::Event::Global {
+            name,
+            interface,
+            version,
+        } = ev
             && interface == "wl_output"
         {
             bind_output(s, reg, name, version, qh);
@@ -282,7 +384,14 @@ impl Dispatch<WlRegistry, GlobalListContents> for State {
 }
 
 impl Dispatch<ZkdeScreencastStreamUnstableV1, ()> for State {
-    fn event(s: &mut Self, _: &ZkdeScreencastStreamUnstableV1, ev: zkde_screencast_stream_unstable_v1::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
+    fn event(
+        s: &mut Self,
+        _: &ZkdeScreencastStreamUnstableV1,
+        ev: zkde_screencast_stream_unstable_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
         use zkde_screencast_stream_unstable_v1::Event;
         match ev {
             Event::Created { node } => s.node = Some(node),
@@ -294,11 +403,23 @@ impl Dispatch<ZkdeScreencastStreamUnstableV1, ()> for State {
 }
 
 impl Dispatch<WlOutput, usize> for State {
-    fn event(s: &mut Self, _: &WlOutput, ev: wl_output::Event, i: &usize, _: &Connection, _: &QueueHandle<Self>) {
+    fn event(
+        s: &mut Self,
+        _: &WlOutput,
+        ev: wl_output::Event,
+        i: &usize,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
         let o = &mut s.outputs[*i].1;
         match ev {
             wl_output::Event::Name { name } => o.name = Some(name),
-            wl_output::Event::Mode { flags: WEnum::Value(f), width, height, .. } if f.contains(wl_output::Mode::Current) => {
+            wl_output::Event::Mode {
+                flags: WEnum::Value(f),
+                width,
+                height,
+                ..
+            } if f.contains(wl_output::Mode::Current) => {
                 o.mode = (width.max(0) as u32, height.max(0) as u32);
             }
             _ => {}
@@ -307,11 +428,20 @@ impl Dispatch<WlOutput, usize> for State {
 }
 
 impl Dispatch<ZxdgOutputV1, usize> for State {
-    fn event(s: &mut Self, _: &ZxdgOutputV1, ev: zxdg_output_v1::Event, i: &usize, _: &Connection, _: &QueueHandle<Self>) {
+    fn event(
+        s: &mut Self,
+        _: &ZxdgOutputV1,
+        ev: zxdg_output_v1::Event,
+        i: &usize,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
         let o = &mut s.outputs[*i].1;
         match ev {
             zxdg_output_v1::Event::LogicalPosition { x, y } => (o.rect.0, o.rect.1) = (x, y),
-            zxdg_output_v1::Event::LogicalSize { width, height } => (o.rect.2, o.rect.3) = (width.max(0) as u32, height.max(0) as u32),
+            zxdg_output_v1::Event::LogicalSize { width, height } => {
+                (o.rect.2, o.rect.3) = (width.max(0) as u32, height.max(0) as u32)
+            }
             zxdg_output_v1::Event::Name { name } => {
                 o.name.get_or_insert(name);
             }

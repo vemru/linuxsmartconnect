@@ -1,8 +1,8 @@
 //! Smart Connect for Linux: GTK4/libadwaita front-end for `smartconnectd`.
 
 mod apps;
-mod daemon;
 mod crosscontrol;
+mod daemon;
 mod display;
 mod files;
 mod icons;
@@ -60,7 +60,11 @@ fn main() -> glib::ExitCode {
         let provider = gtk::CssProvider::new();
         provider.load_from_string(CSS);
         if let Some(display) = gdk::Display::default() {
-            gtk::style_context_add_provider_for_display(&display, &provider, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
+            gtk::style_context_add_provider_for_display(
+                &display,
+                &provider,
+                gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+            );
         }
     });
 

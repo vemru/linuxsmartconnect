@@ -42,9 +42,18 @@ impl Monitor {
         if self.disabled {
             return None;
         }
-        let (w, h) = if self.transform % 2 == 1 { (self.height, self.width) } else { (self.width, self.height) };
+        let (w, h) = if self.transform % 2 == 1 {
+            (self.height, self.width)
+        } else {
+            (self.width, self.height)
+        };
         let s = if self.scale > 0.0 { self.scale } else { 1.0 };
-        Some((self.x, self.y, (f64::from(w) / s).round() as u32, (f64::from(h) / s).round() as u32))
+        Some((
+            self.x,
+            self.y,
+            (f64::from(w) / s).round() as u32,
+            (f64::from(h) / s).round() as u32,
+        ))
     }
 
     pub fn output(&self) -> Output {
@@ -64,12 +73,19 @@ pub fn outputs() -> Result<Vec<Monitor>> {
 
 fn parse_monitors(json: &str) -> Result<Vec<Monitor>> {
     let v: Value = serde_json::from_str(json).context("parsing `hyprctl -j monitors all`")?;
-    let list = v.as_array().ok_or_else(|| anyhow!("hyprctl monitors: not a list"))?;
+    let list = v
+        .as_array()
+        .ok_or_else(|| anyhow!("hyprctl monitors: not a list"))?;
     Ok(list
         .iter()
         .map(|m| {
             let i = |k: &str| m.get(k).and_then(Value::as_i64).unwrap_or(0);
-            let s = |k: &str| m.get(k).and_then(Value::as_str).unwrap_or_default().to_owned();
+            let s = |k: &str| {
+                m.get(k)
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned()
+            };
             let b = |k: &str| m.get(k).and_then(Value::as_bool).unwrap_or(false);
             Monitor {
                 name: s("name"),
@@ -118,7 +134,9 @@ impl Backend for HyprCapture {
     }
 
     fn size(&self) -> (u32, u32) {
-        self.feeder.size().unwrap_or((self.geometry.2, self.geometry.3))
+        self.feeder
+            .size()
+            .unwrap_or((self.geometry.2, self.geometry.3))
     }
 
     fn geometry(&self) -> (i32, i32, u32, u32) {
@@ -134,10 +152,16 @@ impl Backend for HyprCapture {
     }
 
     fn reconfigure_extend(&mut self, width: u32, height: u32) -> Result<()> {
-        let Some(e) = &mut self.extend else { bail!("only an extend capture can be resized") };
+        let Some(e) = &mut self.extend else {
+            bail!("only an extend capture can be resized")
+        };
         // The new size moves the spot along the edge (centred where the user put the phone).
         let outs: Vec<Output> = outputs()?.iter().map(Monitor::output).collect();
-        e.pos = desktop::spot(&outs, Some(&self.output), desktop::logical_size((width, height), e.scale));
+        e.pos = desktop::spot(
+            &outs,
+            Some(&self.output),
+            desktop::logical_size((width, height), e.scale),
+        );
         self.geometry = apply_rule(&self.feeder, &self.output, (width, height), e.pos, e.scale)?;
         Ok(())
     }
@@ -172,32 +196,56 @@ pub fn start(mode: &Mode) -> Result<Box<dyn Backend>> {
     let outs: Vec<Output> = mons.iter().map(Monitor::output).collect();
     let (width, height, wanted, scale) = match mode {
         Mode::Mirror => {
-            let out = desktop::primary(&outs, None).ok_or_else(|| anyhow!("no enabled monitor to mirror"))?;
+            let out = desktop::primary(&outs, None)
+                .ok_or_else(|| anyhow!("no enabled monitor to mirror"))?;
             return Ok(Box::new(Plain::start(out)?));
         }
-        Mode::Extend { width, height, output, scale } => (*width, *height, output.clone(), scale.unwrap_or(1.0)),
+        Mode::Extend {
+            width,
+            height,
+            output,
+            scale,
+        } => (*width, *height, output.clone(), scale.unwrap_or(1.0)),
     };
     let (name, created) = match wanted {
         Some(n) if mons.iter().any(|m| m.name == n) => (n, false),
         Some(n) => {
             let names: Vec<_> = mons.iter().map(|m| m.name.as_str()).collect();
-            bail!("output {n:?} is not connected (Hyprland sees: {})", names.join(", "))
+            bail!(
+                "output {n:?} is not connected (Hyprland sees: {})",
+                names.join(", ")
+            )
         }
         None => {
             // A headless output left behind by a killed session is ours to reuse.
             if !mons.iter().any(|m| m.name == HEADLESS) {
-                hyprctl(&["output", "create", "headless", HEADLESS]).context("creating a headless output")?;
+                hyprctl(&["output", "create", "headless", HEADLESS])
+                    .context("creating a headless output")?;
             }
             (HEADLESS.to_owned(), true)
         }
     };
-    let pos = desktop::spot(&outs, Some(&name), desktop::logical_size((width, height), scale));
+    let pos = desktop::spot(
+        &outs,
+        Some(&name),
+        desktop::logical_size((width, height), scale),
+    );
     let undo = |name: &str| {
-        let _ = if created { hyprctl(&["output", "remove", name]) } else { hyprctl(&["keyword", "monitor", &format!("{name},disable")]) };
+        let _ = if created {
+            hyprctl(&["output", "remove", name])
+        } else {
+            hyprctl(&["keyword", "monitor", &format!("{name},disable")])
+        };
     };
     // The first rule before the capture starts (the output must be enabled to be captured); the
     // running capture then lets Hyprland apply it.
-    let feeder = match hyprctl(&["keyword", "monitor", &rule_text(&name, (width, height), pos, scale)]).and_then(|_| Feeder::start(&name)) {
+    let feeder = match hyprctl(&[
+        "keyword",
+        "monitor",
+        &rule_text(&name, (width, height), pos, scale),
+    ])
+    .and_then(|_| Feeder::start(&name))
+    {
         Ok(f) => f,
         Err(e) => {
             undo(&name);
@@ -205,7 +253,16 @@ pub fn start(mode: &Mode) -> Result<Box<dyn Backend>> {
         }
     };
     // From here on, dropping `cap` removes the output again.
-    let mut cap = HyprCapture { feeder, output: name, geometry: (pos.0, pos.1, width, height), extend: Some(Extend { pos, scale, created }) };
+    let mut cap = HyprCapture {
+        feeder,
+        output: name,
+        geometry: (pos.0, pos.1, width, height),
+        extend: Some(Extend {
+            pos,
+            scale,
+            created,
+        }),
+    };
     cap.geometry = apply_rule(&cap.feeder, &cap.output, (width, height), pos, scale)?;
     Ok(Box::new(cap))
 }
@@ -216,7 +273,13 @@ fn rule_text(name: &str, (w, h): (u32, u32), (x, y): (i32, i32), scale: f64) -> 
 
 /// Applies the monitor rule and waits until frames (and hyprctl) show the new size. Returns the
 /// output's logical rect.
-fn apply_rule(feeder: &Feeder, name: &str, size: (u32, u32), pos: (i32, i32), scale: f64) -> Result<(i32, i32, u32, u32)> {
+fn apply_rule(
+    feeder: &Feeder,
+    name: &str,
+    size: (u32, u32),
+    pos: (i32, i32),
+    scale: f64,
+) -> Result<(i32, i32, u32, u32)> {
     hyprctl(&["keyword", "monitor", &rule_text(name, size, pos, scale)])?;
     let deadline = Instant::now() + Duration::from_secs(3);
     loop {
@@ -225,13 +288,22 @@ fn apply_rule(feeder: &Feeder, name: &str, size: (u32, u32), pos: (i32, i32), sc
             && feeder.wait_for_size(size, Duration::from_millis(500))
         {
             if (m.scale - scale).abs() > 0.01 {
-                eprintln!("capture: Hyprland gave {name} scale {} instead of {scale}", m.scale);
+                eprintln!(
+                    "capture: Hyprland gave {name} scale {} instead of {scale}",
+                    m.scale
+                );
             }
             return m.logical().ok_or_else(|| anyhow!("{name} is disabled"));
         }
         if Instant::now() >= deadline {
-            let now = mon.map(|m| format!("{}x{}", m.width, m.height)).unwrap_or_else(|| "gone".into());
-            bail!("{name} did not change to {}x{} (it is {now})", size.0, size.1);
+            let now = mon
+                .map(|m| format!("{}x{}", m.width, m.height))
+                .unwrap_or_else(|| "gone".into());
+            bail!(
+                "{name} did not change to {}x{} (it is {now})",
+                size.0,
+                size.1
+            );
         }
         std::thread::sleep(Duration::from_millis(100));
     }
@@ -253,15 +325,29 @@ mod tests {
         // transform 1 = 90°: portrait logical rect.
         assert_eq!(m[1].output().logical, Some((1536, 0, 610, 1356)));
         assert!(m[1].output().is_virtual && !m[0].output().is_virtual);
-        assert_eq!(rule_text("X", (2712, 1220), (1536, 0), 2.0), "X,2712x1220@60,1536x0,2");
+        assert_eq!(
+            rule_text("X", (2712, 1220), (1536, 0), 2.0),
+            "X,2712x1220@60,1536x0,2"
+        );
     }
 
     /// Live (Hyprland, also nested): cargo test --release -p smartconnect-display hyprland_smoke -- --ignored --nocapture --test-threads=1
     #[test]
     #[ignore]
     fn hyprland_smoke_extend() {
-        let mut cap = start(&Mode::Extend { width: 2712, height: 1220, output: None, scale: Some(2.0) }).expect("start");
-        eprintln!("{} {:?} {:?}", cap.output_name(), cap.size(), cap.geometry());
+        let mut cap = start(&Mode::Extend {
+            width: 2712,
+            height: 1220,
+            output: None,
+            scale: Some(2.0),
+        })
+        .expect("start");
+        eprintln!(
+            "{} {:?} {:?}",
+            cap.output_name(),
+            cap.size(),
+            cap.geometry()
+        );
         assert_eq!(cap.size(), (2712, 1220));
         assert_eq!((cap.geometry().2, cap.geometry().3), (1356, 610));
         let check = |cap: &dyn Backend, (w, h): (u32, u32)| {
@@ -273,14 +359,23 @@ mod tests {
         check(cap.as_ref(), (1220, 2712));
         assert_eq!((cap.geometry().2, cap.geometry().3), (610, 1356));
         drop(cap);
-        assert!(!outputs().unwrap().iter().any(|m| m.name == HEADLESS), "headless output removed");
+        assert!(
+            !outputs().unwrap().iter().any(|m| m.name == HEADLESS),
+            "headless output removed"
+        );
     }
 
     /// Live (Hyprland): frames reach a pipeline through the appsrc.
     #[test]
     #[ignore]
     fn hyprland_smoke_frames() {
-        let cap = start(&Mode::Extend { width: 1280, height: 720, output: None, scale: Some(1.0) }).expect("start");
+        let cap = start(&Mode::Extend {
+            width: 1280,
+            height: 720,
+            output: None,
+            scale: Some(1.0),
+        })
+        .expect("start");
         let (n, caps) = run_bound(cap.as_ref());
         eprintln!("{n} buffers; {caps}");
         assert!(n > 0);

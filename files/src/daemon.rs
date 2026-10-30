@@ -45,9 +45,12 @@ pub async fn handshake(our_fp: &str) -> Result<MountTarget> {
     let path = socket_path();
 
     // One connection streams the phone's frames (a `watch` connection serves only the watch loop).
-    let watch = UnixStream::connect(&path)
-        .await
-        .with_context(|| format!("connecting to the daemon at {} (is smartconnectd running?)", path.display()))?;
+    let watch = UnixStream::connect(&path).await.with_context(|| {
+        format!(
+            "connecting to the daemon at {} (is smartconnectd running?)",
+            path.display()
+        )
+    })?;
     let mut watch = BufReader::new(watch);
     watch
         .get_mut()
@@ -56,14 +59,19 @@ pub async fn handshake(our_fp: &str) -> Result<MountTarget> {
         .context("subscribing to File Station frames")?;
 
     // A second connection sends the request (the watch connection no longer reads commands).
-    let handshake_json = json!({ "type": 0, "dt2type": 2, "nfs_dependency": 24, "fp": our_fp }).to_string();
+    let handshake_json =
+        json!({ "type": 0, "dt2type": 2, "nfs_dependency": 24, "fp": our_fp }).to_string();
     let frame = json!({
         "cmd": "send",
         "service": SERVICE_FILE_STATION,
         "data": { "ver": "1.0", "cmd": CMD_HANDSHAKE, "data": handshake_json },
     });
-    let mut send = UnixStream::connect(&path).await.context("opening a send connection to the daemon")?;
-    send.write_all(format!("{frame}\n").as_bytes()).await.context("sending the File Station handshake")?;
+    let mut send = UnixStream::connect(&path)
+        .await
+        .context("opening a send connection to the daemon")?;
+    send.write_all(format!("{frame}\n").as_bytes())
+        .await
+        .context("sending the File Station handshake")?;
     send.shutdown().await.ok();
 
     // Read frames until the phone's `type:1` server reply arrives (or we time out).
@@ -73,7 +81,9 @@ pub async fn handshake(our_fp: &str) -> Result<MountTarget> {
         line.clear();
         let read = tokio::time::timeout_at(deadline, watch.read_line(&mut line))
             .await
-            .map_err(|_| anyhow::anyhow!("the phone did not reply to the File Station handshake in time"))?
+            .map_err(|_| {
+                anyhow::anyhow!("the phone did not reply to the File Station handshake in time")
+            })?
             .context("reading from the daemon")?;
         if read == 0 {
             bail!("the daemon closed the control connection");
@@ -112,25 +122,14 @@ pub fn phone_state() -> PhoneState {
 }
 
 fn parse_state(line: &str) -> PhoneState {
-    let Ok(v) = serde_json::from_str::<Value>(line.trim()) else { return PhoneState::DaemonDown };
+    let Ok(v) = serde_json::from_str::<Value>(line.trim()) else {
+        return PhoneState::DaemonDown;
+    };
     let flag = |k: &str| v.get(k).and_then(Value::as_bool).unwrap_or(false);
     match (flag("paired"), flag("connected")) {
         (_, true) => PhoneState::Connected,
         (true, false) => PhoneState::Disconnected,
         (false, false) => PhoneState::Unpaired,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn status_lines() {
-        assert_eq!(parse_state(r#"{"connected":true,"paired":true}"#), PhoneState::Connected);
-        assert_eq!(parse_state(r#"{"connected":false,"paired":true,"name":"x"}"#), PhoneState::Disconnected);
-        assert_eq!(parse_state(r#"{"connected":false,"paired":false}"#), PhoneState::Unpaired);
-        assert_eq!(parse_state("garbage"), PhoneState::DaemonDown);
     }
 }
 
@@ -147,8 +146,19 @@ fn parse_reply(line: &str, _our_fp: &str) -> Option<MountTarget> {
     let mount_port = hs.get("port").and_then(json_u16)?;
     let ip = hs.get("ip").and_then(Value::as_str)?.to_string();
     let fingerprint = hs.get("fp").and_then(Value::as_str)?.to_string();
-    let path = hs.get("path").and_then(Value::as_str).filter(|p| !p.is_empty()).unwrap_or("/sdcard").to_string();
-    Some(MountTarget { ip, mount_port, nfs_port, fingerprint, path })
+    let path = hs
+        .get("path")
+        .and_then(Value::as_str)
+        .filter(|p| !p.is_empty())
+        .unwrap_or("/sdcard")
+        .to_string();
+    Some(MountTarget {
+        ip,
+        mount_port,
+        nfs_port,
+        fingerprint,
+        path,
+    })
 }
 
 /// A port is sometimes a JSON number and sometimes a string on this channel.
@@ -157,4 +167,26 @@ fn json_u16(v: &Value) -> Option<u16> {
         .and_then(|n| u16::try_from(n).ok())
         .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
         .filter(|&p| p != 0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn status_lines() {
+        assert_eq!(
+            parse_state(r#"{"connected":true,"paired":true}"#),
+            PhoneState::Connected
+        );
+        assert_eq!(
+            parse_state(r#"{"connected":false,"paired":true,"name":"x"}"#),
+            PhoneState::Disconnected
+        );
+        assert_eq!(
+            parse_state(r#"{"connected":false,"paired":false}"#),
+            PhoneState::Unpaired
+        );
+        assert_eq!(parse_state("garbage"), PhoneState::DaemonDown);
+    }
 }

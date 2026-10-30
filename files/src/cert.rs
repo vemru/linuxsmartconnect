@@ -40,7 +40,11 @@ impl Identity {
             (cert_der, key_der)
         };
         let fingerprint = fingerprint_of(&cert_der);
-        Ok(Self { cert_der, key_der, fingerprint })
+        Ok(Self {
+            cert_der,
+            key_der,
+            fingerprint,
+        })
     }
 
     /// The default per-user location, next to the daemon's own state.
@@ -49,7 +53,9 @@ impl Identity {
             .map(PathBuf::from)
             .filter(|p| p.is_absolute())
             .unwrap_or_else(|| {
-                let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+                let home = std::env::var_os("HOME")
+                    .map(PathBuf::from)
+                    .unwrap_or_default();
                 home.join(".local/share")
             });
         base.join("smartconnect-linux").join("files-identity")
@@ -90,7 +96,8 @@ pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
         .mode(0o600)
         .open(path)
         .with_context(|| format!("creating {}", path.display()))?;
-    f.write_all(bytes).with_context(|| format!("writing {}", path.display()))?;
+    f.write_all(bytes)
+        .with_context(|| format!("writing {}", path.display()))?;
     // Re-apply in case the file already existed with looser modes.
     fs::set_permissions(path, fs::Permissions::from_mode(0o600)).ok();
     Ok(())
@@ -109,6 +116,9 @@ mod tests {
             "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855"
         );
         assert_eq!(fp.len(), 64);
-        assert!(fp.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_lowercase()));
+        assert!(
+            fp.chars()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_lowercase())
+        );
     }
 }

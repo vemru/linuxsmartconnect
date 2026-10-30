@@ -66,7 +66,12 @@ const NO_AUDIO_FLAG: &str = "--no-audio";
 const BITRATE_FLAG: &str = "--bitrate";
 const FPS_FLAG: &str = "--fps";
 /// Stream quality choices (kbit/s, label), in the order of the row.
-const QUALITIES: [(u32, &str); 4] = [(2000, "Low · 2 Mbit/s"), (4000, "Medium · 4 Mbit/s"), (8000, "High · 8 Mbit/s"), (16000, "Very high · 16 Mbit/s")];
+const QUALITIES: [(u32, &str); 4] = [
+    (2000, "Low · 2 Mbit/s"),
+    (4000, "Medium · 4 Mbit/s"),
+    (8000, "High · 8 Mbit/s"),
+    (16000, "Very high · 16 Mbit/s"),
+];
 /// Frame rate choices, in the order of the row.
 const FRAME_RATES: [u32; 3] = [15, 30, 60];
 const ROTATE_FLAG: &str = "--follow-rotation";
@@ -116,7 +121,11 @@ struct Opts {
 
 impl Opts {
     fn from_prefs(p: &DisplayPrefs) -> Self {
-        let mode = if p.mode == "mirror" { Mode::Mirror } else { Mode::Extend };
+        let mode = if p.mode == "mirror" {
+            Mode::Mirror
+        } else {
+            Mode::Extend
+        };
         let size = match p.resolution() {
             "native" => Size::Native,
             "custom" => Size::Fixed(p.custom_width, p.custom_height),
@@ -157,7 +166,10 @@ impl Opts {
     /// Reads the arguments of a running `smartconnect-display` on top of `base`: what it uses for
     /// whatever its command line leaves out (`display.json` for a newer helper, else its defaults).
     fn parse(args: &[String], base: Opts) -> Self {
-        let mut o = Self { extra: Vec::new(), ..base };
+        let mut o = Self {
+            extra: Vec::new(),
+            ..base
+        };
         let mut it = args.iter();
         while let Some(arg) = it.next() {
             let flag = arg.as_str();
@@ -171,7 +183,8 @@ impl Opts {
                 "--config" => {
                     it.next();
                 }
-                "--mode" | "--size" | "--display-scale" | "--output" | OSK_FLAG | BITRATE_FLAG | FPS_FLAG => {
+                "--mode" | "--size" | "--display-scale" | "--output" | OSK_FLAG | BITRATE_FLAG
+                | FPS_FLAG => {
                     let value = it.next().cloned().unwrap_or_default();
                     if !o.set(flag, &value) {
                         o.extra.extend([arg.clone(), value]);
@@ -260,7 +273,10 @@ impl Opts {
             Size::Fixed(w, h) => a.extend(["--size".to_owned(), format!("{w}x{h}")]),
         }
         if self.mode == Mode::Extend {
-            a.extend(["--display-scale".to_owned(), (f64::from(self.scale) / 100.0).to_string()]);
+            a.extend([
+                "--display-scale".to_owned(),
+                (f64::from(self.scale) / 100.0).to_string(),
+            ]);
             match &self.output {
                 Some(o) => a.extend(["--output".to_owned(), o.clone()]),
                 None if explicit => a.extend(["--output".to_owned(), "auto".to_owned()]),
@@ -276,7 +292,10 @@ impl Opts {
         if let Some(fps) = self.fps.filter(|_| f.has(FPS_FLAG)) {
             a.extend([FPS_FLAG.to_owned(), fps.to_string()]);
         }
-        for (value, on, off) in [(self.audio, AUDIO_FLAG, NO_AUDIO_FLAG), (self.rotate, ROTATE_FLAG, NO_ROTATE_FLAG)] {
+        for (value, on, off) in [
+            (self.audio, AUDIO_FLAG, NO_AUDIO_FLAG),
+            (self.rotate, ROTATE_FLAG, NO_ROTATE_FLAG),
+        ] {
             match value {
                 Some(true) if f.has(on) => a.push(on.to_owned()),
                 Some(false) if f.has(off) => a.push(off.to_owned()),
@@ -328,7 +347,9 @@ fn parse_scale(v: &str) -> Option<u32> {
 // ── Processes ───────────────────────────────────────────────────────────────
 
 fn runtime_dir() -> PathBuf {
-    std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).unwrap_or_else(std::env::temp_dir)
+    std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
 }
 
 /// Shared with the Noctalia plugin, which starts sessions the same way.
@@ -340,17 +361,24 @@ fn log_path() -> PathBuf {
 /// [`binary`]) and its file name, which is what running sessions are recognised by.
 fn program() -> (PathBuf, String) {
     let bin = binary(BIN);
-    let name = bin.file_name().and_then(|n| n.to_str()).unwrap_or(BIN).to_owned();
+    let name = bin
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(BIN)
+        .to_owned();
     (bin, name)
 }
 
 fn is_executable(p: &Path) -> bool {
-    p.metadata().is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+    p.metadata()
+        .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
 }
 
 fn on_path(name: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path).map(|dir| dir.join(name)).find(|p| is_executable(p))
+    std::env::split_paths(&path)
+        .map(|dir| dir.join(name))
+        .find(|p| is_executable(p))
 }
 
 /// The helper as a file: `bin` itself when it is a path, else its `$PATH` match.
@@ -383,9 +411,18 @@ fn helper_stamp() -> Option<(PathBuf, SystemTime)> {
 }
 
 fn read_flags(stamp: (PathBuf, SystemTime)) -> Flags {
-    let out = Command::new(&stamp.0).arg("--help").stdin(Stdio::null()).stderr(Stdio::null()).output();
-    let text = out.map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
-    Flags { from: Some(stamp), names: flag_names(&text) }
+    let out = Command::new(&stamp.0)
+        .arg("--help")
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output();
+    let text = out
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default();
+    Flags {
+        from: Some(stamp),
+        names: flag_names(&text),
+    }
 }
 
 /// Every `--word` in a usage text.
@@ -408,7 +445,8 @@ struct Running {
 /// `--help` is how it reads the helper's flags. They run the same binary but are not sessions;
 /// counting them made “Phone as display” flash *Running / Off* on every output refresh.
 fn is_query(args: &[String]) -> bool {
-    args.iter().any(|a| matches!(a.as_str(), "--list-outputs" | "--help" | "-h"))
+    args.iter()
+        .any(|a| matches!(a.as_str(), "--list-outputs" | "--help" | "-h"))
 }
 
 /// Every running process of the helper `name`, ours or not. Matches the kernel's short command
@@ -416,18 +454,36 @@ fn is_query(args: &[String]) -> bool {
 fn running_sessions(name: &str) -> Vec<Running> {
     let comm: String = name.chars().take(15).collect();
     let mut found = Vec::new();
-    let Ok(dir) = std::fs::read_dir("/proc") else { return found };
+    let Ok(dir) = std::fs::read_dir("/proc") else {
+        return found;
+    };
     for entry in dir.flatten() {
-        let Some(pid) = entry.file_name().to_str().and_then(|s| s.parse::<u32>().ok()) else { continue };
-        if std::fs::read_to_string(entry.path().join("comm")).map_or(true, |c| c.trim_end() != comm) {
+        let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|s| s.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        if std::fs::read_to_string(entry.path().join("comm")).map_or(true, |c| c.trim_end() != comm)
+        {
             continue;
         }
         // Empty for a zombie, which then counts as gone.
-        let Ok(raw) = std::fs::read(entry.path().join("cmdline")) else { continue };
-        let args: Vec<String> = raw.split(|b| *b == 0).map(|a| String::from_utf8_lossy(a).into_owned()).collect();
+        let Ok(raw) = std::fs::read(entry.path().join("cmdline")) else {
+            continue;
+        };
+        let args: Vec<String> = raw
+            .split(|b| *b == 0)
+            .map(|a| String::from_utf8_lossy(a).into_owned())
+            .collect();
         let is_us = |a: &String| Path::new(a).file_name().and_then(|f| f.to_str()) == Some(name);
         if let Some(i) = args.iter().take(2).position(is_us) {
-            let rest: Vec<String> = args[i + 1..].iter().filter(|a| !a.is_empty()).cloned().collect();
+            let rest: Vec<String> = args[i + 1..]
+                .iter()
+                .filter(|a| !a.is_empty())
+                .cloned()
+                .collect();
             if is_query(&rest) {
                 continue;
             }
@@ -460,7 +516,8 @@ fn spawn(bin: &Path, args: &[String], log: &Path) -> Result<Child, String> {
             Ok(())
         });
     }
-    cmd.spawn().map_err(|e| format!("Could not start {}: {e}", bin.display()))
+    cmd.spawn()
+        .map_err(|e| format!("Could not start {}: {e}", bin.display()))
 }
 
 /// SIGINT: the helper tells the phone to stop, switches an extend output off and exits.
@@ -498,16 +555,26 @@ struct LogState {
 
 fn parse_log(text: &str) -> LogState {
     let mut lines = text.lines();
-    let Some(pid) = lines.next().and_then(|l| l.strip_prefix("pid ")).and_then(|p| p.trim().parse().ok()) else {
+    let Some(pid) = lines
+        .next()
+        .and_then(|l| l.strip_prefix("pid "))
+        .and_then(|p| p.trim().parse().ok())
+    else {
         return LogState::default();
     };
-    let mut s = LogState { pid: Some(pid), ..LogState::default() };
+    let mut s = LogState {
+        pid: Some(pid),
+        ..LogState::default()
+    };
     // anyhow prints `Error: <msg>`, a blank line, `Caused by:` and the causes, indented.
     let mut cause_next = false;
     for line in lines.map(str::trim_end).filter(|l| !l.trim().is_empty()) {
         if cause_next && line.starts_with(char::is_whitespace) {
             let cause = line.trim();
-            let cause = cause.split_once(": ").filter(|(n, _)| n.parse::<u32>().is_ok()).map_or(cause, |(_, c)| c);
+            let cause = cause
+                .split_once(": ")
+                .filter(|(n, _)| n.parse::<u32>().is_ok())
+                .map_or(cause, |(_, c)| c);
             if let Some(e) = s.error.as_mut() {
                 *e = format!("{e} ({cause})");
             }
@@ -519,7 +586,11 @@ fn parse_log(text: &str) -> LogState {
         if let Some(reason) = line.strip_prefix("stopping: ") {
             s.stopped = Some(reason.trim().to_owned());
         } else if let Some(rest) = line.strip_prefix("phone panel ") {
-            s.size = rest.rsplit("sending ").next().and_then(parse_size).or(s.size);
+            s.size = rest
+                .rsplit("sending ")
+                .next()
+                .and_then(parse_size)
+                .or(s.size);
         } else if let Some(rest) = line.strip_prefix("stream size → ") {
             s.size = parse_size(rest).or(s.size);
         } else if line.starts_with("← phone cmd 7:") {
@@ -552,7 +623,9 @@ fn parse_log(text: &str) -> LogState {
         } else if line.starts_with("phone refused: ") {
             s.error = Some("the phone refused the session".to_owned());
         } else if let Some(rest) = line.strip_prefix("daemon: ") {
-            let msg = serde_json::from_str::<Value>(rest).ok().and_then(|v| v.get("message")?.as_str().map(str::to_owned));
+            let msg = serde_json::from_str::<Value>(rest)
+                .ok()
+                .and_then(|v| v.get("message")?.as_str().map(str::to_owned));
             s.error = Some(format!("smartconnectd: {}", msg.as_deref().unwrap_or(rest)));
         } else if line.starts_with("pipeline error from ") {
             let msg = line.split_once("): ").map_or(line, |(_, m)| m);
@@ -596,8 +669,15 @@ struct Snapshot {
 
 fn snapshot(name: &str, log: &Path, stamp: Option<Stamp>) -> Snapshot {
     let sessions = running_sessions(name);
-    let now = std::fs::metadata(log).ok().and_then(|m| Some((m.len(), m.modified().ok()?)));
-    let log = (now != stamp).then(|| (now, read_log(log).map(|t| parse_log(&t)).unwrap_or_default()));
+    let now = std::fs::metadata(log)
+        .ok()
+        .and_then(|m| Some((m.len(), m.modified().ok()?)));
+    let log = (now != stamp).then(|| {
+        (
+            now,
+            read_log(log).map(|t| parse_log(&t)).unwrap_or_default(),
+        )
+    });
     Snapshot { sessions, log }
 }
 
@@ -623,7 +703,9 @@ fn outcome(log: &LogState) -> Option<Outcome> {
     if reason.is_some() {
         return Some(Outcome::Stopped("stopped from this PC".into()));
     }
-    log.last.as_ref().map(|l| Outcome::Stopped(format!("ended ({l})")))
+    log.last
+        .as_ref()
+        .map(|l| Outcome::Stopped(format!("ended ({l})")))
 }
 
 fn friendly(reason: &str) -> String {
@@ -667,7 +749,12 @@ impl Outputs {
         self.list
             .iter()
             .filter_map(|o| {
-                Some(Screen { name: o.name.clone(), description: o.description.clone(), rect: o.rect?, primary: o.primary })
+                Some(Screen {
+                    name: o.name.clone(),
+                    description: o.description.clone(),
+                    rect: o.rect?,
+                    primary: o.primary,
+                })
             })
             .collect()
     }
@@ -700,8 +787,14 @@ struct Output {
 }
 
 fn parse_outputs(json: &[u8]) -> Result<Outputs, String> {
-    let v: Value = serde_json::from_slice(json).map_err(|e| format!("unexpected output list ({e})"))?;
-    let text = |v: &Value, k: &str| v.get(k).and_then(Value::as_str).unwrap_or_default().to_owned();
+    let v: Value =
+        serde_json::from_slice(json).map_err(|e| format!("unexpected output list ({e})"))?;
+    let text = |v: &Value, k: &str| {
+        v.get(k)
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned()
+    };
     if let Some(e) = v.get("error").and_then(Value::as_str) {
         return Err(e.lines().next().unwrap_or(e).to_owned());
     }
@@ -719,14 +812,20 @@ fn parse_outputs(json: &[u8]) -> Result<Outputs, String> {
                         "" => "monitor".to_owned(),
                         d => d.to_owned(),
                     };
-                    let label = format!("{name} ({what}, {})", if flag("enabled") { "on" } else { "off" });
+                    let label = format!(
+                        "{name} ({what}, {})",
+                        if flag("enabled") { "on" } else { "off" }
+                    );
                     // The helper lists the logical rect (x, y, w, h) so the GTK page can draw the
                     // real arrangement; older helpers send none, and then only one screen is drawn.
                     let num = |k: &str| o.get(k).and_then(Value::as_i64);
                     let rect = match (num("x"), num("y"), num("width"), num("height")) {
-                        (Some(x), Some(y), Some(w), Some(h)) if w > 0 && h > 0 => {
-                            Some((i32::try_from(x).unwrap_or(0), i32::try_from(y).unwrap_or(0), w as u32, h as u32))
-                        }
+                        (Some(x), Some(y), Some(w), Some(h)) if w > 0 && h > 0 => Some((
+                            i32::try_from(x).unwrap_or(0),
+                            i32::try_from(y).unwrap_or(0),
+                            w as u32,
+                            h as u32,
+                        )),
                         _ => None,
                     };
                     Output {
@@ -743,7 +842,11 @@ fn parse_outputs(json: &[u8]) -> Result<Outputs, String> {
                 .collect()
         })
         .unwrap_or_default();
-    Ok(Outputs { desktop: text(&v, "desktop"), extend: text(&v, "extend"), list })
+    Ok(Outputs {
+        desktop: text(&v, "desktop"),
+        extend: text(&v, "extend"),
+        list,
+    })
 }
 
 fn list_outputs() -> Result<Outputs, String> {
@@ -755,8 +858,15 @@ fn list_outputs() -> Result<Outputs, String> {
         .map_err(|e| format!("could not run {BIN} ({e})"))?;
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr);
-        let first = err.lines().find(|l| !l.trim().is_empty()).unwrap_or("failed").trim().trim_start_matches("Error: ");
-        return Err(format!("{BIN} {LIST_OUTPUTS_FLAG}: {first} (an older {BIN}? reinstall it)"));
+        let first = err
+            .lines()
+            .find(|l| !l.trim().is_empty())
+            .unwrap_or("failed")
+            .trim()
+            .trim_start_matches("Error: ");
+        return Err(format!(
+            "{BIN} {LIST_OUTPUTS_FLAG}: {first} (an older {BIN}? reinstall it)"
+        ));
     }
     parse_outputs(&out.stdout)
 }
@@ -778,7 +888,11 @@ struct Checks {
 fn run_checks(flags_from: Option<(PathBuf, SystemTime)>) -> Checks {
     let stamp = helper_stamp();
     let flags = (stamp != flags_from).then(|| stamp.map(read_flags).unwrap_or_default());
-    Checks { outputs: list_outputs(), osk_missing: osk_missing(), flags }
+    Checks {
+        outputs: list_outputs(),
+        osk_missing: osk_missing(),
+        flags,
+    }
 }
 
 // ── Page ────────────────────────────────────────────────────────────────────
@@ -789,7 +903,10 @@ enum Pending {
     /// SIGINT sent.
     Stopping { since: Instant },
     /// SIGINT sent; start again once every session is gone (+ `RESTART_GAP`).
-    Restarting { since: Instant, gone_at: Option<Instant> },
+    Restarting {
+        since: Instant,
+        gone_at: Option<Instant>,
+    },
 }
 
 #[derive(Default)]
@@ -821,8 +938,13 @@ impl State {
     /// What a running session shows: its command line on top of `display.json` (a helper that reads
     /// it, unless started with `--no-config`) or on top of the helper's own defaults.
     fn running_opts(&self, r: &Running) -> Opts {
-        let reads_config = self.flags.as_ref().is_some_and(|f| f.has(NO_CONFIG_FLAG)) && !r.args.iter().any(|a| a == NO_CONFIG_FLAG);
-        let base = if reads_config { Opts::from_prefs(&self.prefs.display) } else { Opts::cli_defaults() };
+        let reads_config = self.flags.as_ref().is_some_and(|f| f.has(NO_CONFIG_FLAG))
+            && !r.args.iter().any(|a| a == NO_CONFIG_FLAG);
+        let base = if reads_config {
+            Opts::from_prefs(&self.prefs.display)
+        } else {
+            Opts::cli_defaults()
+        };
         Opts::parse(&r.args, base)
     }
 }
@@ -860,7 +982,10 @@ pub struct DisplayPage {
 }
 
 fn hint_row(icon: &str, title: &str) -> adw::ActionRow {
-    let row = adw::ActionRow::builder().title(title).subtitle_selectable(true).build();
+    let row = adw::ActionRow::builder()
+        .title(title)
+        .subtitle_selectable(true)
+        .build();
     row.add_prefix(&gtk::Image::from_icon_name(icon));
     row
 }
@@ -890,14 +1015,34 @@ fn refresh_button(tooltip: &str) -> gtk::Button {
 }
 
 fn spin_row(title: &str, subtitle: &str, (min, max, step): (u32, u32, u32)) -> adw::SpinRow {
-    let adj = gtk::Adjustment::new(f64::from(min), f64::from(min), f64::from(max), f64::from(step), f64::from(step) * 4.0, 0.0);
-    adw::SpinRow::builder().title(title).subtitle(subtitle).adjustment(&adj).numeric(true).build()
+    let adj = gtk::Adjustment::new(
+        f64::from(min),
+        f64::from(min),
+        f64::from(max),
+        f64::from(step),
+        f64::from(step) * 4.0,
+        0.0,
+    );
+    adw::SpinRow::builder()
+        .title(title)
+        .subtitle(subtitle)
+        .adjustment(&adj)
+        .numeric(true)
+        .build()
 }
 
 impl DisplayPage {
     pub fn build(toasts: &adw::ToastOverlay) -> (Rc<Self>, gtk::Widget) {
-        let icon = gtk::Image::builder().icon_name("video-display-symbolic").pixel_size(32).build();
-        let title = gtk::Label::builder().label("Phone as display").xalign(0.0).css_classes(["title-4"]).wrap(true).build();
+        let icon = gtk::Image::builder()
+            .icon_name("video-display-symbolic")
+            .pixel_size(32)
+            .build();
+        let title = gtk::Label::builder()
+            .label("Phone as display")
+            .xalign(0.0)
+            .css_classes(["title-4"])
+            .wrap(true)
+            .build();
         let status = gtk::Label::builder().xalign(0.0).wrap(true).build();
         let detail = gtk::Label::builder()
             .css_classes(["dim-label"])
@@ -906,14 +1051,22 @@ impl DisplayPage {
             .wrap_mode(gtk::pango::WrapMode::WordChar)
             .selectable(true)
             .build();
-        let start = gtk::Button::builder().css_classes(["suggested-action"]).label("Start").valign(gtk::Align::Center).build();
+        let start = gtk::Button::builder()
+            .css_classes(["suggested-action"])
+            .label("Start")
+            .valign(gtk::Align::Center)
+            .build();
         let apply = gtk::Button::builder()
             .label("Apply")
             .tooltip_text("Restart the session with these settings")
             .valign(gtk::Align::Center)
             .visible(false)
             .build();
-        let buttons = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(6).valign(gtk::Align::Center).build();
+        let buttons = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(6)
+            .valign(gtk::Align::Center)
+            .build();
         buttons.append(&start);
         buttons.append(&apply);
 
@@ -939,14 +1092,34 @@ impl DisplayPage {
             hints.add(row);
         }
 
-        let mode = adw::ToggleGroup::builder().valign(gtk::Align::Center).homogeneous(true).can_shrink(false).build();
-        mode.add(adw::Toggle::builder().name("extend").label("Extend").tooltip("The phone becomes a second monitor").build());
-        mode.add(adw::Toggle::builder().name("mirror").label("Duplicate").tooltip("Show this PC's screen on the phone").build());
+        let mode = adw::ToggleGroup::builder()
+            .valign(gtk::Align::Center)
+            .homogeneous(true)
+            .can_shrink(false)
+            .build();
+        mode.add(
+            adw::Toggle::builder()
+                .name("extend")
+                .label("Extend")
+                .tooltip("The phone becomes a second monitor")
+                .build(),
+        );
+        mode.add(
+            adw::Toggle::builder()
+                .name("mirror")
+                .label("Duplicate")
+                .tooltip("Show this PC's screen on the phone")
+                .build(),
+        );
         let mode_row = adw::ActionRow::builder().title("Mode").build();
         mode_row.add_suffix(&mode);
         let resolution = adw::ComboRow::builder()
             .title("Resolution")
-            .model(&gtk::StringList::new(&["Phone native", "Phone default", "Custom"]))
+            .model(&gtk::StringList::new(&[
+                "Phone native",
+                "Phone default",
+                "Custom",
+            ]))
             .build();
         let width = spin_row("Width", "Pixels", (prefs::MIN_SIDE, prefs::MAX_SIDE, 8));
         let height = spin_row("Height", "Pixels", (prefs::MIN_SIDE, prefs::MAX_SIDE, 8));
@@ -975,13 +1148,22 @@ impl DisplayPage {
             .subtitle("At most this many frames per second; fewer means less to encode and send")
             .model(&gtk::StringList::new(&fps_refs))
             .build();
-        let audio = adw::SwitchRow::builder().title("Send PC audio to the phone").subtitle("Experimental").build();
+        let audio = adw::SwitchRow::builder()
+            .title("Send PC audio to the phone")
+            .subtitle("Experimental")
+            .build();
         let rotate = adw::SwitchRow::builder()
             .title("Rotate with the phone")
             .subtitle("Experimental · Extend: turns the phone's monitor when you turn the phone")
             .build();
-        let advanced = adw::ExpanderRow::builder().title("Advanced").subtitle("Which output to extend onto").build();
-        let output = adw::ComboRow::builder().title("Extend onto").model(&gtk::StringList::new(&[])).build();
+        let advanced = adw::ExpanderRow::builder()
+            .title("Advanced")
+            .subtitle("Which output to extend onto")
+            .build();
+        let output = adw::ComboRow::builder()
+            .title("Extend onto")
+            .model(&gtk::StringList::new(&[]))
+            .build();
         let output_refresh = refresh_button("List the outputs again");
         output.add_suffix(&output_refresh);
         advanced.add_row(&output);
@@ -1008,14 +1190,21 @@ impl DisplayPage {
         ] {
             layout_group.add(row);
         }
-        let experimental_group = adw::PreferencesGroup::builder().title("Experimental").build();
+        let experimental_group = adw::PreferencesGroup::builder()
+            .title("Experimental")
+            .build();
         experimental_group.add(&audio);
         experimental_group.add(&rotate);
         let advanced_group = adw::PreferencesGroup::new();
         advanced_group.add(&advanced);
 
         // ── Phone-as-display card (hero) ──────────────────────────────────────
-        let text = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(2).hexpand(true).valign(gtk::Align::Center).build();
+        let text = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(2)
+            .hexpand(true)
+            .valign(gtk::Align::Center)
+            .build();
         text.append(&title);
         text.append(&status);
         text.append(&detail);
@@ -1023,16 +1212,25 @@ impl DisplayPage {
         head.append(&icon);
         head.append(&text);
         head.append(&buttons);
-        let card = gtk::Box::builder().css_classes(["card", "sc-card"]).hexpand(true).build();
+        let card = gtk::Box::builder()
+            .css_classes(["card", "sc-card"])
+            .hexpand(true)
+            .build();
         card.append(&head);
 
         // Stacked: in a grid every group took the height of the tallest one, leaving empty space.
-        let groups = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(18).build();
+        let groups = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(18)
+            .build();
         for g in [&layout_group, &experimental_group, &advanced_group] {
             groups.append(g);
         }
 
-        let column = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(18).build();
+        let column = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(18)
+            .build();
         column.append(&card);
         column.append(&hints);
         column.append(&groups);
@@ -1062,7 +1260,11 @@ impl DisplayPage {
             advanced,
             output,
             exited,
-            st: RefCell::new(State { prefs: prefs::load(), osk_missing: osk_missing(), ..State::default() }),
+            st: RefCell::new(State {
+                prefs: prefs::load(),
+                osk_missing: osk_missing(),
+                ..State::default()
+            }),
             visible: Cell::new(false),
             polling: Cell::new(false),
             checking: Cell::new(false),
@@ -1080,7 +1282,9 @@ impl DisplayPage {
         });
         let weak = Rc::downgrade(&page);
         glib::timeout_add_local(POLL, move || {
-            let Some(page) = weak.upgrade() else { return glib::ControlFlow::Break };
+            let Some(page) = weak.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
             page.tick();
             glib::ControlFlow::Continue
         });
@@ -1111,7 +1315,9 @@ impl DisplayPage {
         }
         let weak = Rc::downgrade(self);
         self.mode.connect_active_name_notify(move |group| {
-            let (Some(p), Some(name)) = (weak.upgrade(), group.active_name()) else { return };
+            let (Some(p), Some(name)) = (weak.upgrade(), group.active_name()) else {
+                return;
+            };
             if !p.syncing.get() {
                 p.update_prefs(|d| d.mode = name.to_string());
                 p.sync_widgets(); // the Resolution row follows the mode
@@ -1123,9 +1329,16 @@ impl DisplayPage {
         let weak = Rc::downgrade(self);
         self.resolution.connect_selected_notify(move |row| {
             let Some(p) = weak.upgrade() else { return };
-            let key = RESOLUTIONS.get(row.selected() as usize).copied().unwrap_or("phone");
+            let key = RESOLUTIONS
+                .get(row.selected() as usize)
+                .copied()
+                .unwrap_or("phone");
             p.update_prefs(|d| {
-                let res = if d.mode == "mirror" { &mut d.mirror_resolution } else { &mut d.extend_resolution };
+                let res = if d.mode == "mirror" {
+                    &mut d.mirror_resolution
+                } else {
+                    &mut d.extend_resolution
+                };
                 *res = key.to_owned();
             });
         });
@@ -1155,7 +1368,9 @@ impl DisplayPage {
         });
         let weak = Rc::downgrade(self);
         self.quality.connect_selected_notify(move |row| {
-            if let (Some(p), Some((b, _))) = (weak.upgrade(), QUALITIES.get(row.selected() as usize)) {
+            if let (Some(p), Some((b, _))) =
+                (weak.upgrade(), QUALITIES.get(row.selected() as usize))
+            {
                 p.update_prefs(|d| d.bitrate = *b);
             }
         });
@@ -1180,7 +1395,11 @@ impl DisplayPage {
         let weak = Rc::downgrade(self);
         self.output.connect_selected_notify(move |row| {
             let Some(p) = weak.upgrade() else { return };
-            let name = p.st.borrow().output_choices.get(row.selected() as usize).cloned();
+            let name =
+                p.st.borrow()
+                    .output_choices
+                    .get(row.selected() as usize)
+                    .cloned();
             if let Some(name) = name {
                 p.update_prefs(|d| d.output = name);
             }
@@ -1212,15 +1431,26 @@ impl DisplayPage {
         let d = self.st.borrow().prefs.display.clone();
         self.syncing.set(true);
         self.mode.set_active_name(Some(&d.mode));
-        self.resolution.set_selected(RESOLUTIONS.iter().position(|r| *r == d.resolution()).unwrap_or(0) as u32);
+        self.resolution.set_selected(
+            RESOLUTIONS
+                .iter()
+                .position(|r| *r == d.resolution())
+                .unwrap_or(0) as u32,
+        );
         self.width.set_value(f64::from(d.custom_width));
         self.height.set_value(f64::from(d.custom_height));
-        let nearest = (0..SCALES.len()).min_by_key(|&i| SCALES[i].abs_diff(d.scale)).unwrap_or(4);
+        let nearest = (0..SCALES.len())
+            .min_by_key(|&i| SCALES[i].abs_diff(d.scale))
+            .unwrap_or(4);
         self.scale.set_selected(nearest as u32);
         self.osk.set_value(f64::from(d.osk_height));
-        let q = (0..QUALITIES.len()).min_by_key(|&i| QUALITIES[i].0.abs_diff(d.bitrate)).unwrap_or(2);
+        let q = (0..QUALITIES.len())
+            .min_by_key(|&i| QUALITIES[i].0.abs_diff(d.bitrate))
+            .unwrap_or(2);
         self.quality.set_selected(q as u32);
-        let f = (0..FRAME_RATES.len()).min_by_key(|&i| FRAME_RATES[i].abs_diff(d.fps)).unwrap_or(2);
+        let f = (0..FRAME_RATES.len())
+            .min_by_key(|&i| FRAME_RATES[i].abs_diff(d.fps))
+            .unwrap_or(2);
         self.fps.set_selected(f as u32);
         self.audio.set_active(d.audio);
         self.rotate.set_active(d.follow_rotation);
@@ -1275,7 +1505,10 @@ impl DisplayPage {
         let (active, checks_due) = {
             let st = self.st.borrow();
             let active = st.pending.is_some() || !st.sessions.is_empty() || st.announce.is_some();
-            (active, st.outputs_at.is_none_or(|t| t.elapsed() >= OUTPUTS_EVERY))
+            (
+                active,
+                st.outputs_at.is_none_or(|t| t.elapsed() >= OUTPUTS_EVERY),
+            )
         };
         let visible = self.visible.get();
         if visible || active {
@@ -1318,20 +1551,28 @@ impl DisplayPage {
             st.signalled.retain(|p| pids.contains(p));
             let now = Instant::now();
             match st.pending {
-                Some(Pending::Starting { pid, since }) if pids.contains(&pid) || since.elapsed() > START_GRACE => st.pending = None,
+                Some(Pending::Starting { pid, since })
+                    if pids.contains(&pid) || since.elapsed() > START_GRACE =>
+                {
+                    st.pending = None
+                }
                 Some(Pending::Stopping { since }) => {
                     if pids.is_empty() {
                         st.pending = None;
                     } else if since.elapsed() > STOP_TIMEOUT {
                         st.pending = None;
-                        toasts.push("The phone display is still running; press Stop again".to_owned());
+                        toasts.push(
+                            "The phone display is still running; press Stop again".to_owned(),
+                        );
                     }
                 }
                 Some(Pending::Restarting { since, gone_at }) => {
                     if !pids.is_empty() {
                         if since.elapsed() > STOP_TIMEOUT {
                             st.pending = None;
-                            toasts.push("The old session did not stop, so nothing was restarted".to_owned());
+                            toasts.push(
+                                "The old session did not stop, so nothing was restarted".to_owned(),
+                            );
                         }
                     } else if let Some(gone) = gone_at {
                         if gone.elapsed() >= RESTART_GAP {
@@ -1339,7 +1580,10 @@ impl DisplayPage {
                             start_again = true;
                         }
                     } else {
-                        st.pending = Some(Pending::Restarting { since, gone_at: Some(now) });
+                        st.pending = Some(Pending::Restarting {
+                            since,
+                            gone_at: Some(now),
+                        });
                     }
                 }
                 _ => {}
@@ -1358,14 +1602,19 @@ impl DisplayPage {
                 interrupt(own);
                 st.signalled.push(own);
                 st.pending = Some(Pending::Stopping { since: now });
-                toasts.push(format!("Phone display failed: {}", st.log.error.as_deref().unwrap_or("unknown error")));
+                toasts.push(format!(
+                    "Phone display failed: {}",
+                    st.log.error.as_deref().unwrap_or("unknown error")
+                ));
             }
             if let Some(pid) = st.announce.filter(|pid| !pids.contains(pid)) {
                 st.announce = None;
                 if st.log.pid == Some(pid) {
                     match outcome(&st.log) {
                         Some(Outcome::Stopped(r)) => toasts.push(format!("Phone display: {r}")),
-                        Some(Outcome::Failed(e)) => toasts.push(format!("Phone display failed: {e}")),
+                        Some(Outcome::Failed(e)) => {
+                            toasts.push(format!("Phone display failed: {e}"))
+                        }
                         None => {}
                     }
                 }
@@ -1436,7 +1685,11 @@ impl DisplayPage {
             };
             let mut labels = vec![automatic.to_owned()];
             if let Some(Ok(outs)) = &st.outputs {
-                for o in outs.list.iter().filter(|o| !o.is_internal && (outs.spare_output() || !o.is_virtual)) {
+                for o in outs
+                    .list
+                    .iter()
+                    .filter(|o| !o.is_internal && (outs.spare_output() || !o.is_virtual))
+                {
                     choices.push(o.name.clone());
                     labels.push(o.label.clone());
                 }
@@ -1446,7 +1699,10 @@ impl DisplayPage {
                 labels.push(format!("{saved} (not connected)"));
             }
             let selected = choices.iter().position(|c| *c == saved).unwrap_or(0);
-            if choices == st.output_choices && labels == st.output_labels && self.output.selected() as usize == selected {
+            if choices == st.output_choices
+                && labels == st.output_labels
+                && self.output.selected() as usize == selected
+            {
                 return;
             }
             (choices, labels, selected)
@@ -1492,7 +1748,10 @@ impl DisplayPage {
     /// reported, else the shape of the stream); `None` when no session runs.
     pub fn phone_landscape(&self) -> Option<bool> {
         let st = self.st.borrow();
-        let logged = st.log.pid.is_some_and(|p| st.sessions.iter().any(|r| r.pid == p));
+        let logged = st
+            .log
+            .pid
+            .is_some_and(|p| st.sessions.iter().any(|r| r.pid == p));
         if !logged {
             return None;
         }
@@ -1526,11 +1785,20 @@ impl DisplayPage {
         if opts.mode != Mode::Extend {
             return None;
         }
-        let Some(Ok(outputs)) = &st.outputs else { return None };
+        let Some(Ok(outputs)) = &st.outputs else {
+            return None;
+        };
         match &opts.output {
-            None if outputs.spare_output() && !outputs.has_virtual() => Some("Extend needs a virtual output (see the hint below)".into()),
-            None if !outputs.can_extend() => Some(format!("Extend is not available on {} (see the hint below)", outputs.desktop)),
-            Some(name) if !outputs.list.iter().any(|o| &o.name == name) => Some(format!("{name} is not connected")),
+            None if outputs.spare_output() && !outputs.has_virtual() => {
+                Some("Extend needs a virtual output (see the hint below)".into())
+            }
+            None if !outputs.can_extend() => Some(format!(
+                "Extend is not available on {} (see the hint below)",
+                outputs.desktop
+            )),
+            Some(name) if !outputs.list.iter().any(|o| &o.name == name) => {
+                Some(format!("{name} is not connected"))
+            }
             _ => None,
         }
     }
@@ -1557,12 +1825,20 @@ impl DisplayPage {
         };
         // The flags of this very build (normally read already when the page was shown).
         let flags = {
-            let cached = self.st.borrow().flags.clone().filter(|f| f.from.as_ref() == Some(&stamp));
+            let cached = self
+                .st
+                .borrow()
+                .flags
+                .clone()
+                .filter(|f| f.from.as_ref() == Some(&stamp));
             cached.unwrap_or_else(|| read_flags(stamp))
         };
         // A start from the phone later uses the same choices.
         if let Err(e) = prefs::save_shared(&display) {
-            eprintln!("smartconnect-gui: could not write {}: {e}", prefs::display_path().display());
+            eprintln!(
+                "smartconnect-gui: could not write {}: {e}",
+                prefs::display_path().display()
+            );
         }
         match spawn(&bin, &opts.args(&flags), &log_path()) {
             Ok(mut child) => {
@@ -1572,7 +1848,10 @@ impl DisplayPage {
                     st.flags = Some(flags);
                     st.own = Some((pid, opts));
                     st.announce = None;
-                    st.pending = Some(Pending::Starting { pid, since: Instant::now() });
+                    st.pending = Some(Pending::Starting {
+                        pid,
+                        since: Instant::now(),
+                    });
                     // The wrapper rewrites the log: forget the previous session's.
                     st.log = LogState::default();
                     st.log_stamp = None;
@@ -1601,7 +1880,14 @@ impl DisplayPage {
                 }
             }
             let since = Instant::now();
-            st.pending = Some(if restart { Pending::Restarting { since, gone_at: None } } else { Pending::Stopping { since } });
+            st.pending = Some(if restart {
+                Pending::Restarting {
+                    since,
+                    gone_at: None,
+                }
+            } else {
+                Pending::Stopping { since }
+            });
         }
         self.refresh();
         self.poll_now();
@@ -1629,16 +1915,24 @@ impl DisplayPage {
         let running = st.sessions.first();
         let log = &st.log;
         // The log describes the running session when its pid matches (we or the Noctalia plugin started it).
-        let logged = running.is_some() && log.pid.is_some_and(|p| st.sessions.iter().any(|r| r.pid == p));
+        let logged = running.is_some()
+            && log
+                .pid
+                .is_some_and(|p| st.sessions.iter().any(|r| r.pid == p));
         let blocked = Self::blocked(&st, &desired);
 
         let mut detail_error = false;
         let (status, detail): (String, String) = match (&st.pending, running) {
-            (Some(Pending::Restarting { .. }), _) => ("Restarting…".into(), "Applying the new settings".into()),
-            (Some(Pending::Stopping { .. }), Some(_)) => ("Stopping…".into(), "Telling the phone to stop".into()),
-            (Some(Pending::Starting { .. }), _) if !logged => {
-                ("Starting…".into(), "Asking the phone to open its display view".into())
+            (Some(Pending::Restarting { .. }), _) => {
+                ("Restarting…".into(), "Applying the new settings".into())
             }
+            (Some(Pending::Stopping { .. }), Some(_)) => {
+                ("Stopping…".into(), "Telling the phone to stop".into())
+            }
+            (Some(Pending::Starting { .. }), _) if !logged => (
+                "Starting…".into(),
+                "Asking the phone to open its display view".into(),
+            ),
             (_, Some(r)) if logged => {
                 let opts = st.running_opts(r);
                 let target = log.output.clone().or_else(|| opts.output.clone());
@@ -1654,11 +1948,20 @@ impl DisplayPage {
                     };
                     (format!("Streaming{size} to the phone"), what)
                 } else if log.lost {
-                    ("Connection interrupted".to_owned(), "Waiting for the phone…".to_owned())
+                    (
+                        "Connection interrupted".to_owned(),
+                        "Waiting for the phone…".to_owned(),
+                    )
                 } else if log.size.is_some() {
-                    ("Connecting…".to_owned(), "The phone answered; starting the stream".to_owned())
+                    (
+                        "Connecting…".to_owned(),
+                        "The phone answered; starting the stream".to_owned(),
+                    )
                 } else {
-                    ("Waiting for the phone…".to_owned(), "Smart Connect on the phone opens its display view".to_owned())
+                    (
+                        "Waiting for the phone…".to_owned(),
+                        "Smart Connect on the phone opens its display view".to_owned(),
+                    )
                 };
                 if let Some(e) = &log.error {
                     detail = e.clone();
@@ -1666,7 +1969,13 @@ impl DisplayPage {
                 }
                 (status, detail)
             }
-            (_, Some(r)) => ("Running".into(), format!("Started outside Smart Connect: {}", st.running_opts(r).summary())),
+            (_, Some(r)) => (
+                "Running".into(),
+                format!(
+                    "Started outside Smart Connect: {}",
+                    st.running_opts(r).summary()
+                ),
+            ),
             (_, None) => {
                 let detail = if !st.connected {
                     "Connect the phone to start".to_owned()
@@ -1696,7 +2005,8 @@ impl DisplayPage {
 
         // Start / Stop and Apply.
         let restarting = matches!(st.pending, Some(Pending::Restarting { .. }));
-        let stopping = matches!(st.pending, Some(Pending::Stopping { .. })) || (logged && log.stopped.is_some());
+        let stopping = matches!(st.pending, Some(Pending::Stopping { .. }))
+            || (logged && log.stopped.is_some());
         let starting = matches!(st.pending, Some(Pending::Starting { .. }));
         let (label, sensitive, destructive) = if restarting {
             ("Restarting…", false, false)
@@ -1711,7 +2021,11 @@ impl DisplayPage {
         self.start.set_sensitive(sensitive);
         // Sessions are started with the Cross Control cards above; this button only stops one.
         self.start.set_visible(label != "Start");
-        self.start.set_tooltip_text(if running.is_none() { blocked.as_deref() } else { None });
+        self.start.set_tooltip_text(if running.is_none() {
+            blocked.as_deref()
+        } else {
+            None
+        });
         if destructive {
             self.start.remove_css_class("suggested-action");
             self.start.add_css_class("destructive-action");
@@ -1724,7 +2038,8 @@ impl DisplayPage {
             Some((pid, asked)) if *pid == r.pid => !asked.same_as(&desired),
             _ => !st.running_opts(r).same_as(&desired),
         });
-        self.apply.set_visible(differs && st.pending.is_none() && !stopping);
+        self.apply
+            .set_visible(differs && st.pending.is_none() && !stopping);
         self.apply.set_sensitive(blocked.is_none());
 
         // Settings rows.
@@ -1749,7 +2064,9 @@ impl DisplayPage {
             _ => None,
         };
         self.output.set_subtitle(match listed {
-            _ if !d.output.is_empty() => "Switched on at the stream size while sharing, off again afterwards",
+            _ if !d.output.is_empty() => {
+                "Switched on at the stream size while sharing, off again afterwards"
+            }
             Some(o) if o.spare_output() => "The first virtual (vkms) output, e.g. Virtual-1",
             _ => "A screen made for the phone, removed again afterwards",
         });
@@ -1764,13 +2081,22 @@ impl DisplayPage {
             _ => None,
         };
         self.vkms_hint.set_visible(vkms);
-        self.output_hint.set_visible(missing || unsupported || list_error.is_some());
+        self.output_hint
+            .set_visible(missing || unsupported || list_error.is_some());
         if missing {
-            self.output_hint.set_title(&glib::markup_escape_text(&format!("{} is not connected", d.output)));
-            self.output_hint.set_subtitle("Plug it in, or choose another output under Advanced.");
+            self.output_hint
+                .set_title(&glib::markup_escape_text(&format!(
+                    "{} is not connected",
+                    d.output
+                )));
+            self.output_hint
+                .set_subtitle("Plug it in, or choose another output under Advanced.");
         } else if unsupported {
             let desktop = listed.map_or("This desktop", |o| o.desktop.as_str());
-            self.output_hint.set_title(&glib::markup_escape_text(&format!("{desktop} cannot add a screen for the phone")));
+            self.output_hint
+                .set_title(&glib::markup_escape_text(&format!(
+                    "{desktop} cannot add a screen for the phone"
+                )));
             self.output_hint.set_subtitle(
                 "Extend works on GNOME, KDE Plasma, Hyprland, sway and niri. Here, connect a spare monitor or \
                  an HDMI dummy plug and choose it under Advanced, or use Duplicate.",
@@ -1782,7 +2108,8 @@ impl DisplayPage {
         // GNOME: the keyboard button turns on GNOME's own screen keyboard, no wvkbd needed.
         let osk_missing = st.osk_missing && !listed.is_some_and(|o| o.desktop == "GNOME");
         self.osk_hint.set_visible(osk_missing);
-        self.hints.set_visible(vkms || unsupported || missing || list_error.is_some() || osk_missing);
+        self.hints
+            .set_visible(vkms || unsupported || missing || list_error.is_some() || osk_missing);
     }
 }
 
@@ -1795,7 +2122,10 @@ mod tests {
     }
 
     fn flags(names: &[&str]) -> Flags {
-        Flags { from: None, names: names.iter().map(|s| (*s).to_owned()).collect() }
+        Flags {
+            from: None,
+            names: names.iter().map(|s| (*s).to_owned()).collect(),
+        }
     }
 
     /// Three generations of the helper: no keyboard height; `--osk-height`; reads display.json.
@@ -1804,13 +2134,29 @@ mod tests {
     }
 
     fn old_helper() -> Flags {
-        flags(&["--mode", "--size", "--display-scale", "--output", "--osk-height"])
+        flags(&[
+            "--mode",
+            "--size",
+            "--display-scale",
+            "--output",
+            "--osk-height",
+        ])
     }
 
     fn new_helper() -> Flags {
         flags(&[
-            "--mode", "--size", "--display-scale", "--output", "--osk-height", "--audio", "--no-audio", "--follow-rotation",
-            "--no-follow-rotation", "--config", "--no-config", "--replace",
+            "--mode",
+            "--size",
+            "--display-scale",
+            "--output",
+            "--osk-height",
+            "--audio",
+            "--no-audio",
+            "--follow-rotation",
+            "--no-follow-rotation",
+            "--config",
+            "--no-config",
+            "--replace",
         ])
     }
 
@@ -1828,7 +2174,11 @@ mod tests {
         assert_eq!(screens[0].description, "Microstep 27\"");
         assert_eq!(screens[0].rect, (0, 0, 2560, 1440));
         assert!(screens[0].primary);
-        assert_eq!(screens[1].rect, (250, 1440, 1920, 1080), "the laptop panel is below and offset");
+        assert_eq!(
+            screens[1].rect,
+            (250, 1440, 1920, 1080),
+            "the laptop panel is below and offset"
+        );
         assert!(!screens[1].primary);
         // An older helper sends no rects: no screens to draw (one generic screen is used instead).
         let old = br#"{"desktop":"GNOME","extend":"virtual","outputs":[{"name":"HDMI-1","description":"x","enabled":true}]}"#;
@@ -1839,17 +2189,55 @@ mod tests {
     fn prefs_to_args_and_back() {
         let mut d = DisplayPrefs::default();
         let o = Opts::from_prefs(&d);
-        assert_eq!(o.args(&oldest()), strings(&["--mode", "extend", "--size", "native", "--display-scale", "2"]));
-        assert_eq!(o.args(&old_helper()), strings(&["--mode", "extend", "--size", "native", "--display-scale", "2", "--osk-height", "45"]));
+        assert_eq!(
+            o.args(&oldest()),
+            strings(&[
+                "--mode",
+                "extend",
+                "--size",
+                "native",
+                "--display-scale",
+                "2"
+            ])
+        );
+        assert_eq!(
+            o.args(&old_helper()),
+            strings(&[
+                "--mode",
+                "extend",
+                "--size",
+                "native",
+                "--display-scale",
+                "2",
+                "--osk-height",
+                "45"
+            ])
+        );
         assert_eq!(
             o.args(&new_helper()),
             strings(&[
-                "--mode", "extend", "--size", "native", "--display-scale", "2", "--output", "auto", "--osk-height", "45", "--no-audio",
+                "--mode",
+                "extend",
+                "--size",
+                "native",
+                "--display-scale",
+                "2",
+                "--output",
+                "auto",
+                "--osk-height",
+                "45",
+                "--no-audio",
                 "--no-follow-rotation",
             ])
         );
-        assert!(Opts::parse(&o.args(&oldest()), Opts::cli_defaults()).same_as(&o), "flags an older helper lacks don't count");
-        assert!(Opts::parse(&o.args(&new_helper()), Opts::cli_defaults()).same_as(&o), "a newer helper's command line says it all");
+        assert!(
+            Opts::parse(&o.args(&oldest()), Opts::cli_defaults()).same_as(&o),
+            "flags an older helper lacks don't count"
+        );
+        assert!(
+            Opts::parse(&o.args(&new_helper()), Opts::cli_defaults()).same_as(&o),
+            "a newer helper's command line says it all"
+        );
 
         d.scale = 150;
         d.output = "HDMI-A-1".into();
@@ -1860,7 +2248,18 @@ mod tests {
         let o = Opts::from_prefs(&d);
         assert_eq!(
             o.args(&old_helper()),
-            strings(&["--mode", "extend", "--size", "1280x720", "--display-scale", "1.5", "--output", "HDMI-A-1", "--osk-height", "45"])
+            strings(&[
+                "--mode",
+                "extend",
+                "--size",
+                "1280x720",
+                "--display-scale",
+                "1.5",
+                "--output",
+                "HDMI-A-1",
+                "--osk-height",
+                "45"
+            ])
         );
         assert!(o.args(&new_helper()).contains(&AUDIO_FLAG.to_owned()));
         assert!(Opts::parse(&o.args(&new_helper()), Opts::cli_defaults()).same_as(&o));
@@ -1871,7 +2270,16 @@ mod tests {
         assert_eq!(o.args(&oldest()), strings(&["--mode", "mirror"]));
         assert_eq!(
             o.args(&new_helper()),
-            strings(&["--mode", "mirror", "--size", "requested", "--osk-height", "45", "--audio", "--no-follow-rotation"])
+            strings(&[
+                "--mode",
+                "mirror",
+                "--size",
+                "requested",
+                "--osk-height",
+                "45",
+                "--audio",
+                "--no-follow-rotation"
+            ])
         );
         assert!(Opts::parse(&o.args(&oldest()), Opts::cli_defaults()).same_as(&o));
         assert!(Opts::parse(&o.args(&new_helper()), Opts::cli_defaults()).same_as(&o));
@@ -1880,20 +2288,60 @@ mod tests {
     #[test]
     fn running_sessions_compare() {
         // Without a settings file a bare start is a duplicate at the phone's size.
-        let mut d = DisplayPrefs { mode: "mirror".into(), ..DisplayPrefs::default() };
+        let mut d = DisplayPrefs {
+            mode: "mirror".into(),
+            ..DisplayPrefs::default()
+        };
         assert!(Opts::parse(&[], Opts::cli_defaults()).same_as(&Opts::from_prefs(&d)));
         // `--display-scale 150%` equals 1.5; a missing one is the default 200 %.
         d.mode = "extend".into();
         d.scale = 150;
         let want = Opts::from_prefs(&d);
         let cli = |a: &[&str]| Opts::parse(&strings(a), Opts::cli_defaults());
-        assert!(cli(&["--mode", "extend", "--size", "native", "--display-scale", "150%"]).same_as(&want));
+        assert!(cli(&[
+            "--mode",
+            "extend",
+            "--size",
+            "native",
+            "--display-scale",
+            "150%"
+        ])
+        .same_as(&want));
         assert!(!cli(&["--mode", "extend", "--size", "native"]).same_as(&want));
         // A different keyboard height on the command line differs; none at all does not.
-        assert!(!cli(&["--mode", "extend", "--size", "native", "--display-scale", "1.5", "--osk-height", "60"]).same_as(&want));
+        assert!(!cli(&[
+            "--mode",
+            "extend",
+            "--size",
+            "native",
+            "--display-scale",
+            "1.5",
+            "--osk-height",
+            "60"
+        ])
+        .same_as(&want));
         // How it was started is no difference; what it shows is.
-        assert!(cli(&["--replace", "--config", "/x.json", "--mode", "extend", "--size", "native", "--display-scale", "1.5"]).same_as(&want));
-        let test = cli(&["--mode", "extend", "--size", "native", "--display-scale", "1.5", "--test-pattern"]);
+        assert!(cli(&[
+            "--replace",
+            "--config",
+            "/x.json",
+            "--mode",
+            "extend",
+            "--size",
+            "native",
+            "--display-scale",
+            "1.5"
+        ])
+        .same_as(&want));
+        let test = cli(&[
+            "--mode",
+            "extend",
+            "--size",
+            "native",
+            "--display-scale",
+            "1.5",
+            "--test-pattern",
+        ]);
         assert!(!test.same_as(&want));
         assert!(test.summary().contains("--test-pattern"));
         // A newer helper fills the gaps from display.json, i.e. these very choices (a start from the phone).
@@ -1909,11 +2357,29 @@ mod tests {
     fn running_opts_follow_the_helper() {
         let mut st = State::default();
         st.prefs.display.mode = "extend".into();
-        let bare = Running { pid: 1, args: Vec::new() };
-        assert_eq!(st.running_opts(&bare).mode, Mode::Mirror, "older helper: its own default");
+        let bare = Running {
+            pid: 1,
+            args: Vec::new(),
+        };
+        assert_eq!(
+            st.running_opts(&bare).mode,
+            Mode::Mirror,
+            "older helper: its own default"
+        );
         st.flags = Some(new_helper());
-        assert_eq!(st.running_opts(&bare).mode, Mode::Extend, "newer helper: display.json");
-        assert_eq!(st.running_opts(&Running { pid: 2, args: strings(&["--no-config"]) }).mode, Mode::Mirror);
+        assert_eq!(
+            st.running_opts(&bare).mode,
+            Mode::Extend,
+            "newer helper: display.json"
+        );
+        assert_eq!(
+            st.running_opts(&Running {
+                pid: 2,
+                args: strings(&["--no-config"])
+            })
+            .mode,
+            Mode::Mirror
+        );
     }
 
     #[test]
@@ -1931,10 +2397,15 @@ mod tests {
         assert_eq!(s.size, Some((1280, 720)));
         assert_eq!(s.output.as_deref(), Some("Virtual-1"));
         assert!(s.streaming && !s.lost);
-        assert_eq!(s.error, None, "an error before the stream came up is dropped");
+        assert_eq!(
+            s.error, None,
+            "an error before the stream came up is dropped"
+        );
         assert!(matches!(outcome(&s), Some(Outcome::Stopped(r)) if r.starts_with("ended")));
 
-        let s = parse_log(&format!("{log}← phone cmd 52: {{\"stopFrom\":0}}\nstopping: the phone stopped screen sharing\n"));
+        let s = parse_log(&format!(
+            "{log}← phone cmd 52: {{\"stopFrom\":0}}\nstopping: the phone stopped screen sharing\n"
+        ));
         assert!(matches!(outcome(&s), Some(Outcome::Stopped(r)) if r == "stopped on the phone"));
         let s = parse_log(&format!("{log}stopping: signal\n"));
         assert!(matches!(outcome(&s), Some(Outcome::Stopped(r)) if r == "stopped from this PC"));
@@ -1944,9 +2415,13 @@ mod tests {
 
     #[test]
     fn log_orientation() {
-        let s = parse_log("pid 7\nphone panel 1220x2712, asks for 1920x1080@Some(60); sending 2712x1220\n");
+        let s = parse_log(
+            "pid 7\nphone panel 1220x2712, asks for 1920x1080@Some(60); sending 2712x1220\n",
+        );
         assert_eq!((s.landscape, s.size), (None, Some((2712, 1220))));
-        let s = parse_log("pid 7\n← phone cmd 7: {\"setOrientation\":2}\n← phone cmd 7: {\"setOrientation\":1}\n");
+        let s = parse_log(
+            "pid 7\n← phone cmd 7: {\"setOrientation\":2}\n← phone cmd 7: {\"setOrientation\":1}\n",
+        );
         assert_eq!(s.landscape, Some(true));
         let s = parse_log("pid 7\n← phone cmd 7: {\"setOrientation\":2}\n");
         assert_eq!(s.landscape, Some(false));
@@ -1959,14 +2434,21 @@ mod tests {
              svc 202: no virtual output for extend mode: run `sudo modprobe vkms`\n",
         );
         assert!(s.fatal);
-        assert!(matches!(outcome(&s), Some(Outcome::Failed(e)) if e.starts_with("no virtual output")));
+        assert!(
+            matches!(outcome(&s), Some(Outcome::Failed(e)) if e.starts_with("no virtual output"))
+        );
 
         // A newer helper stops itself after a failed offer; the error is still the reason shown.
         let s = parse_log("pid 7\nsvc 202: no virtual output for extend mode\nstopping: could not start the stream\n");
-        assert!(matches!(outcome(&s), Some(Outcome::Failed(e)) if e == "no virtual output for extend mode"));
+        assert!(
+            matches!(outcome(&s), Some(Outcome::Failed(e)) if e == "no virtual output for extend mode")
+        );
 
         let s = parse_log("pid 7\nError: is smartconnectd running?\n\nCaused by:\n    No such file or directory (os error 2)\n");
-        assert_eq!(s.error.as_deref(), Some("is smartconnectd running? (No such file or directory (os error 2))"));
+        assert_eq!(
+            s.error.as_deref(),
+            Some("is smartconnectd running? (No such file or directory (os error 2))")
+        );
         assert!(!s.fatal);
 
         let s = parse_log("pid 7\nError: unknown argument --osk-height\nusage: smartconnect-display [--mode mirror|extend]\n");
@@ -1991,7 +2473,8 @@ mod tests {
     /// unique name (so a real smartconnect-display that may be running is never matched or signalled).
     #[test]
     fn stub_session_start_detect_stop() {
-        let dir = std::env::temp_dir().join(format!("smartconnect-gui-test-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("smartconnect-gui-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let name = format!("fake-display-{}", std::process::id());
         let bin = dir.join(&name);
@@ -2018,10 +2501,17 @@ mod tests {
             if streaming && snap.sessions.iter().any(|r| r.pid == pid) {
                 break snap;
             }
-            assert!(Instant::now() < deadline, "the stand-in never showed up as streaming");
+            assert!(
+                Instant::now() < deadline,
+                "the stand-in never showed up as streaming"
+            );
             std::thread::sleep(Duration::from_millis(50));
         };
-        assert!(snap.sessions.iter().find(|r| r.pid == pid).is_some_and(|r| Opts::parse(&r.args, Opts::cli_defaults()).same_as(&opts)));
+        assert!(snap
+            .sessions
+            .iter()
+            .find(|r| r.pid == pid)
+            .is_some_and(|r| Opts::parse(&r.args, Opts::cli_defaults()).same_as(&opts)));
         let (_, state) = snap.log.unwrap();
         assert_eq!((state.pid, state.size), (Some(pid), Some((2712, 1220))));
 
@@ -2030,7 +2520,9 @@ mod tests {
         let snap = snapshot(&name, &log, None);
         assert!(snap.sessions.is_empty());
         let (_, state) = snap.log.unwrap();
-        assert!(matches!(outcome(&state), Some(Outcome::Stopped(r)) if r == "stopped from this PC"));
+        assert!(
+            matches!(outcome(&state), Some(Outcome::Stopped(r)) if r == "stopped from this PC")
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2038,25 +2530,38 @@ mod tests {
     /// them itself, and counting them flashed "Phone as display" between Off and Running.
     #[test]
     fn output_queries_are_not_sessions() {
-        let dir = std::env::temp_dir().join(format!("smartconnect-gui-query-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("smartconnect-gui-query-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let name = format!("fake-query-{}", std::process::id());
         let bin = dir.join(&name);
         std::fs::write(&bin, "#!/bin/sh\nwhile :; do sleep 0.05; done\n").unwrap();
         std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
 
-        let mut session = Command::new(&bin).args(["--mode", "mirror"]).spawn().unwrap();
+        let mut session = Command::new(&bin)
+            .args(["--mode", "mirror"])
+            .spawn()
+            .unwrap();
         let mut listing = Command::new(&bin).arg("--list-outputs").spawn().unwrap();
         let mut help = Command::new(&bin).arg("--help").spawn().unwrap();
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
             let found = running_sessions(&name);
             if found.iter().any(|r| r.pid == session.id()) {
-                assert!(!found.iter().any(|r| r.pid == listing.id()), "--list-outputs is not a session");
-                assert!(!found.iter().any(|r| r.pid == help.id()), "--help is not a session");
+                assert!(
+                    !found.iter().any(|r| r.pid == listing.id()),
+                    "--list-outputs is not a session"
+                );
+                assert!(
+                    !found.iter().any(|r| r.pid == help.id()),
+                    "--help is not a session"
+                );
                 break;
             }
-            assert!(Instant::now() < deadline, "the stand-in session never showed up in /proc");
+            assert!(
+                Instant::now() < deadline,
+                "the stand-in session never showed up in /proc"
+            );
             std::thread::sleep(Duration::from_millis(50));
         }
         let _ = session.kill();
@@ -2071,7 +2576,9 @@ mod tests {
     #[test]
     fn help_text_flags() {
         let names = flag_names("usage: x [--mode mirror|extend] [--osk-height PCT]\n  --size WxH  stream size; 'native'");
-        assert!(names.contains("--osk-height") && names.contains("--mode") && names.contains("--size"));
+        assert!(
+            names.contains("--osk-height") && names.contains("--mode") && names.contains("--size")
+        );
         assert!(!names.contains(AUDIO_FLAG));
     }
 }

@@ -55,7 +55,11 @@ pub async fn list_root(id: &Identity, t: &MountTarget) -> Result<()> {
         dircount: 8192,
         maxcount: 32768,
     };
-    match conn.readdirplus(&args).await.context("READDIRPLUS on the root")? {
+    match conn
+        .readdirplus(&args)
+        .await
+        .context("READDIRPLUS on the root")?
+    {
         Nfs3Result::Ok(ok) => {
             for entry in ok.reply.entries.into_inner() {
                 println!("{}", String::from_utf8_lossy(entry.name.0.as_ref()));

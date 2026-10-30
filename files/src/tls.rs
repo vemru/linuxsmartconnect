@@ -73,7 +73,9 @@ impl ServerCertVerifier for FingerprintVerifier {
     }
 
     fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
-        self.provider.signature_verification_algorithms.supported_schemes()
+        self.provider
+            .signature_verification_algorithms
+            .supported_schemes()
     }
 }
 
@@ -145,7 +147,10 @@ impl TlsNfsConnector {
         }
     }
 
-    async fn tls(&self, stream: TcpStream) -> std::io::Result<TokioIo<tokio_rustls::client::TlsStream<TcpStream>>> {
+    async fn tls(
+        &self,
+        stream: TcpStream,
+    ) -> std::io::Result<TokioIo<tokio_rustls::client::TlsStream<TcpStream>>> {
         let connector = TlsConnector::from(self.config.clone());
         let tls = connector.connect(self.server_name.clone(), stream).await?;
         Ok(TokioIo::new(tls))
@@ -166,7 +171,10 @@ impl Connector for TlsNfsConnector {
         local_port: u16,
     ) -> std::io::Result<Self::Connection> {
         let socket = TcpSocket::new_v4()?;
-        socket.bind(SocketAddr::new(std::net::Ipv4Addr::UNSPECIFIED.into(), local_port))?;
+        socket.bind(SocketAddr::new(
+            std::net::Ipv4Addr::UNSPECIFIED.into(),
+            local_port,
+        ))?;
         let stream = socket.connect(addr).await?;
         self.tls(stream).await
     }

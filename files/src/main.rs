@@ -40,16 +40,22 @@ fn main() -> Result<()> {
     let cmd = args.get(1).map(String::as_str);
     match cmd {
         Some("fingerprint") => {
-            let dir = flag(&args, "--state-dir").map(PathBuf::from).unwrap_or_else(Identity::default_dir);
+            let dir = flag(&args, "--state-dir")
+                .map(PathBuf::from)
+                .unwrap_or_else(Identity::default_dir);
             let id = Identity::load_or_create(&dir).context("loading the TLS identity")?;
             // Printed so the daemon / a capture harness can send it as `fp` in the cmd=1001 handshake.
             println!("{}", id.fingerprint);
             Ok(())
         }
         Some("list") => {
-            let dir = flag(&args, "--state-dir").map(PathBuf::from).unwrap_or_else(Identity::default_dir);
+            let dir = flag(&args, "--state-dir")
+                .map(PathBuf::from)
+                .unwrap_or_else(Identity::default_dir);
             let id = Identity::load_or_create(&dir).context("loading the TLS identity")?;
-            let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()?;
             rt.block_on(async {
                 let target = resolve_target(&args, &id).await?;
                 nfs::list_root(&id, &target).await
@@ -58,7 +64,9 @@ fn main() -> Result<()> {
         Some("mount") => {
             // First, before any thread exists: SIGINT/SIGTERM/SIGHUP unmount cleanly.
             fuse::install_signal_handler();
-            let dir = flag(&args, "--state-dir").map(PathBuf::from).unwrap_or_else(Identity::default_dir);
+            let dir = flag(&args, "--state-dir")
+                .map(PathBuf::from)
+                .unwrap_or_else(Identity::default_dir);
             let id = Identity::load_or_create(&dir).context("loading the TLS identity")?;
             let mountpoint = PathBuf::from(req(&args, "--mountpoint")?);
             // A crashed earlier run may have left a stale FUSE mount there: clear it lazily.
@@ -66,32 +74,57 @@ fn main() -> Result<()> {
             // Resolve the phone's NFS endpoint (via the daemon handshake) in a short-lived runtime;
             // fuse::mount then opens its own runtime for the mount session.
             let target = {
-                let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
+                let rt = tokio::runtime::Builder::new_multi_thread()
+                    .enable_all()
+                    .build()?;
                 rt.block_on(resolve_target(&args, &id))?
             };
             // Test endpoints given on the command line are reused as is on reconnect; otherwise the
             // handshake is redone through the daemon (the phone's ports change per session).
-            let source = if flag(&args, "--ip").is_some() { fuse::Source::Fixed(target.clone()) } else { fuse::Source::Daemon };
+            let source = if flag(&args, "--ip").is_some() {
+                fuse::Source::Fixed(target.clone())
+            } else {
+                fuse::Source::Daemon
+            };
             fuse::mount(id, source, &target, &mountpoint)
         }
         Some("serve") => {
-            let dir = flag(&args, "--state-dir").map(PathBuf::from).unwrap_or_else(Identity::default_dir);
+            let dir = flag(&args, "--state-dir")
+                .map(PathBuf::from)
+                .unwrap_or_else(Identity::default_dir);
             let id = Identity::load_or_create(&dir).context("loading the TLS identity")?;
-            let share = flag(&args, "--sharedir").map(PathBuf::from).unwrap_or_else(localfs::default_share_dir);
-            std::fs::create_dir_all(&share).with_context(|| format!("creating the shared dir {}", share.display()))?;
+            let share = flag(&args, "--sharedir")
+                .map(PathBuf::from)
+                .unwrap_or_else(localfs::default_share_dir);
+            std::fs::create_dir_all(&share)
+                .with_context(|| format!("creating the shared dir {}", share.display()))?;
             let port: u16 = match flag(&args, "--port") {
                 Some(s) => s.parse().context("--port")?,
                 None => 2049,
             };
             // The export name the phone sees; by default the folder's own name, e.g. `/alice`.
             let label = flag(&args, "--label").unwrap_or_else(|| {
-                format!("/{}", share.file_name().map_or("share".into(), |n| n.to_string_lossy()))
+                format!(
+                    "/{}",
+                    share
+                        .file_name()
+                        .map_or("share".into(), |n| n.to_string_lossy())
+                )
             });
             let ip_override = flag(&args, "--ip");
             let include_hidden = args.iter().any(|a| a == "--include-hidden");
             let read_only = args.iter().any(|a| a == "--read-only");
-            let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
-            let opts = ServeOptions { share, label, port, ip_override, include_hidden, allow_delete: !read_only };
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()?;
+            let opts = ServeOptions {
+                share,
+                label,
+                port,
+                ip_override,
+                include_hidden,
+                allow_delete: !read_only,
+            };
             rt.block_on(serve(id, dir, opts))
         }
         Some("-h" | "--help" | "help") => {
@@ -142,19 +175,39 @@ struct ServeOptions {
 }
 
 async fn serve(id: Identity, state_dir: PathBuf, opts: ServeOptions) -> Result<()> {
-    let ServeOptions { share, label, port, ip_override, include_hidden, allow_delete } = opts;
+    let ServeOptions {
+        share,
+        label,
+        port,
+        ip_override,
+        include_hidden,
+        allow_delete,
+    } = opts;
     // Ensure a process-default crypto provider exists (some rustls paths look it up).
     let _ = rustls::crypto::ring::default_provider().install_default();
 
     let pinned = server::new_pinned();
     let (listener, actual_port) = server::bind(port).await?;
     let ip = responder::resolve_ip(ip_override).await?;
-    let srv = server::NfsServer::new(&id, share, label.clone(), pinned.clone(), include_hidden, allow_delete)
-        .context("building the NFS-over-TLS server")?;
-    let params = responder::ReplyParams { our_fp: id.fingerprint.clone(), ip, port: actual_port, label };
+    let srv = server::NfsServer::new(
+        &id,
+        share,
+        label.clone(),
+        pinned.clone(),
+        include_hidden,
+        allow_delete,
+    )
+    .context("building the NFS-over-TLS server")?;
+    let params = responder::ReplyParams {
+        our_fp: id.fingerprint.clone(),
+        ip,
+        port: actual_port,
+        label,
+    };
 
     let mut serve_task = tokio::spawn(srv.serve(listener));
-    let mut responder_task = tokio::spawn(async move { responder::run(params, pinned, &state_dir).await });
+    let mut responder_task =
+        tokio::spawn(async move { responder::run(params, pinned, &state_dir).await });
     responder::announce_tile(true).await;
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
         .context("installing the SIGTERM handler")?;
@@ -187,12 +240,17 @@ async fn resolve_target(args: &[String], id: &Identity) -> Result<MountTarget> {
             path: flag(args, "--path").unwrap_or_else(|| "/sdcard".into()),
         });
     }
-    daemon::handshake(&id.fingerprint).await.context("the File Station handshake with the phone failed")
+    daemon::handshake(&id.fingerprint)
+        .await
+        .context("the File Station handshake with the phone failed")
 }
 
 /// Returns the value after `name` in `args`, if present (`--flag value` form).
 fn flag(args: &[String], name: &str) -> Option<String> {
-    args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned()
+    args.iter()
+        .position(|a| a == name)
+        .and_then(|i| args.get(i + 1))
+        .cloned()
 }
 
 /// Like [`flag`], but errors if the flag is missing.

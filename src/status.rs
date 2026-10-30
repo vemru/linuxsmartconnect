@@ -64,8 +64,16 @@ pub struct StatusHub {
 
 impl StatusHub {
     pub fn new(paired: bool, pairing_qr: Option<String>) -> Self {
-        let state = PhoneStatus { paired, pairing_qr, ..Default::default() };
-        Self { state: Mutex::new(state), wallpaper_md5: Mutex::new(None), changes: broadcast::channel(32).0 }
+        let state = PhoneStatus {
+            paired,
+            pairing_qr,
+            ..Default::default()
+        };
+        Self {
+            state: Mutex::new(state),
+            wallpaper_md5: Mutex::new(None),
+            changes: broadcast::channel(32).0,
+        }
     }
 
     pub fn snapshot(&self) -> String {
@@ -90,7 +98,12 @@ impl StatusHub {
         let cmd = data.get("cmd").and_then(Value::as_i64);
         let int = |k: &str| data.get(k).and_then(Value::as_i64);
         let flag = |k: &str| data.get(k).and_then(Value::as_bool).unwrap_or(false);
-        let text = |k: &str| data.get(k).and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_owned);
+        let text = |k: &str| {
+            data.get(k)
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned)
+        };
         match (service_id, cmd) {
             (25, Some(1)) => self.update(|s| {
                 s.battery = int("battery").or(s.battery);
@@ -104,24 +117,35 @@ impl StatusHub {
             }),
             (25, Some(2)) => self.save_wallpaper(data),
             (100, Some(1018)) => self.update(|s| s.unread = int("unreadCnt")),
-            (crate::notifications::SERVICE_NOTIFY | crate::notifications::SERVICE_NOTIFY_WIDGET, _) => {
-                self.apply_notification(service_id, data)
-            }
+            (
+                crate::notifications::SERVICE_NOTIFY | crate::notifications::SERVICE_NOTIFY_WIDGET,
+                _,
+            ) => self.apply_notification(service_id, data),
             _ => {}
         }
     }
 
     fn apply_notification(&self, service_id: i64, n: &Value) {
-        let Some(key) = n.get("key").and_then(Value::as_str) else { return };
+        let Some(key) = n.get("key").and_then(Value::as_str) else {
+            return;
+        };
         match n.get("event").and_then(Value::as_i64) {
             Some(0 | 1) if n.get("type").and_then(Value::as_i64) != Some(7) => {
                 let d = n.get("data").cloned().unwrap_or(Value::Null);
-                let s = |k: &str| d.get(k).and_then(Value::as_str).unwrap_or_default().to_owned();
-                let replyable = n
-                    .get("actions")
-                    .and_then(Value::as_array)
-                    .is_some_and(|a| a.iter().any(|a| a.get("remote_input").and_then(Value::as_bool) == Some(true)));
-                let title = [s("conversation_title"), s("title")].into_iter().find(|t| !t.is_empty()).unwrap_or_default();
+                let s = |k: &str| {
+                    d.get(k)
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned()
+                };
+                let replyable = n.get("actions").and_then(Value::as_array).is_some_and(|a| {
+                    a.iter()
+                        .any(|a| a.get("remote_input").and_then(Value::as_bool) == Some(true))
+                });
+                let title = [s("conversation_title"), s("title")]
+                    .into_iter()
+                    .find(|t| !t.is_empty())
+                    .unwrap_or_default();
                 let entry = PhoneNotification {
                     key: key.to_owned(),
                     service: service_id,
@@ -143,12 +167,20 @@ impl StatusHub {
     }
 
     pub fn notification_service(&self, key: &str) -> Option<i64> {
-        self.state.lock().unwrap().notifications.iter().find(|n| n.key == key).map(|n| n.service)
+        self.state
+            .lock()
+            .unwrap()
+            .notifications
+            .iter()
+            .find(|n| n.key == key)
+            .map(|n| n.service)
     }
 
     fn save_wallpaper(&self, data: &Value) {
-        let (Some(b64), md5) = (data.get("wallpaper").and_then(Value::as_str), data.get("md5").and_then(Value::as_str))
-        else {
+        let (Some(b64), md5) = (
+            data.get("wallpaper").and_then(Value::as_str),
+            data.get("md5").and_then(Value::as_str),
+        ) else {
             return;
         };
         if md5.is_some() && self.wallpaper_md5.lock().unwrap().as_deref() == md5 {
@@ -158,7 +190,11 @@ impl StatusHub {
             warn!("status: wallpaper is not base64");
             return;
         };
-        let ext = if bytes.starts_with(&[0x89, b'P', b'N', b'G']) { "png" } else { "jpg" };
+        let ext = if bytes.starts_with(&[0x89, b'P', b'N', b'G']) {
+            "png"
+        } else {
+            "jpg"
+        };
         let path = runtime_dir().join(format!("phone-wallpaper.{ext}"));
         if let Err(e) = std::fs::write(&path, &bytes) {
             warn!("status: saving wallpaper: {e}");
@@ -174,7 +210,9 @@ impl StatusHub {
 
 /// `$XDG_RUNTIME_DIR/smartconnectd/` (private, per-user, cleared on logout).
 pub fn runtime_dir() -> PathBuf {
-    let base = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
+    let base = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
     let dir = base.join("smartconnectd");
     let _ = std::fs::create_dir_all(&dir);
     dir

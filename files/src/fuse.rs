@@ -80,7 +80,10 @@ pub enum Source {
 
 /// An error that means a FUSE mount whose server is gone ("Transport endpoint is not connected").
 pub fn is_stale_error(e: &io::Error) -> bool {
-    matches!(e.raw_os_error(), Some(libc::ENOTCONN) | Some(libc::ECONNABORTED))
+    matches!(
+        e.raw_os_error(),
+        Some(libc::ENOTCONN) | Some(libc::ECONNABORTED)
+    )
 }
 
 /// `statfs(dir)`. The stale-mount test: unlike `stat`, which the kernel answers from cached
@@ -88,10 +91,15 @@ pub fn is_stale_error(e: &io::Error) -> bool {
 /// server and fails with `ENOTCONN` at once when it is gone. (Our own helper answers it locally,
 /// without a round-trip to the phone.)
 pub fn statfs(dir: &Path) -> io::Result<()> {
-    let path = std::ffi::CString::new(dir.as_os_str().as_bytes()).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
+    let path = std::ffi::CString::new(dir.as_os_str().as_bytes())
+        .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
     // SAFETY: a valid NUL-terminated path and a zeroed, writable statfs buffer.
     let mut buf: libc::statfs = unsafe { std::mem::zeroed() };
-    if unsafe { libc::statfs(path.as_ptr(), &mut buf) } == 0 { Ok(()) } else { Err(io::Error::last_os_error()) }
+    if unsafe { libc::statfs(path.as_ptr(), &mut buf) } == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
 }
 
 /// `dir` is a FUSE mount whose helper is gone.
@@ -101,7 +109,11 @@ pub fn is_stale(dir: &Path) -> bool {
 
 /// `fusermount3 -u DIR`, and `-uz` (lazy) if that fails (busy, or already stale).
 fn fusermount_unmount(dir: &Path) {
-    let ok = Command::new("fusermount3").arg("-u").arg(dir).output().is_ok_and(|o| o.status.success());
+    let ok = Command::new("fusermount3")
+        .arg("-u")
+        .arg(dir)
+        .output()
+        .is_ok_and(|o| o.status.success());
     if !ok {
         let _ = Command::new("fusermount3").arg("-uz").arg(dir).output();
     }
@@ -110,10 +122,14 @@ fn fusermount_unmount(dir: &Path) {
 /// Clears a stale FUSE mount a crashed run left at `dir` (lazy unmount), then creates `dir`.
 pub fn prepare_mountpoint(dir: &Path) -> Result<()> {
     if is_stale(dir) {
-        tracing::warn!("{} is a stale mount (transport endpoint is not connected); unmounting it first", dir.display());
+        tracing::warn!(
+            "{} is a stale mount (transport endpoint is not connected); unmounting it first",
+            dir.display()
+        );
         let _ = Command::new("fusermount3").arg("-uz").arg(dir).output();
     }
-    std::fs::create_dir_all(dir).with_context(|| format!("creating the mountpoint {}", dir.display()))
+    std::fs::create_dir_all(dir)
+        .with_context(|| format!("creating the mountpoint {}", dir.display()))
 }
 
 // ── Shutdown: signals and give-up share one unmount path ───────────────────
@@ -125,7 +141,9 @@ static SIGNALLED: AtomicBool = AtomicBool::new(false);
 
 /// Unmounts the active mount, if any (the session loop then returns). Returns whether one was active.
 fn unmount_active() -> bool {
-    let Some((dir, mut unmounter)) = ACTIVE.lock().unwrap().take() else { return false };
+    let Some((dir, mut unmounter)) = ACTIVE.lock().unwrap().take() else {
+        return false;
+    };
     if unmounter.unmount().is_err() || is_stale(&dir) {
         fusermount_unmount(&dir);
     }
@@ -150,16 +168,18 @@ pub fn install_signal_handler() {
     };
     std::thread::Builder::new()
         .name("signals".into())
-        .spawn(move || loop {
-            let mut sig: libc::c_int = 0;
-            // SAFETY: `set` is a valid, initialised sigset blocked in this thread.
-            if unsafe { libc::sigwait(&set, &mut sig) } != 0 {
-                continue;
-            }
-            tracing::info!("signal {sig}: unmounting");
-            SIGNALLED.store(true, Ordering::SeqCst);
-            if !unmount_active() {
-                std::process::exit(128 + sig);
+        .spawn(move || {
+            loop {
+                let mut sig: libc::c_int = 0;
+                // SAFETY: `set` is a valid, initialised sigset blocked in this thread.
+                if unsafe { libc::sigwait(&set, &mut sig) } != 0 {
+                    continue;
+                }
+                tracing::info!("signal {sig}: unmounting");
+                SIGNALLED.store(true, Ordering::SeqCst);
+                if !unmount_active() {
+                    std::process::exit(128 + sig);
+                }
             }
         })
         .expect("spawning the signal thread");
@@ -188,19 +208,41 @@ struct Inodes {
 enum Handle {
     Valid(nfs_fh3),
     /// From an older connection or marked stale: look `name` up in `parent` again.
-    Relookup { parent: u64, name: Vec<u8> },
+    Relookup {
+        parent: u64,
+        name: Vec<u8>,
+    },
 }
 
 impl Inodes {
     fn new(root: nfs_fh3, epoch: u64) -> Self {
         let mut nodes = HashMap::new();
-        nodes.insert(1, Node { fh: root, epoch, parent: 1, name: Vec::new() });
-        Self { next: 2, nodes, by_path: HashMap::new() }
+        nodes.insert(
+            1,
+            Node {
+                fh: root,
+                epoch,
+                parent: 1,
+                name: Vec::new(),
+            },
+        );
+        Self {
+            next: 2,
+            nodes,
+            by_path: HashMap::new(),
+        }
     }
 
     fn current(&self, ino: u64, epoch: u64) -> Option<Handle> {
         let n = self.nodes.get(&ino)?;
-        Some(if n.epoch == epoch { Handle::Valid(n.fh.clone()) } else { Handle::Relookup { parent: n.parent, name: n.name.clone() } })
+        Some(if n.epoch == epoch {
+            Handle::Valid(n.fh.clone())
+        } else {
+            Handle::Relookup {
+                parent: n.parent,
+                name: n.name.clone(),
+            }
+        })
     }
 
     /// The inode for `name` in `parent`, refreshing its handle; a new inode the first time.
@@ -215,7 +257,15 @@ impl Inodes {
         let ino = self.next;
         self.next += 1;
         self.by_path.insert((parent, name.to_vec()), ino);
-        self.nodes.insert(ino, Node { fh, epoch, parent, name: name.to_vec() });
+        self.nodes.insert(
+            ino,
+            Node {
+                fh,
+                epoch,
+                parent,
+                name: name.to_vec(),
+            },
+        );
         ino
     }
 
@@ -256,7 +306,10 @@ enum Step {
 fn next_step(down_for: Duration, phone: PhoneState, attempt_due: bool) -> Step {
     match phone {
         PhoneState::Unpaired => Step::GiveUp("the phone is no longer paired".into()),
-        _ if down_for >= GIVE_UP => Step::GiveUp(format!("the phone was unreachable for {} minutes", GIVE_UP.as_secs() / 60)),
+        _ if down_for >= GIVE_UP => Step::GiveUp(format!(
+            "the phone was unreachable for {} minutes",
+            GIVE_UP.as_secs() / 60
+        )),
         PhoneState::Connected if attempt_due => Step::Attempt,
         _ => Step::Wait,
     }
@@ -289,16 +342,25 @@ struct Core {
 impl Core {
     /// Runs one NFS call on the live connection under `timeout`. `None` when disconnected — and a
     /// timeout or transport error disconnects (the supervisor then reconnects).
-    fn rpc<T, E: std::fmt::Debug>(&self, timeout: Duration, f: impl AsyncFnOnce(&mut NfsConn) -> Result<T, E>) -> Option<T> {
+    fn rpc<T, E: std::fmt::Debug>(
+        &self,
+        timeout: Duration,
+        f: impl AsyncFnOnce(&mut NfsConn) -> Result<T, E>,
+    ) -> Option<T> {
         let mut guard = self.conn.lock().unwrap();
         let conn = guard.as_mut()?;
         // The timeout is created inside the runtime (`async` block): building it outside panics.
-        let why = match self.rt.block_on(async { tokio::time::timeout(timeout, f(conn)).await }) {
+        let why = match self
+            .rt
+            .block_on(async { tokio::time::timeout(timeout, f(conn)).await })
+        {
             Ok(Ok(v)) => return Some(v),
             Ok(Err(e)) => format!("{e:?}"),
             Err(_) => format!("no answer in {} s", timeout.as_secs()),
         };
-        tracing::warn!("lost the NFS connection to the phone ({why}); reconnecting in the background");
+        tracing::warn!(
+            "lost the NFS connection to the phone ({why}); reconnecting in the background"
+        );
         *guard = None;
         drop(guard);
         let mut down = self.down.lock().unwrap();
@@ -318,10 +380,20 @@ impl Core {
             Some(Handle::Relookup { parent, name }) => (parent, name),
         };
         let dir = self.handle(parent)?;
-        let args = LOOKUP3args { what: diropargs3 { dir, name: filename3::from(name) } };
-        match self.rpc(OP_TIMEOUT, async move |c: &mut NfsConn| c.lookup(&args).await) {
+        let args = LOOKUP3args {
+            what: diropargs3 {
+                dir,
+                name: filename3::from(name),
+            },
+        };
+        match self.rpc(OP_TIMEOUT, async move |c: &mut NfsConn| {
+            c.lookup(&args).await
+        }) {
             Some(Nfs3Result::Ok(ok)) => {
-                self.inodes.lock().unwrap().set(ino, ok.object.clone(), epoch);
+                self.inodes
+                    .lock()
+                    .unwrap()
+                    .set(ino, ok.object.clone(), epoch);
                 Ok(ok.object)
             }
             Some(Nfs3Result::Err(_)) => Err(Errno::ENOENT), // gone on the phone meanwhile
@@ -330,12 +402,18 @@ impl Core {
     }
 
     /// Runs `op` with `ino`'s handle; on `NFS3ERR_STALE` re-resolves the handle once and retries.
-    fn with_fh<T, E>(&self, ino: u64, op: impl Fn(nfs_fh3) -> Option<Nfs3Result<T, E>>) -> Result<Nfs3Result<T, E>, Errno> {
+    fn with_fh<T, E>(
+        &self,
+        ino: u64,
+        op: impl Fn(nfs_fh3) -> Option<Nfs3Result<T, E>>,
+    ) -> Result<Nfs3Result<T, E>, Errno> {
         for attempt in 0..2 {
             let fh = self.handle(ino)?;
             match op(fh) {
                 None => return Err(Errno::EIO),
-                Some(Nfs3Result::Err((nfsstat3::NFS3ERR_STALE, _))) if attempt == 0 => self.inodes.lock().unwrap().invalidate(ino),
+                Some(Nfs3Result::Err((nfsstat3::NFS3ERR_STALE, _))) if attempt == 0 => {
+                    self.inodes.lock().unwrap().invalidate(ino)
+                }
                 Some(r) => return Ok(r),
             }
         }
@@ -344,11 +422,18 @@ impl Core {
 
     /// Checks an idle connection with a `GETATTR` on the root (a failure disconnects).
     fn probe(&self) {
-        let root = match self.inodes.lock().unwrap().current(1, self.epoch.load(Ordering::SeqCst)) {
+        let root = match self
+            .inodes
+            .lock()
+            .unwrap()
+            .current(1, self.epoch.load(Ordering::SeqCst))
+        {
             Some(Handle::Valid(fh)) => fh,
             _ => return,
         };
-        let _ = self.rpc(PROBE_TIMEOUT, async move |c: &mut NfsConn| c.getattr(&GETATTR3args { object: root }).await);
+        let _ = self.rpc(PROBE_TIMEOUT, async move |c: &mut NfsConn| {
+            c.getattr(&GETATTR3args { object: root }).await
+        });
     }
 
     /// New handshake (or the fixed target), new connection, new generation.
@@ -378,7 +463,11 @@ impl Core {
         loop {
             let down_since = {
                 let guard = self.down.lock().unwrap();
-                if guard.is_none() { *self.wake.wait_timeout(guard, KEEPALIVE).unwrap().0 } else { *guard }
+                if guard.is_none() {
+                    *self.wake.wait_timeout(guard, KEEPALIVE).unwrap().0
+                } else {
+                    *guard
+                }
             };
             let Some(since) = down_since else {
                 self.probe();
@@ -392,13 +481,19 @@ impl Core {
                 Step::Wait => std::thread::sleep(STATUS_POLL),
                 Step::Attempt => match self.reconnect(&id, &source) {
                     Ok(()) => {
-                        tracing::info!("reconnected to the phone (down {} s)", since.elapsed().as_secs());
+                        tracing::info!(
+                            "reconnected to the phone (down {} s)",
+                            since.elapsed().as_secs()
+                        );
                         failures = 0;
                     }
                     Err(e) => {
                         failures += 1;
                         next_attempt = Instant::now() + backoff(failures);
-                        tracing::warn!("reconnect failed ({e:#}); retrying in {} s", backoff(failures).as_secs());
+                        tracing::warn!(
+                            "reconnect failed ({e:#}); retrying in {} s",
+                            backoff(failures).as_secs()
+                        );
                     }
                 },
                 Step::GiveUp(why) => {
@@ -451,7 +546,11 @@ pub fn mount(id: Identity, source: Source, target: &MountTarget, mountpoint: &Pa
         uid: unsafe { libc::getuid() },
         gid: unsafe { libc::getgid() },
     });
-    let fs = PhoneFs { core: core.clone(), dirs: Mutex::new(HashMap::new()), next_handle: AtomicU64::new(1) };
+    let fs = PhoneFs {
+        core: core.clone(),
+        dirs: Mutex::new(HashMap::new()),
+        next_handle: AtomicU64::new(1),
+    };
     // AutoUnmount would need AllowOther/AllowRoot (system `user_allow_other`); instead we unmount
     // ourselves on a signal or when giving up.
     let mut config = Config::default();
@@ -461,7 +560,8 @@ pub fn mount(id: Identity, source: Source, target: &MountTarget, mountpoint: &Pa
         MountOption::Subtype("smartconnect".into()),
         MountOption::DefaultPermissions,
     ];
-    let mut session = Session::new(fs, mountpoint, &config).with_context(|| format!("mounting at {}", mountpoint.display()))?;
+    let mut session = Session::new(fs, mountpoint, &config)
+        .with_context(|| format!("mounting at {}", mountpoint.display()))?;
     *ACTIVE.lock().unwrap() = Some((mountpoint.to_path_buf(), session.unmount_callable()));
     tracing::info!("mounted the phone's storage at {}", mountpoint.display());
 
@@ -490,7 +590,9 @@ impl PhoneFs {
             let dir = self.core.handle(dir_ino)?;
             match self.fetch_dir_once(&dir, dir_ino) {
                 Ok(v) => return Ok(v),
-                Err(DirErr::Stale) if attempt == 0 => self.core.inodes.lock().unwrap().invalidate(dir_ino),
+                Err(DirErr::Stale) if attempt == 0 => {
+                    self.core.inodes.lock().unwrap().invalidate(dir_ino)
+                }
                 Err(_) => return Err(Errno::EIO),
             }
         }
@@ -501,14 +603,30 @@ impl PhoneFs {
         let core = &self.core;
         let epoch = core.epoch.load(Ordering::SeqCst);
         let mut out = vec![
-            DirEntry { ino: dir_ino, name: b".".to_vec(), attr: dir_placeholder(dir_ino, core.uid, core.gid) },
-            DirEntry { ino: 1, name: b"..".to_vec(), attr: dir_placeholder(1, core.uid, core.gid) },
+            DirEntry {
+                ino: dir_ino,
+                name: b".".to_vec(),
+                attr: dir_placeholder(dir_ino, core.uid, core.gid),
+            },
+            DirEntry {
+                ino: 1,
+                name: b"..".to_vec(),
+                attr: dir_placeholder(1, core.uid, core.gid),
+            },
         ];
         let mut cookie: u64 = 0;
         let mut verf = cookieverf3::default();
         for _ in 0..MAX_DIR_PAGES {
-            let args = READDIRPLUS3args { dir: dir.clone(), cookie, cookieverf: verf, dircount: 32768, maxcount: 131072 };
-            let ok = match core.rpc(OP_TIMEOUT, async move |c: &mut NfsConn| c.readdirplus(&args).await) {
+            let args = READDIRPLUS3args {
+                dir: dir.clone(),
+                cookie,
+                cookieverf: verf,
+                dircount: 32768,
+                maxcount: 131072,
+            };
+            let ok = match core.rpc(OP_TIMEOUT, async move |c: &mut NfsConn| {
+                c.readdirplus(&args).await
+            }) {
                 Some(Nfs3Result::Ok(ok)) => ok,
                 Some(Nfs3Result::Err((nfsstat3::NFS3ERR_STALE, _))) => return Err(DirErr::Stale),
                 _ => return Err(DirErr::Io),
@@ -529,7 +647,11 @@ impl PhoneFs {
                 let Nfs3Option::Some(fh) = e.name_handle else {
                     continue; // no handle → we can't address it; skip
                 };
-                let ino = core.inodes.lock().unwrap().intern(dir_ino, &name, fh, epoch);
+                let ino = core
+                    .inodes
+                    .lock()
+                    .unwrap()
+                    .intern(dir_ino, &name, fh, epoch);
                 let attr = match e.name_attributes {
                     Nfs3Option::Some(a) => attr_of(ino, &a, core.uid, core.gid),
                     Nfs3Option::None => reg_placeholder(ino, core.uid, core.gid),
@@ -565,8 +687,15 @@ impl Filesystem for PhoneFs {
         let epoch = core.epoch.load(Ordering::SeqCst);
         let name = name.as_bytes().to_vec();
         let res = core.with_fh(parent.0, |dir| {
-            let args = LOOKUP3args { what: diropargs3 { dir, name: filename3::from(name.clone()) } };
-            core.rpc(OP_TIMEOUT, async move |c: &mut NfsConn| c.lookup(&args).await)
+            let args = LOOKUP3args {
+                what: diropargs3 {
+                    dir,
+                    name: filename3::from(name.clone()),
+                },
+            };
+            core.rpc(OP_TIMEOUT, async move |c: &mut NfsConn| {
+                c.lookup(&args).await
+            })
         });
         match res {
             Ok(Nfs3Result::Ok(ok)) => {
@@ -574,7 +703,11 @@ impl Filesystem for PhoneFs {
                     reply.error(Errno::EIO);
                     return;
                 };
-                let ino = core.inodes.lock().unwrap().intern(parent.0, &name, ok.object, epoch);
+                let ino = core
+                    .inodes
+                    .lock()
+                    .unwrap()
+                    .intern(parent.0, &name, ok.object, epoch);
                 reply.entry(&TTL, &attr_of(ino, &a, core.uid, core.gid), Generation(0));
             }
             Ok(Nfs3Result::Err(_)) => reply.error(Errno::ENOENT),
@@ -584,9 +717,16 @@ impl Filesystem for PhoneFs {
 
     fn getattr(&self, _req: &Request, ino: INodeNo, _fh: Option<FileHandle>, reply: ReplyAttr) {
         let core = &self.core;
-        let res = core.with_fh(ino.0, |object| core.rpc(OP_TIMEOUT, async move |c: &mut NfsConn| c.getattr(&GETATTR3args { object }).await));
+        let res = core.with_fh(ino.0, |object| {
+            core.rpc(OP_TIMEOUT, async move |c: &mut NfsConn| {
+                c.getattr(&GETATTR3args { object }).await
+            })
+        });
         match res {
-            Ok(Nfs3Result::Ok(ok)) => reply.attr(&TTL, &attr_of(ino.0, &ok.obj_attributes, core.uid, core.gid)),
+            Ok(Nfs3Result::Ok(ok)) => reply.attr(
+                &TTL,
+                &attr_of(ino.0, &ok.obj_attributes, core.uid, core.gid),
+            ),
             Ok(Nfs3Result::Err(_)) => reply.error(Errno::EIO),
             Err(e) => reply.error(e),
         }
@@ -603,31 +743,64 @@ impl Filesystem for PhoneFs {
         }
     }
 
-    fn releasedir(&self, _req: &Request, _ino: INodeNo, fh: FileHandle, _flags: OpenFlags, reply: ReplyEmpty) {
+    fn releasedir(
+        &self,
+        _req: &Request,
+        _ino: INodeNo,
+        fh: FileHandle,
+        _flags: OpenFlags,
+        reply: ReplyEmpty,
+    ) {
         self.dirs.lock().unwrap().remove(&fh.0);
         reply.ok();
     }
 
-    fn readdir(&self, _req: &Request, ino: INodeNo, fh: FileHandle, offset: u64, mut reply: ReplyDirectory) {
+    fn readdir(
+        &self,
+        _req: &Request,
+        ino: INodeNo,
+        fh: FileHandle,
+        offset: u64,
+        mut reply: ReplyDirectory,
+    ) {
         let Some(entries) = self.dir_entries(fh.0, ino.0) else {
             reply.error(Errno::EIO);
             return;
         };
         for (i, e) in entries.iter().enumerate().skip(offset as usize) {
-            if reply.add(INodeNo(e.ino), (i as u64) + 1, e.attr.kind, OsStr::from_bytes(&e.name)) {
+            if reply.add(
+                INodeNo(e.ino),
+                (i as u64) + 1,
+                e.attr.kind,
+                OsStr::from_bytes(&e.name),
+            ) {
                 break; // the reply buffer is full
             }
         }
         reply.ok();
     }
 
-    fn readdirplus(&self, _req: &Request, ino: INodeNo, fh: FileHandle, offset: u64, mut reply: ReplyDirectoryPlus) {
+    fn readdirplus(
+        &self,
+        _req: &Request,
+        ino: INodeNo,
+        fh: FileHandle,
+        offset: u64,
+        mut reply: ReplyDirectoryPlus,
+    ) {
         let Some(entries) = self.dir_entries(fh.0, ino.0) else {
             reply.error(Errno::EIO);
             return;
         };
         for (i, e) in entries.iter().enumerate().skip(offset as usize) {
-            if reply.add(INodeNo(e.ino), (i as u64) + 1, OsStr::from_bytes(&e.name), &TTL, &e.attr, Generation(0)) {
+            if reply.add(
+                INodeNo(e.ino),
+                (i as u64) + 1,
+                OsStr::from_bytes(&e.name),
+                &TTL,
+                &e.attr,
+                Generation(0),
+            ) {
                 break;
             }
         }
@@ -647,7 +820,14 @@ impl Filesystem for PhoneFs {
     ) {
         let core = &self.core;
         let res = core.with_fh(ino.0, |file| {
-            core.rpc(OP_TIMEOUT, async move |c: &mut NfsConn| c.read(&READ3args { file, offset, count: size }).await)
+            core.rpc(OP_TIMEOUT, async move |c: &mut NfsConn| {
+                c.read(&READ3args {
+                    file,
+                    offset,
+                    count: size,
+                })
+                .await
+            })
         });
         match res {
             Ok(Nfs3Result::Ok(ok)) => reply.data(ok.data.as_ref()),
@@ -732,14 +912,18 @@ mod tests {
     use super::*;
 
     fn fh(b: &[u8]) -> nfs_fh3 {
-        nfs_fh3 { data: b.to_vec().into() }
+        nfs_fh3 {
+            data: b.to_vec().into(),
+        }
     }
 
     #[test]
     fn stale_errors() {
-        assert!(is_stale_error(&io::Error::from_raw_os_error(libc::ENOTCONN)));
+        assert!(is_stale_error(&io::Error::from_raw_os_error(
+            libc::ENOTCONN
+        )));
         assert!(!is_stale_error(&io::Error::from_raw_os_error(libc::ENOENT)));
-        assert!(!is_stale_error(&io::Error::new(io::ErrorKind::Other, "x")));
+        assert!(!is_stale_error(&io::Error::other("x")));
         // A plain folder and a missing one are not stale.
         let dir = std::env::temp_dir();
         assert!(statfs(&dir).is_ok() && !is_stale(&dir));
@@ -756,14 +940,23 @@ mod tests {
         // New connection: root is fresh, the rest must be looked up again by (parent, name).
         ino.reset_root(fh(b"root2"), 2);
         assert_eq!(ino.current(1, 2), Some(Handle::Valid(fh(b"root2"))));
-        assert_eq!(ino.current(photo, 2), Some(Handle::Relookup { parent: dcim, name: b"a.jpg".to_vec() }));
+        assert_eq!(
+            ino.current(photo, 2),
+            Some(Handle::Relookup {
+                parent: dcim,
+                name: b"a.jpg".to_vec()
+            })
+        );
         // The same path keeps its inode number even with a new handle.
         assert_eq!(ino.intern(1, b"DCIM", fh(b"dcim2"), 2), dcim);
         assert_eq!(ino.current(dcim, 2), Some(Handle::Valid(fh(b"dcim2"))));
         // NFS3ERR_STALE: re-resolve; the root is never invalidated.
         ino.invalidate(dcim);
         ino.invalidate(1);
-        assert!(matches!(ino.current(dcim, 2), Some(Handle::Relookup { .. })));
+        assert!(matches!(
+            ino.current(dcim, 2),
+            Some(Handle::Relookup { .. })
+        ));
         assert!(matches!(ino.current(1, 2), Some(Handle::Valid(_))));
         assert_eq!(ino.current(999, 2), None);
     }
@@ -786,7 +979,10 @@ mod tests {
         let server_id = Identity::load_or_create(&base.join("server-id")).unwrap();
         let client_id = Identity::load_or_create(&base.join("client-id")).unwrap();
         let pinned = server::new_pinned();
-        pinned.write().unwrap().insert(client_id.fingerprint.clone());
+        pinned
+            .write()
+            .unwrap()
+            .insert(client_id.fingerprint.clone());
 
         // The "phone": a server on its own runtime, so dropping the runtime kills it and its sockets.
         let start = |port: u16| {
@@ -795,7 +991,15 @@ mod tests {
             let srv_id = Identity::load_or_create(&base.join("server-id")).unwrap();
             let port = rt.block_on(async move {
                 let (listener, port) = server::bind(port).await.unwrap();
-                let srv = server::NfsServer::new(&srv_id, srv_share, "/PhoneShare".into(), srv_pinned, false, false).unwrap();
+                let srv = server::NfsServer::new(
+                    &srv_id,
+                    srv_share,
+                    "/PhoneShare".into(),
+                    srv_pinned,
+                    false,
+                    false,
+                )
+                .unwrap();
                 tokio::spawn(srv.serve(listener));
                 port
             });
@@ -812,7 +1016,8 @@ mod tests {
         let mp = base.join("mnt");
         prepare_mountpoint(&mp).unwrap();
         let (t2, mp2) = (target.clone(), mp.clone());
-        let mounted = std::thread::spawn(move || mount(client_id, Source::Fixed(t2), &target, &mp2));
+        let mounted =
+            std::thread::spawn(move || mount(client_id, Source::Fixed(t2), &target, &mp2));
         let wait_for = |what: &str, f: &dyn Fn() -> bool| {
             let deadline = Instant::now() + Duration::from_secs(45);
             while !f() {
@@ -820,29 +1025,50 @@ mod tests {
                 std::thread::sleep(Duration::from_millis(200));
             }
         };
-        wait_for("the mount", &|| std::fs::read(mp.join("hello.txt")).is_ok_and(|b| b == b"hello"));
+        wait_for("the mount", &|| {
+            std::fs::read(mp.join("hello.txt")).is_ok_and(|b| b == b"hello")
+        });
         // Manual checks of front-end probes against a live mount: SC_E2E_PAUSE_SECS=10 holds it here.
-        if let Some(secs) = std::env::var("SC_E2E_PAUSE_SECS").ok().and_then(|s| s.parse().ok()) {
-            eprintln!("e2e mount live at {} for {secs} s; server port {port}, ids in {}", mp.display(), base.display());
+        if let Some(secs) = std::env::var("SC_E2E_PAUSE_SECS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+        {
+            eprintln!(
+                "e2e mount live at {} for {secs} s; server port {port}, ids in {}",
+                mp.display(),
+                base.display()
+            );
             std::thread::sleep(Duration::from_secs(secs));
         }
 
         // The server goes away: a directory listing (never served from a kernel cache) fails, quickly.
         drop(server_rt);
         let t0 = Instant::now();
-        assert!(std::fs::read_dir(mp.join("docs")).and_then(|d| d.collect::<io::Result<Vec<_>>>()).is_err());
-        assert!(t0.elapsed() < OP_TIMEOUT + Duration::from_secs(2), "a dead link must not hang");
+        assert!(
+            std::fs::read_dir(mp.join("docs"))
+                .and_then(|d| d.collect::<io::Result<Vec<_>>>())
+                .is_err()
+        );
+        assert!(
+            t0.elapsed() < OP_TIMEOUT + Duration::from_secs(2),
+            "a dead link must not hang"
+        );
 
         // It comes back on the same port: the mount reconnects and old inodes resolve again.
         let (_server_rt2, _) = start(port);
-        wait_for("the reconnect", &|| std::fs::read(mp.join("docs/note.md")).is_ok_and(|b| b == b"# note"));
+        wait_for("the reconnect", &|| {
+            std::fs::read(mp.join("docs/note.md")).is_ok_and(|b| b == b"# note")
+        });
         assert!(std::fs::read_dir(&mp).unwrap().count() >= 2);
 
         // Unmount like SIGTERM does; the session returns cleanly and nothing stale is left.
         SIGNALLED.store(true, Ordering::SeqCst);
         assert!(unmount_active());
         mounted.join().unwrap().unwrap();
-        assert!(std::fs::metadata(&mp).is_ok(), "the mountpoint is a plain, reachable dir again");
+        assert!(
+            std::fs::metadata(&mp).is_ok(),
+            "the mountpoint is a plain, reachable dir again"
+        );
         let _ = std::fs::remove_dir_all(&base);
     }
 
@@ -856,9 +1082,18 @@ mod tests {
         assert_eq!(next_step(s(5), PhoneState::Disconnected, true), Step::Wait);
         assert_eq!(next_step(s(5), PhoneState::DaemonDown, true), Step::Wait);
         // Unpaired, or down too long: give up.
-        assert!(matches!(next_step(s(5), PhoneState::Unpaired, true), Step::GiveUp(_)));
-        assert!(matches!(next_step(GIVE_UP, PhoneState::Connected, true), Step::GiveUp(_)));
+        assert!(matches!(
+            next_step(s(5), PhoneState::Unpaired, true),
+            Step::GiveUp(_)
+        ));
+        assert!(matches!(
+            next_step(GIVE_UP, PhoneState::Connected, true),
+            Step::GiveUp(_)
+        ));
         // Backoff grows and is capped.
-        assert_eq!([1, 2, 3, 4, 5, 9].map(|f| backoff(f).as_secs()), [2, 4, 8, 16, 30, 30]);
+        assert_eq!(
+            [1, 2, 3, 4, 5, 9].map(|f| backoff(f).as_secs()),
+            [2, 4, 8, 16, 30, 30]
+        );
     }
 }

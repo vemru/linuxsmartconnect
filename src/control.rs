@@ -52,7 +52,8 @@ fn bind_control(path: &Path) -> Result<UnixListener> {
             .with_context(|| format!("securing {}", dir.display()))?;
     }
     let _ = std::fs::remove_file(path);
-    let listener = UnixListener::bind(path).with_context(|| format!("binding {}", path.display()))?;
+    let listener =
+        UnixListener::bind(path).with_context(|| format!("binding {}", path.display()))?;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
         .with_context(|| format!("securing {}", path.display()))?;
     Ok(listener)
@@ -97,7 +98,8 @@ async fn handle(daemon: Arc<Daemon>, stream: UnixStream) -> Result<()> {
                     .map(|a| a.iter().filter_map(serde_json::Value::as_i64).collect())
                     .unwrap_or_default();
                 let mut frames = daemon.from_phone.subscribe();
-                wr.write_all(b"{\"ok\":true,\"message\":\"watching\"}\n").await?;
+                wr.write_all(b"{\"ok\":true,\"message\":\"watching\"}\n")
+                    .await?;
                 loop {
                     match frames.recv().await {
                         Ok((svc, data)) if watched(&services, svc) => {
@@ -118,12 +120,14 @@ async fn handle(daemon: Arc<Daemon>, stream: UnixStream) -> Result<()> {
             "status" => daemon.status.snapshot(),
             "subscribe" => {
                 let mut changes = daemon.status.subscribe();
-                wr.write_all(format!("{}\n", daemon.status.snapshot()).as_bytes()).await?;
+                wr.write_all(format!("{}\n", daemon.status.snapshot()).as_bytes())
+                    .await?;
                 loop {
                     match changes.recv().await {
                         Ok(json) => wr.write_all(format!("{json}\n").as_bytes()).await?,
                         Err(RecvError::Lagged(_)) => {
-                            wr.write_all(format!("{}\n", daemon.status.snapshot()).as_bytes()).await?
+                            wr.write_all(format!("{}\n", daemon.status.snapshot()).as_bytes())
+                                .await?
                         }
                         Err(RecvError::Closed) => return Ok(()),
                     }
@@ -144,10 +148,15 @@ async fn handle(daemon: Arc<Daemon>, stream: UnixStream) -> Result<()> {
                 json!({ "ok": ok, "message": message }).to_string()
             }
             "pair" => match daemon.new_pairing_qr() {
-                Ok(qr) => json!({ "ok": true, "message": "scan this QR in Smart Connect", "qr": qr }).to_string(),
+                Ok(qr) => {
+                    json!({ "ok": true, "message": "scan this QR in Smart Connect", "qr": qr })
+                        .to_string()
+                }
                 Err(e) => json!({ "ok": false, "message": format!("{e:#}") }).to_string(),
             },
-            other => json!({ "ok": false, "message": format!("unknown command {other:?}") }).to_string(),
+            other => {
+                json!({ "ok": false, "message": format!("unknown command {other:?}") }).to_string()
+            }
         };
         wr.write_all(format!("{reply}\n").as_bytes()).await?;
     }
@@ -161,7 +170,11 @@ fn watched(services: &[i64], svc: i64) -> bool {
 }
 
 fn json_command(daemon: &Daemon, v: &serde_json::Value) -> String {
-    let s = |k: &str| v.get(k).and_then(serde_json::Value::as_str).unwrap_or_default();
+    let s = |k: &str| {
+        v.get(k)
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+    };
     match s("cmd") {
         "reply" => {
             let (key, text) = (s("key"), s("text"));
@@ -171,34 +184,50 @@ fn json_command(daemon: &Daemon, v: &serde_json::Value) -> String {
             if key.is_empty() || text.trim().is_empty() {
                 return json!({ "ok": false, "message": "empty reply" }).to_string();
             }
-            let svc = daemon.status.notification_service(key).unwrap_or(crate::notifications::SERVICE_NOTIFY);
-            let _ = daemon.to_phone.send((svc, crate::notifications::reply_command(key, text)));
+            let svc = daemon
+                .status
+                .notification_service(key)
+                .unwrap_or(crate::notifications::SERVICE_NOTIFY);
+            let _ = daemon
+                .to_phone
+                .send((svc, crate::notifications::reply_command(key, text)));
             json!({ "ok": true, "message": "reply sent" }).to_string()
         }
         // {"cmd":"notif_mute","pkg":"com.example","mute":true|false}: per-app mute list (no pkg: list it).
         "notif_mute" => crate::notifications::mute_command(v).to_string(),
         // {"cmd":"send","service":N,"data":{…}}: forward a service message to the phone.
         "send" => {
-            let (Some(svc), Some(data)) = (v.get("service").and_then(serde_json::Value::as_i64), v.get("data")) else {
-                return json!({ "ok": false, "message": "send needs service and data" }).to_string();
+            let (Some(svc), Some(data)) = (
+                v.get("service").and_then(serde_json::Value::as_i64),
+                v.get("data"),
+            ) else {
+                return json!({ "ok": false, "message": "send needs service and data" })
+                    .to_string();
             };
             // A helper's svc 25 `cap` (e.g. cross control's in-use bit for "26") would replace the
             // phone's whole tile map: merge it into the daemon's map and send the full map instead.
-            if svc == crate::proto::SERVICE_DEVICE_STATUS {
-                if let Some(cap) = data.get("cap").and_then(serde_json::Value::as_object) {
-                    daemon.cap_overrides.lock().unwrap().extend(cap.iter().map(|(k, v)| (k.clone(), v.clone())));
-                    if daemon.is_connected() {
-                        let _ = daemon.to_phone.send((svc, daemon.device_status()));
-                    }
-                    return json!({ "ok": true, "message": "merged into the device status map" }).to_string();
+            if svc == crate::proto::SERVICE_DEVICE_STATUS
+                && let Some(cap) = data.get("cap").and_then(serde_json::Value::as_object)
+            {
+                daemon
+                    .cap_overrides
+                    .lock()
+                    .unwrap()
+                    .extend(cap.iter().map(|(k, v)| (k.clone(), v.clone())));
+                if daemon.is_connected() {
+                    let _ = daemon.to_phone.send((svc, daemon.device_status()));
                 }
+                return json!({ "ok": true, "message": "merged into the device status map" })
+                    .to_string();
             }
             if !daemon.is_connected() {
                 return json!({ "ok": false, "message": "phone not connected" }).to_string();
             }
             // A notification click sent by a desktop client: announce it like the daemon's own clicks.
             if let Some(ev) = crate::notifications::click_event(svc, data) {
-                let _ = daemon.from_phone.send((crate::proto::SERVICE_LOCAL_EVENTS, ev));
+                let _ = daemon
+                    .from_phone
+                    .send((crate::proto::SERVICE_LOCAL_EVENTS, ev));
             }
             let _ = daemon.to_phone.send((svc, data.clone()));
             json!({ "ok": true, "message": "sent" }).to_string()
@@ -216,13 +245,20 @@ fn json_command(daemon: &Daemon, v: &serde_json::Value) -> String {
         }
         // {"cmd":"sms_thread","thread":"<address or thread key>"}: cached messages, oldest first.
         "sms_thread" => {
-            let key = [s("thread"), s("number")].into_iter().find(|k| !k.is_empty()).unwrap_or_default();
+            let key = [s("thread"), s("number")]
+                .into_iter()
+                .find(|k| !k.is_empty())
+                .unwrap_or_default();
             if key.is_empty() {
                 return json!({ "ok": false, "message": "sms_thread needs thread" }).to_string();
             }
-            let _ = daemon.to_phone.send((crate::sms::SERVICE_MESSAGE, crate::sms::request_messages(crate::sms::KIND_SMS)));
+            let _ = daemon.to_phone.send((
+                crate::sms::SERVICE_MESSAGE,
+                crate::sms::request_messages(crate::sms::KIND_SMS),
+            ));
             let st = crate::sms::store().lock().unwrap();
-            json!({ "ok": true, "thread": crate::sms::thread_key(key), "messages": st.thread(key) }).to_string()
+            json!({ "ok": true, "thread": crate::sms::thread_key(key), "messages": st.thread(key) })
+                .to_string()
         }
         // {"cmd":"sms_send","number":"+91…"|"thread":"<key>","text":"…"}
         "sms_send" => {
@@ -231,25 +267,38 @@ fn json_command(daemon: &Daemon, v: &serde_json::Value) -> String {
                 s("number").to_owned()
             } else {
                 let st = crate::sms::store().lock().unwrap();
-                st.thread(s("thread")).last().map(|m| m.counterpart().to_owned()).unwrap_or_default()
+                st.thread(s("thread"))
+                    .last()
+                    .map(|m| m.counterpart().to_owned())
+                    .unwrap_or_default()
             };
             if to.is_empty() || text.trim().is_empty() {
                 return json!({ "ok": false, "message": "sms_send needs number (or known thread) and text" }).to_string();
             }
             static NEXT_REQ: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(1);
-            let req = (std::process::id() as i64 % 1000) * 100_000 + NEXT_REQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            let _ = daemon.to_phone.send((crate::sms::SERVICE_MESSAGE, crate::sms::send_sms(req, &[to.clone()], text, -1)));
-            json!({ "ok": true, "message": "sms handed to phone", "requestId": req, "to": to }).to_string()
+            let req = (std::process::id() as i64 % 1000) * 100_000
+                + NEXT_REQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let _ = daemon.to_phone.send((
+                crate::sms::SERVICE_MESSAGE,
+                crate::sms::send_sms(req, std::slice::from_ref(&to), text, -1),
+            ));
+            json!({ "ok": true, "message": "sms handed to phone", "requestId": req, "to": to })
+                .to_string()
         }
         // {"cmd":"sms_mark_read","id":N} (SMS id from sms_thread)
         "sms_mark_read" => {
             let Some(id) = v.get("id").and_then(serde_json::Value::as_i64) else {
                 return json!({ "ok": false, "message": "sms_mark_read needs id" }).to_string();
             };
-            let _ = daemon.to_phone.send((crate::sms::SERVICE_MESSAGE, crate::sms::mark_read(id, crate::sms::KIND_SMS, true)));
+            let _ = daemon.to_phone.send((
+                crate::sms::SERVICE_MESSAGE,
+                crate::sms::mark_read(id, crate::sms::KIND_SMS, true),
+            ));
             json!({ "ok": true, "message": "sent" }).to_string()
         }
-        other => json!({ "ok": false, "message": format!("unknown command {other:?}") }).to_string(),
+        other => {
+            json!({ "ok": false, "message": format!("unknown command {other:?}") }).to_string()
+        }
     }
 }
 
@@ -305,7 +354,10 @@ mod tests {
     #[test]
     fn local_events_only_when_listed() {
         assert!(watched(&[], 15), "empty list = every phone service");
-        assert!(!watched(&[], SERVICE_LOCAL_EVENTS), "local events are opt-in");
+        assert!(
+            !watched(&[], SERVICE_LOCAL_EVENTS),
+            "local events are opt-in"
+        );
         assert!(watched(&[15, SERVICE_LOCAL_EVENTS], SERVICE_LOCAL_EVENTS));
         assert!(watched(&[1, 15], 15));
         assert!(!watched(&[1, 15], 5));

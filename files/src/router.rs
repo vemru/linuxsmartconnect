@@ -30,7 +30,7 @@ use tokio::sync::mpsc;
 use tracing::debug;
 
 use crate::localfs::{CategoryEntry, LocalFs};
-use crate::server::{be32, hex, pad4, rewrite_zero_root, NFS_PROGRAM, ZERO_ROOT_LEN};
+use crate::server::{NFS_PROGRAM, ZERO_ROOT_LEN, be32, hex, pad4, rewrite_zero_root};
 
 /// Lenovo's NFS procedure numbers (the phone's own server has them as procedures 22–29).
 const PROC_READTHUMBNAIL: u32 = 22;
@@ -73,7 +73,12 @@ where
     let result = async {
         while let Some(frag) = read_record(&mut tls_r).await? {
             if s.trace {
-                debug!("trace {} phone→PC {}B: {}", s.peer, frag.len(), hex(&frag[..frag.len().min(512)]));
+                debug!(
+                    "trace {} phone→PC {}B: {}",
+                    s.peer,
+                    frag.len(),
+                    hex(&frag[..frag.len().min(512)])
+                );
             }
             let frag = match rewrite_zero_root(&frag, &s.root_fh) {
                 Some((rewritten, proc_)) => {
@@ -115,7 +120,10 @@ async fn read_record<R: AsyncRead + Unpin>(r: &mut R) -> std::io::Result<Option<
     }
     let len = (u32::from_be_bytes(marker) & 0x7fff_ffff) as usize;
     if len > MAX_RECORD {
-        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, format!("RPC record of {len} bytes")));
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("RPC record of {len} bytes"),
+        ));
     }
     let mut frag = Vec::with_capacity(4 + len);
     frag.extend_from_slice(&marker);
@@ -134,10 +142,19 @@ async fn pump_records<R: AsyncRead + Unpin>(mut r: R, tx: mpsc::Sender<Vec<u8>>)
 }
 
 /// Writes whole records to the phone, in the order they were queued.
-async fn write_records<W: AsyncWrite + Unpin>(mut w: W, mut rx: mpsc::Receiver<Vec<u8>>, trace: bool, peer: SocketAddr) {
+async fn write_records<W: AsyncWrite + Unpin>(
+    mut w: W,
+    mut rx: mpsc::Receiver<Vec<u8>>,
+    trace: bool,
+    peer: SocketAddr,
+) {
     while let Some(frag) = rx.recv().await {
         if trace {
-            debug!("trace {peer} PC→phone {}B: {}", frag.len(), hex(&frag[..frag.len().min(512)]));
+            debug!(
+                "trace {peer} PC→phone {}B: {}",
+                frag.len(),
+                hex(&frag[..frag.len().min(512)])
+            );
         }
         if w.write_all(&frag).await.is_err() || w.flush().await.is_err() {
             break;
@@ -150,7 +167,13 @@ async fn write_records<W: AsyncWrite + Unpin>(mut w: W, mut rx: mpsc::Receiver<V
 #[derive(Debug, PartialEq)]
 enum LenovoCall {
     /// `READCATEGORYDIR`: a directory handle (our 64-byte form, after the root rewrite) and paging.
-    Category { xid: u32, fh: Vec<u8>, offset: u32, limit: u32, category: u32 },
+    Category {
+        xid: u32,
+        fh: Vec<u8>,
+        offset: u32,
+        limit: u32,
+        category: u32,
+    },
     /// `READTHUMBNAIL`: an image path (share-relative or prefixed, see [`LocalFs::resolve_phone_path`]).
     Thumbnail { xid: u32, path: String },
     /// `REMOVEBATCH`: a JSON array of paths.
@@ -193,11 +216,17 @@ fn parse_lenovo_call(frag: &[u8]) -> Option<LenovoCall> {
         PROC_READTHUMBNAIL => {
             // quality (unused: we send one size), then the path
             let (path, _) = opaque(body, args + 4)?;
-            LenovoCall::Thumbnail { xid, path: String::from_utf8_lossy(path).into_owned() }
+            LenovoCall::Thumbnail {
+                xid,
+                path: String::from_utf8_lossy(path).into_owned(),
+            }
         }
         _ => {
             let (json, _) = opaque(body, args)?;
-            LenovoCall::RemoveBatch { xid, paths_json: String::from_utf8_lossy(json).into_owned() }
+            LenovoCall::RemoveBatch {
+                xid,
+                paths_json: String::from_utf8_lossy(json).into_owned(),
+            }
         }
     })
 }
@@ -206,10 +235,20 @@ fn parse_lenovo_call(frag: &[u8]) -> Option<LenovoCall> {
 fn answer(call: LenovoCall, s: &Session) -> Vec<u8> {
     use nfs3_server::nfs3_types::nfs3::nfsstat3;
     match call {
-        LenovoCall::Category { xid, fh, offset, limit, category } => {
-            let result = handle_id(&fh, &s.root_fh).and_then(|id| s.fs.category(id, category, offset, limit.min(MAX_ENTRIES)));
+        LenovoCall::Category {
+            xid,
+            fh,
+            offset,
+            limit,
+            category,
+        } => {
+            let result = handle_id(&fh, &s.root_fh)
+                .and_then(|id| s.fs.category(id, category, offset, limit.min(MAX_ENTRIES)));
             match &result {
-                Ok(entries) => debug!("READCATEGORYDIR category {category} offset {offset} limit {limit} → {} entries", entries.len()),
+                Ok(entries) => debug!(
+                    "READCATEGORYDIR category {category} offset {offset} limit {limit} → {} entries",
+                    entries.len()
+                ),
                 Err(e) => debug!("READCATEGORYDIR category {category} failed: {e:?}"),
             }
             category_reply(xid, result)
@@ -294,7 +333,10 @@ fn entry_json(e: &CategoryEntry) -> String {
 
 /// A `READCATEGORYDIR` reply: `nfsstat3`, then on success `true` + a JSON string per entry and
 /// `false`.
-fn category_reply(xid: u32, result: Result<Vec<CategoryEntry>, nfs3_server::nfs3_types::nfs3::nfsstat3>) -> Vec<u8> {
+fn category_reply(
+    xid: u32,
+    result: Result<Vec<CategoryEntry>, nfs3_server::nfs3_types::nfs3::nfsstat3>,
+) -> Vec<u8> {
     let mut body = reply_header(xid);
     let put = |b: &mut Vec<u8>, v: u32| b.extend_from_slice(&v.to_be_bytes());
     match result {
@@ -353,18 +395,33 @@ mod tests {
     fn parses_the_phones_lenovo_calls() {
         let fh = vec![7u8; 64];
         let parsed = parse_lenovo_call(&call(0x1234, &fh, 0, 500, 6)).unwrap();
-        assert_eq!(parsed, LenovoCall::Category { xid: 0x1234, fh, offset: 0, limit: 500, category: 6 });
+        assert_eq!(
+            parsed,
+            LenovoCall::Category {
+                xid: 0x1234,
+                fh,
+                offset: 0,
+                limit: 500,
+                category: 6
+            }
+        );
 
         let mut args = 1u32.to_be_bytes().to_vec(); // quality
         args.extend(xdr_opaque(b"/Pictures/cat.jpg"));
         assert_eq!(
             parse_lenovo_call(&call_with(5, PROC_READTHUMBNAIL, &args)),
-            Some(LenovoCall::Thumbnail { xid: 5, path: "/Pictures/cat.jpg".into() })
+            Some(LenovoCall::Thumbnail {
+                xid: 5,
+                path: "/Pictures/cat.jpg".into()
+            })
         );
         let json = br#"["/a.txt","/b c.pdf"]"#;
         assert_eq!(
             parse_lenovo_call(&call_with(6, PROC_REMOVEBATCH, &xdr_opaque(json))),
-            Some(LenovoCall::RemoveBatch { xid: 6, paths_json: String::from_utf8_lossy(json).into_owned() })
+            Some(LenovoCall::RemoveBatch {
+                xid: 6,
+                paths_json: String::from_utf8_lossy(json).into_owned()
+            })
         );
         // A standard procedure is left to nfs3_server.
         assert!(parse_lenovo_call(&call_with(1, 17, &xdr_opaque(&[0; 64]))).is_none());
@@ -396,7 +453,12 @@ mod tests {
         let frag = category_reply(9, Ok(vec![e]));
         let body = &frag[4..];
         assert_eq!(be32(&frag, 0).unwrap(), 0x8000_0000 | body.len() as u32);
-        assert_eq!(&body[..28], &[0, 0, 0, 9, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(
+            &body[..28],
+            &[
+                0, 0, 0, 9, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+            ]
+        );
         assert_eq!(be32(body, 28), Some(1), "an entry follows");
         let len = be32(body, 32).unwrap() as usize;
         let v: serde_json::Value = serde_json::from_slice(&body[36..36 + len]).unwrap();
@@ -407,7 +469,10 @@ mod tests {
         assert_eq!(be32(body, 36 + pad4(len)), Some(0), "end of list");
         assert_eq!(body.len(), 36 + pad4(len) + 4);
         // An error is just the status.
-        let err = category_reply(9, Err(nfs3_server::nfs3_types::nfs3::nfsstat3::NFS3ERR_STALE));
+        let err = category_reply(
+            9,
+            Err(nfs3_server::nfs3_types::nfs3::nfsstat3::NFS3ERR_STALE),
+        );
         assert_eq!(be32(&err[4..], 24), Some(70));
         assert_eq!(err.len(), 4 + 28);
     }

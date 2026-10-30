@@ -58,12 +58,22 @@ impl MutterSink {
 
 impl Sink for MutterSink {
     fn describe(&self) -> String {
-        format!("GNOME RemoteDesktop on {} ({}x{} px)", self.r.stream, self.r.size.0, self.r.size.1)
+        format!(
+            "GNOME RemoteDesktop on {} ({}x{} px)",
+            self.r.stream, self.r.size.0, self.r.size.1
+        )
     }
 
     fn move_abs(&mut self, x: f64, y: f64) {
-        let (x, y) = if self.r.virtual_stream { (x / self.r.scale(), y / self.r.scale()) } else { (x, y) };
-        self.call("NotifyPointerMotionAbsolute", &(self.r.stream.as_str(), x, y));
+        let (x, y) = if self.r.virtual_stream {
+            (x / self.r.scale(), y / self.r.scale())
+        } else {
+            (x, y)
+        };
+        self.call(
+            "NotifyPointerMotionAbsolute",
+            &(self.r.stream.as_str(), x, y),
+        );
     }
 
     fn move_rel(&mut self, dx: f64, dy: f64) {
@@ -83,7 +93,10 @@ impl Sink for MutterSink {
         let s = self.r.scale();
         match delta {
             Some((dx, dy)) => self.call("NotifyPointerAxis", &(dx / s, dy / s, AXIS_SOURCE_FINGER)),
-            None => self.call("NotifyPointerAxis", &(0.0f64, 0.0f64, AXIS_FINISH | AXIS_SOURCE_FINGER)),
+            None => self.call(
+                "NotifyPointerAxis",
+                &(0.0f64, 0.0f64, AXIS_FINISH | AXIS_SOURCE_FINGER),
+            ),
         }
     }
 

@@ -60,7 +60,10 @@ impl ResizeDebouncer {
         if self.last_requested.is_none() && self.stream.is_some_and(|s| near(s, size)) {
             return None;
         }
-        if self.last_sent_at.is_some_and(|t| now.duration_since(t) < MIN_INTERVAL) {
+        if self
+            .last_sent_at
+            .is_some_and(|t| now.duration_since(t) < MIN_INTERVAL)
+        {
             return None;
         }
         self.last_requested = Some(size);
@@ -113,9 +116,17 @@ mod tests {
         d.set_stream_size(610, 1356);
         assert_eq!(d.observe((900, 1000), t0), None, "first sighting");
         assert_eq!(d.observe((950, 1000), t0 + ms(100)), None, "still moving");
-        assert_eq!(d.observe((950, 1000), t0 + ms(300)), None, "not settled yet");
+        assert_eq!(
+            d.observe((950, 1000), t0 + ms(300)),
+            None,
+            "not settled yet"
+        );
         assert_eq!(d.observe((950, 1000), t0 + ms(600)), Some((950, 1000)));
-        assert_eq!(d.observe((950, 1000), t0 + ms(2000)), None, "already requested");
+        assert_eq!(
+            d.observe((950, 1000), t0 + ms(2000)),
+            None,
+            "already requested"
+        );
     }
 
     #[test]
@@ -137,10 +148,18 @@ mod tests {
         d.observe((800, 600), t0);
         assert_eq!(d.observe((800, 600), t0 + ms(500)), Some((800, 600)));
         d.observe((1000, 700), t0 + ms(600));
-        assert_eq!(d.observe((1000, 700), t0 + ms(1100)), None, "less than MIN_INTERVAL since the last request");
+        assert_eq!(
+            d.observe((1000, 700), t0 + ms(1100)),
+            None,
+            "less than MIN_INTERVAL since the last request"
+        );
         assert_eq!(d.observe((1000, 700), t0 + ms(1600)), Some((1000, 700)));
         d.observe((800, 600), t0 + ms(1700));
-        assert_eq!(d.observe((800, 600), t0 + ms(2700)), Some((800, 600)), "a new size again");
+        assert_eq!(
+            d.observe((800, 600), t0 + ms(2700)),
+            Some((800, 600)),
+            "a new size again"
+        );
     }
 
     #[test]
@@ -154,12 +173,24 @@ mod tests {
     #[test]
     fn payload_fields() {
         let (u, c, s) = (json!(0), json!("com.example.Main"), Value::Null);
-        let t =
-            ResizeTarget { display_id: 67, pkg: "com.example", user_id: &u, cmp: &c, shortcut_id: &s, instance_id: 42 };
+        let t = ResizeTarget {
+            display_id: 67,
+            pkg: "com.example",
+            user_id: &u,
+            cmp: &c,
+            shortcut_id: &s,
+            instance_id: 42,
+        };
         let p = payload(&t, (1920, 1080));
         assert_eq!(p["displayId"], 67);
-        assert_eq!((p["width"].as_u64(), p["height"].as_u64()), (Some(1920), Some(1080)));
-        assert_eq!((p["phyWidth"].as_i64(), p["phyHeight"].as_i64()), (Some(344), Some(194)));
+        assert_eq!(
+            (p["width"].as_u64(), p["height"].as_u64()),
+            (Some(1920), Some(1080))
+        );
+        assert_eq!(
+            (p["phyWidth"].as_i64(), p["phyHeight"].as_i64()),
+            (Some(344), Some(194))
+        );
         assert_eq!(p["supportCustomDisplay"], false, "a boolean, never 0");
         assert_eq!(p["supportWebRTC"], 1);
         assert_eq!(p["instanceId"], 42);

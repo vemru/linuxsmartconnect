@@ -37,8 +37,8 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::mpsc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -73,7 +73,9 @@ fn host_socket_path() -> PathBuf {
 fn apps_cache_path() -> PathBuf {
     let base = std::env::var_os("XDG_CACHE_HOME")
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".cache"));
+        .unwrap_or_else(|| {
+            PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".cache")
+        });
     base.join("smartconnect/apps.json")
 }
 
@@ -81,10 +83,16 @@ fn apps_cache_path() -> PathBuf {
 /// previous one, so every process (mirror, host, one-shot --app) shares one id per login session.
 fn instance_id() -> i64 {
     let path = runtime_dir().join("smartconnect-mirror.instance");
-    if let Some(id) = std::fs::read_to_string(&path).ok().and_then(|s| s.trim().parse().ok()) {
+    if let Some(id) = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+    {
         return id;
     }
-    let id = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(1);
+    let id = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(1);
     let _ = std::fs::write(&path, id.to_string());
     id
 }
@@ -115,7 +123,9 @@ impl Daemon {
                 }
             }
         });
-        Ok(Arc::new(Daemon { cmd: Mutex::new(cmd) }))
+        Ok(Arc::new(Daemon {
+            cmd: Mutex::new(cmd),
+        }))
     }
 
     fn send(&self, service: i64, data: Value) {
@@ -134,20 +144,24 @@ impl Daemon {
     }
 
     fn input(&self, cmd: i64, data: Value) {
-        self.send(16, json!({ "cmd": cmd, "data": data, "messageId": 0, "instanceId": 0 }));
+        self.send(
+            16,
+            json!({ "cmd": cmd, "data": data, "messageId": 0, "instanceId": 0 }),
+        );
     }
 }
 
 /// Streams phone frames (and daemon-local events) for `services` into `tx` as `Ev::Phone`.
 fn watch(services: &[i64], tx: mpsc::Sender<Ev>) -> Result<()> {
     let watch = UnixStream::connect(socket_path()).context("is smartconnectd running?")?;
-    (&watch).write_all(format!("{}\n", json!({ "cmd": "watch", "services": services })).as_bytes())?;
+    (&watch)
+        .write_all(format!("{}\n", json!({ "cmd": "watch", "services": services })).as_bytes())?;
     std::thread::spawn(move || {
         for line in BufReader::new(watch).lines().map_while(Result::ok) {
-            if let Ok(v) = serde_json::from_str::<Value>(&line) {
-                if let Some(svc) = v.get("service").and_then(Value::as_i64) {
-                    let _ = tx.send(Ev::Phone(svc, v["data"].clone()));
-                }
+            if let Ok(v) = serde_json::from_str::<Value>(&line)
+                && let Some(svc) = v.get("service").and_then(Value::as_i64)
+            {
+                let _ = tx.send(Ev::Phone(svc, v["data"].clone()));
             }
         }
         eprintln!("daemon closed the watch stream");
@@ -269,7 +283,15 @@ unsafe extern "C" fn destroy_close_hook(data: glib::ffi::gpointer) {
 
 impl Session {
     fn new(info: SessionInfo, filter: ice::CandidateFilter, d: Arc<Daemon>) -> Result<Arc<Self>> {
-        let SessionInfo { sid, pkg, user_id, cmp, shortcut_id, title, headless } = info;
+        let SessionInfo {
+            sid,
+            pkg,
+            user_id,
+            cmp,
+            shortcut_id,
+            title,
+            headless,
+        } = info;
         let pipeline = gst::Pipeline::with_name(&format!("session-{sid}"));
         let latency: u32 = std::env::var("MIRROR_LATENCY")
             .ok()
@@ -325,7 +347,11 @@ impl Session {
                     println!("[{}] ICE: {state:?}", s.sid);
                     let bad = matches!(state, S::Failed | S::Disconnected | S::Closed);
                     let mut st = s.st.lock().unwrap();
-                    st.ice_bad_since = if bad { st.ice_bad_since.or_else(|| Some(Instant::now())) } else { None };
+                    st.ice_bad_since = if bad {
+                        st.ice_bad_since.or_else(|| Some(Instant::now()))
+                    } else {
+                        None
+                    };
                 }
             });
         }
@@ -349,13 +375,21 @@ impl Session {
     fn attach_decoder(self: &Arc<Self>, pad: &gst::Pad) -> Result<()> {
         if self.headless {
             // No window: keep the stream flowing (an unlinked pad would error the pipeline).
-            let bin = gst::parse::bin_from_description("queue ! fakesink sync=false async=false", true)?;
+            let bin =
+                gst::parse::bin_from_description("queue ! fakesink sync=false async=false", true)?;
             self.pipeline.add(&bin)?;
-            pad.link(&bin.static_pad("sink").context("fakesink bin has no sink pad")?)?;
+            pad.link(
+                &bin.static_pad("sink")
+                    .context("fakesink bin has no sink pad")?,
+            )?;
             bin.sync_state_with_parent()?;
             return Ok(());
         }
-        println!("[{}] video arriving: {:?}", self.sid, pad.current_caps().map(|c| c.to_string()));
+        println!(
+            "[{}] video arriving: {:?}",
+            self.sid,
+            pad.current_caps().map(|c| c.to_string())
+        );
         let desc = format!(
             "queue ! rtph264depay ! h264parse ! {} ! videoconvert name=conv n-threads=2 ! videoflip name=flip ! videoconvert n-threads=2 ! queue max-size-buffers=1 max-size-time=0 max-size-bytes=0 leaky=downstream ! taginject name=tag ! {} name=sink sync=false",
             pick_decoder(),
@@ -364,7 +398,11 @@ impl Session {
         let bin = match gst::parse::bin_from_description(&desc, true) {
             Ok(b) => b,
             Err(e) => {
-                eprintln!("[{}] could not construct decoder bin with {}: {e}; falling back to avdec_h264", self.sid, pick_decoder());
+                eprintln!(
+                    "[{}] could not construct decoder bin with {}: {e}; falling back to avdec_h264",
+                    self.sid,
+                    pick_decoder()
+                );
                 let fallback = format!(
                     "queue ! rtph264depay ! h264parse ! avdec_h264 thread-type=slice max-threads=4 ! videoconvert name=conv n-threads=2 ! videoflip name=flip ! videoconvert n-threads=2 ! queue max-size-buffers=1 max-size-time=0 max-size-bytes=0 leaky=downstream ! taginject name=tag ! {} name=sink sync=false",
                     pick_sink()
@@ -384,20 +422,23 @@ impl Session {
         }
         self.pipeline.add(&bin)?;
         // Link before starting the bin, then bring it up to the pipeline's state.
-        pad.link(&bin.static_pad("sink").context("decoder bin has no sink pad")?)?;
+        pad.link(
+            &bin.static_pad("sink")
+                .context("decoder bin has no sink pad")?,
+        )?;
         bin.sync_state_with_parent()?;
         // The video sink sends pointer/keyboard navigation events upstream; turn them into input.
         // Listen on tag's sink pad (downstream of videoflip) so coordinates match the rendered
         // window display in both portrait and landscape without inverted transforms by videoflip.
         let w = Arc::downgrade(self);
-                if let Some(conv) = bin.by_name("conv") {
+        if let Some(conv) = bin.by_name("conv") {
             let sid = self.sid;
             if let Some(sp) = conv.static_pad("sink") {
                 sp.add_probe(gst::PadProbeType::EVENT_DOWNSTREAM, move |_pad, info| {
-                    if let Some(gst::PadProbeData::Event(ev)) = &info.data {
-                        if let gst::EventView::Caps(c) = ev.view() {
-                            println!("[{sid}] DECODER OUTPUT CAPS: {}", c.caps());
-                        }
+                    if let Some(gst::PadProbeData::Event(ev)) = &info.data
+                        && let gst::EventView::Caps(c) = ev.view()
+                    {
+                        println!("[{sid}] DECODER OUTPUT CAPS: {}", c.caps());
                     }
                     gst::PadProbeReturn::Ok
                 });
@@ -407,23 +448,28 @@ impl Session {
             let sid = self.sid;
             if let Some(sp) = tag_el.static_pad("src") {
                 sp.add_probe(gst::PadProbeType::EVENT_DOWNSTREAM, move |pad, info| {
-                    if let Some(gst::PadProbeData::Event(ev)) = &info.data {
-                        if ev.type_() == gst::EventType::Caps {
-                            println!("[{sid}] SINK INPUT CAPS (after flip): {:?}", pad.current_caps().map(|c| c.to_string()));
-                        }
+                    if let Some(gst::PadProbeData::Event(ev)) = &info.data
+                        && ev.type_() == gst::EventType::Caps
+                    {
+                        println!(
+                            "[{sid}] SINK INPUT CAPS (after flip): {:?}",
+                            pad.current_caps().map(|c| c.to_string())
+                        );
                     }
                     gst::PadProbeReturn::Ok
                 });
             }
         }
-        tag.static_pad("sink").context("no tag sink pad")?.add_probe(gst::PadProbeType::EVENT_UPSTREAM, move |_, info| {
-            if let (Some(s), Some(gst::PadProbeData::Event(ev))) = (w.upgrade(), &info.data) {
-                if ev.type_() == gst::EventType::Navigation {
+        tag.static_pad("sink")
+            .context("no tag sink pad")?
+            .add_probe(gst::PadProbeType::EVENT_UPSTREAM, move |_, info| {
+                if let (Some(s), Some(gst::PadProbeData::Event(ev))) = (w.upgrade(), &info.data)
+                    && ev.type_() == gst::EventType::Navigation
+                {
                     s.on_navigation(ev);
                 }
-            }
-            gst::PadProbeReturn::Ok
-        });
+                gst::PadProbeReturn::Ok
+            });
         Ok(())
     }
 
@@ -443,7 +489,9 @@ impl Session {
 
     fn send_candidate(&self, mline: u32, candidate: &str) {
         let mid = self.st.lock().unwrap().mid.clone();
-        let data = json!({ "type": "candidate", "label": mline, "id": mid, "candidate": candidate }).to_string();
+        let data =
+            json!({ "type": "candidate", "label": mline, "id": mid, "candidate": candidate })
+                .to_string();
         self.d.send15(
             20,
             Some(json!({
@@ -453,10 +501,12 @@ impl Session {
     }
 
     fn add_remote_candidate(&self, body: &Value) -> Result<()> {
-        let c: Value = serde_json::from_str(body.get("data").and_then(Value::as_str).unwrap_or("{}"))?;
+        let c: Value =
+            serde_json::from_str(body.get("data").and_then(Value::as_str).unwrap_or("{}"))?;
         if let Some(cand) = c.get("candidate").and_then(Value::as_str) {
             let label = c.get("label").and_then(Value::as_u64).unwrap_or(0) as u32;
-            self.webrtc.emit_by_name::<()>("add-ice-candidate", &[&label, &cand]);
+            self.webrtc
+                .emit_by_name::<()>("add-ice-candidate", &[&label, &cand]);
         }
         Ok(())
     }
@@ -468,19 +518,31 @@ impl Session {
         if let Some(mid) = offer_sdp.lines().find_map(|l| l.strip_prefix("a=mid:")) {
             self.st.lock().unwrap().mid = mid.trim().to_owned();
         }
-        let sdp = gst_sdp::SDPMessage::parse_buffer(offer_sdp.as_bytes()).map_err(|_| anyhow!("bad offer SDP"))?;
-        let offer = gst_webrtc::WebRTCSessionDescription::new(gst_webrtc::WebRTCSDPType::Offer, sdp);
+        let sdp = gst_sdp::SDPMessage::parse_buffer(offer_sdp.as_bytes())
+            .map_err(|_| anyhow!("bad offer SDP"))?;
+        let offer =
+            gst_webrtc::WebRTCSessionDescription::new(gst_webrtc::WebRTCSDPType::Offer, sdp);
         let p = gst::Promise::new();
-        self.webrtc.emit_by_name::<()>("set-remote-description", &[&offer, &p]);
+        self.webrtc
+            .emit_by_name::<()>("set-remote-description", &[&offer, &p]);
         p.wait();
         let p = gst::Promise::new();
-        self.webrtc.emit_by_name::<()>("create-answer", &[&None::<gst::Structure>, &p]);
+        self.webrtc
+            .emit_by_name::<()>("create-answer", &[&None::<gst::Structure>, &p]);
         p.wait();
         let reply = p.get_reply().context("no answer")?;
-        let answer = reply.value("answer")?.get::<gst_webrtc::WebRTCSessionDescription>()?;
+        let answer = reply
+            .value("answer")?
+            .get::<gst_webrtc::WebRTCSessionDescription>()?;
         let text = answer.sdp().as_text()?;
-        self.webrtc.emit_by_name::<()>("set-local-description", &[&answer, &None::<gst::Promise>]);
-        println!("[{}] answer: {} bytes, H.264={}", self.sid, text.len(), text.contains("H264"));
+        self.webrtc
+            .emit_by_name::<()>("set-local-description", &[&answer, &None::<gst::Promise>]);
+        println!(
+            "[{}] answer: {} bytes, H.264={}",
+            self.sid,
+            text.len(),
+            text.contains("H264")
+        );
         self.d.send15(
             4,
             Some(json!({
@@ -505,21 +567,35 @@ impl Session {
     /// Records the session's display id and asks the phone, once per display, for a virtual
     /// keyboard + mouse on it (svc 16 REQUEST_CAP, caps bit0 keyboard | bit1 mouse).
     fn learn_display(&self, body: &Value) {
-        let Some(d) = body.get("displayId").and_then(Value::as_i64).filter(|d| *d >= 0) else { return };
+        let Some(d) = body
+            .get("displayId")
+            .and_then(Value::as_i64)
+            .filter(|d| *d >= 0)
+        else {
+            return;
+        };
         let first = {
             let mut st = self.st.lock().unwrap();
             st.display_id = Some(d);
             st.cap_requested.insert(d)
         };
         if first && !self.headless {
-            println!("[{}] input: requesting keyboard+mouse on display {d}", self.sid);
-            self.d.input(1, json!({ "ver": 1, "displayId": d, "caps": 3 }));
+            println!(
+                "[{}] input: requesting keyboard+mouse on display {d}",
+                self.sid
+            );
+            self.d
+                .input(1, json!({ "ver": 1, "displayId": d, "caps": 3 }));
         }
     }
 
     /// cmd 3 `width`/`height`: the size the phone currently streams (resize baseline).
     fn learn_stream_size(&self, body: &Value) {
-        let dim = |k: &str| body.get(k).and_then(Value::as_u64).and_then(|v| u32::try_from(v).ok());
+        let dim = |k: &str| {
+            body.get(k)
+                .and_then(Value::as_u64)
+                .and_then(|v| u32::try_from(v).ok())
+        };
         if let (Some(w), Some(h)) = (dim("width"), dim("height")) {
             let mut st = self.st.lock().unwrap();
             st.resize.set_stream_size(w, h);
@@ -555,7 +631,10 @@ impl Session {
         let (win, _) = self.xwin.lock().unwrap().clone()?;
         let size = x.window_size(win)?;
         let wanted = self.st.lock().unwrap().resize.observe(size, now)?;
-        println!("[{}] window is {}x{}: asking the phone to resize display {display_id}", self.sid, wanted.0, wanted.1);
+        println!(
+            "[{}] window is {}x{}: asking the phone to resize display {display_id}",
+            self.sid, wanted.0, wanted.1
+        );
         let t = resize::ResizeTarget {
             display_id,
             pkg: &self.pkg,
@@ -590,7 +669,10 @@ impl Session {
                     let cx = (x as i64).max(0);
                     let cy = (y as i64).max(0);
                     st.pending_mouse = Some((cx, cy));
-                    if st.last_mouse_move.map_or(true, |t| now.duration_since(t) >= Duration::from_millis(8)) {
+                    if st
+                        .last_mouse_move
+                        .is_none_or(|t| now.duration_since(t) >= Duration::from_millis(8))
+                    {
                         st.last_mouse_move = Some(now);
                         (true, st.pending_mouse.take())
                     } else {
@@ -601,7 +683,12 @@ impl Session {
                     input(4, json!({ "displayId": d, "x": x, "y": y }));
                 }
             }
-            N::MouseButtonPress { button: b, x, y, .. } | N::MouseButtonRelease { button: b, x, y, .. } => {
+            N::MouseButtonPress {
+                button: b, x, y, ..
+            }
+            | N::MouseButtonRelease {
+                button: b, x, y, ..
+            } => {
                 self.flush_pending_mouse();
                 let cx = (x as i64).max(0);
                 let cy = (y as i64).max(0);
@@ -615,15 +702,17 @@ impl Session {
                     b => b,
                 };
                 match b {
-                    1..=3 => {
-                        input(5, json!({ "displayId": d, "key": b, "x": cx, "y": cy, "down": pressed }))
-                    }
+                    1..=3 => input(
+                        5,
+                        json!({ "displayId": d, "key": b, "x": cx, "y": cy, "down": pressed }),
+                    ),
                     // Mouse "back" side button → Android BACK.
                     8 if pressed => self.android_key(d, KEYCODE_BACK),
                     // X11 delivers wheel clicks as buttons 4 (up) / 5 (down).
-                    4 | 5 if pressed => {
-                        input(5, json!({ "displayId": d, "key": 4, "x": x as i64, "y": y as i64, "down": b == 5 }))
-                    }
+                    4 | 5 if pressed => input(
+                        5,
+                        json!({ "displayId": d, "key": 4, "x": x as i64, "y": y as i64, "down": b == 5 }),
+                    ),
                     _ => {}
                 }
             }
@@ -639,7 +728,10 @@ impl Session {
                 };
                 // Phone: BTN_WHEEL `down:true` → content scrolls down. GstNavigation: delta_y > 0 = wheel up.
                 for _ in 0..notches.abs() {
-                    input(5, json!({ "displayId": d, "key": 4, "x": x as i64, "y": y as i64, "down": notches < 0 }));
+                    input(
+                        5,
+                        json!({ "displayId": d, "key": 4, "x": x as i64, "y": y as i64, "down": notches < 0 }),
+                    );
                 }
             }
             N::KeyPress { key, .. } | N::KeyRelease { key, .. } => self.on_key(d, &key, pressed),
@@ -659,7 +751,11 @@ impl Session {
                 }
             }
             let h = |c: (i64, i64)| st.held_mods.contains(&c);
-            (h((0x1D, 0)) || h((0x1D, E0)), h((0x38, 0)) || h((0x38, E0)), h((0x2A, 0)) || h((0x36, 0)))
+            (
+                h((0x1D, 0)) || h((0x1D, E0)),
+                h((0x38, 0)) || h((0x38, E0)),
+                h((0x2A, 0)) || h((0x36, 0)),
+            )
         };
         // Phone navigation bindings (the key itself is swallowed, press and release).
         let phone_key = match key {
@@ -715,7 +811,8 @@ impl Session {
                     );
                 }
             }
-            self.d.send15(7, Some(json!({ "sessionId": self.sid, "error": 0 })));
+            self.d
+                .send15(7, Some(json!({ "sessionId": self.sid, "error": 0 })));
         }
         let _ = self.pipeline.set_state(gst::State::Null);
         true
@@ -725,12 +822,16 @@ impl Session {
         if self.close_hook_installed.load(Ordering::SeqCst) {
             return;
         }
-        let Some(sink) = self.sink.lock().unwrap().clone() else { return };
+        let Some(sink) = self.sink.lock().unwrap().clone() else {
+            return;
+        };
         if sink.find_property("context").is_none() {
             return;
         }
         use gst_gl::prelude::*;
-        let Some(ctx) = sink.property::<Option<gst_gl::GLContext>>("context") else { return };
+        let Some(ctx) = sink.property::<Option<gst_gl::GLContext>>("context") else {
+            return;
+        };
         let Some(win) = ctx.window() else { return };
 
         if self.close_hook_installed.swap(true, Ordering::SeqCst) {
@@ -765,7 +866,9 @@ impl Session {
         if let Some(bus) = self.pipeline.bus() {
             while let Some(msg) = bus.pop() {
                 match msg.view() {
-                    gst::MessageView::Error(e) => return Some(format!("window closed or failed: {}", e.error())),
+                    gst::MessageView::Error(e) => {
+                        return Some(format!("window closed or failed: {}", e.error()));
+                    }
                     gst::MessageView::Eos(_) => return Some("end of stream".into()),
                     _ => {}
                 }
@@ -773,13 +876,18 @@ impl Session {
         }
         if let Some(x) = x11 {
             let xw = self.xwin.lock().unwrap();
-            if let Some((win, _)) = *xw {
-                if x.window_size(win).is_none() {
-                    return Some("window closed by user (window destroyed)".into());
-                }
+            if let Some((win, _)) = *xw
+                && x.window_size(win).is_none()
+            {
+                return Some("window closed by user (window destroyed)".into());
             }
         }
-        let ice_dead = self.st.lock().unwrap().ice_bad_since.is_some_and(|t| t.elapsed() > Duration::from_secs(5));
+        let ice_dead = self
+            .st
+            .lock()
+            .unwrap()
+            .ice_bad_since
+            .is_some_and(|t| t.elapsed() > Duration::from_secs(5));
         ice_dead.then(|| "connection to the phone lost (ICE down > 5 s)".into())
     }
 }
@@ -801,8 +909,18 @@ impl X11 {
     fn connect() -> Option<Self> {
         use x11rb::protocol::xproto::ConnectionExt as _;
         let (conn, _) = x11rb::connect(None).ok()?;
-        let atom = |n: &str| conn.intern_atom(false, n.as_bytes()).ok()?.reply().ok().map(|r| r.atom);
-        Some(X11 { net_wm_name: atom("_NET_WM_NAME")?, utf8: atom("UTF8_STRING")?, conn })
+        let atom = |n: &str| {
+            conn.intern_atom(false, n.as_bytes())
+                .ok()?
+                .reply()
+                .ok()
+                .map(|r| r.atom)
+        };
+        Some(X11 {
+            net_wm_name: atom("_NET_WM_NAME")?,
+            utf8: atom("UTF8_STRING")?,
+            conn,
+        })
     }
 
     fn set_title(&self, win: u32, title: &str, first: bool) {
@@ -810,11 +928,29 @@ impl X11 {
         use x11rb::protocol::xproto::{AtomEnum, PropMode};
         use x11rb::wrapper::ConnectionExt as _;
         let c = &self.conn;
-        let _ = c.change_property8(PropMode::REPLACE, win, self.net_wm_name, self.utf8, title.as_bytes());
-        let _ = c.change_property8(PropMode::REPLACE, win, AtomEnum::WM_NAME, AtomEnum::STRING, title.as_bytes());
+        let _ = c.change_property8(
+            PropMode::REPLACE,
+            win,
+            self.net_wm_name,
+            self.utf8,
+            title.as_bytes(),
+        );
+        let _ = c.change_property8(
+            PropMode::REPLACE,
+            win,
+            AtomEnum::WM_NAME,
+            AtomEnum::STRING,
+            title.as_bytes(),
+        );
         if first {
             let class = b"smartconnect-mirror\0smartconnect-mirror\0";
-            let _ = c.change_property8(PropMode::REPLACE, win, AtomEnum::WM_CLASS, AtomEnum::STRING, class);
+            let _ = c.change_property8(
+                PropMode::REPLACE,
+                win,
+                AtomEnum::WM_CLASS,
+                AtomEnum::STRING,
+                class,
+            );
         }
         let _ = c.flush();
     }
@@ -841,7 +977,9 @@ fn gl_window_handle(sink: &gst::Element) -> u32 {
     if sink.find_property("context").is_none() {
         return 0;
     }
-    let Some(ctx) = sink.property::<Option<gst_gl::GLContext>>("context") else { return 0 };
+    let Some(ctx) = sink.property::<Option<gst_gl::GLContext>>("context") else {
+        return 0;
+    };
     let Some(win) = ctx.window() else { return 0 };
     use glib::translate::ToGlibPtr;
     // SAFETY: `win` is a valid GstGLWindow for the duration of the call.
@@ -920,8 +1058,20 @@ impl Session {
     }
 
     fn adapt_window_orientation(&self, x: &X11, target_landscape: bool) {
-        let win = self.xwin.lock().unwrap().as_ref().map(|(w, _)| *w)
-            .or_else(|| self.sink.lock().unwrap().as_ref().map(gl_window_handle).filter(|w| *w != 0));
+        let win = self
+            .xwin
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|(w, _)| *w)
+            .or_else(|| {
+                self.sink
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .map(gl_window_handle)
+                    .filter(|w| *w != 0)
+            });
         let Some(win) = win else { return };
         let rot = self.st.lock().unwrap().current_rotation;
         if !self.st.lock().unwrap().check_and_mark_adapted_rotation(rot) {
@@ -930,9 +1080,13 @@ impl Session {
         if let Some((curr_w, curr_h)) = x.window_size(win) {
             let curr_landscape = curr_w > curr_h;
             if curr_landscape != target_landscape {
-                let (new_w, new_h) = calculate_adapted_window_size(curr_w, curr_h, target_landscape);
+                let (new_w, new_h) =
+                    calculate_adapted_window_size(curr_w, curr_h, target_landscape);
                 x.resize_window(win, new_w, new_h);
-                println!("[{}] rotation changed: resized window from {curr_w}x{curr_h} to {new_w}x{new_h}", self.sid);
+                println!(
+                    "[{}] rotation changed: resized window from {curr_w}x{curr_h} to {new_w}x{new_h}",
+                    self.sid
+                );
             }
         }
     }
@@ -948,7 +1102,9 @@ impl Session {
             }
             Some(_) => {}
             None => {
-                let Some(sink) = self.sink.lock().unwrap().clone() else { return };
+                let Some(sink) = self.sink.lock().unwrap().clone() else {
+                    return;
+                };
                 let win = gl_window_handle(&sink);
                 if win != 0 {
                     x.set_title(win, &title, true);
@@ -964,25 +1120,73 @@ fn raise_window(title: String) {
     std::thread::spawn(move || {
         let has = |k: &str| std::env::var_os(k).is_some_and(|v| !v.is_empty());
         let run = |argv: &[&str]| {
-            let _ = std::process::Command::new(argv[0]).args(&argv[1..]).stdout(std::process::Stdio::null()).status();
+            let _ = std::process::Command::new(argv[0])
+                .args(&argv[1..])
+                .stdout(std::process::Stdio::null())
+                .status();
         };
         if has("HYPRLAND_INSTANCE_SIGNATURE") {
-            let Ok(out) = std::process::Command::new("hyprctl").args(["-j", "clients"]).output() else { return };
-            let Ok(list) = serde_json::from_slice::<Value>(&out.stdout) else { return };
-            let addr = list.as_array().into_iter().flatten().find(|w| w["title"].as_str() == Some(&title)).and_then(|w| w["address"].as_str());
+            let Ok(out) = std::process::Command::new("hyprctl")
+                .args(["-j", "clients"])
+                .output()
+            else {
+                return;
+            };
+            let Ok(list) = serde_json::from_slice::<Value>(&out.stdout) else {
+                return;
+            };
+            let addr = list
+                .as_array()
+                .into_iter()
+                .flatten()
+                .find(|w| w["title"].as_str() == Some(&title))
+                .and_then(|w| w["address"].as_str());
             if let Some(addr) = addr {
-                run(&["hyprctl", "dispatch", "focuswindow", &format!("address:{addr}")]);
+                run(&[
+                    "hyprctl",
+                    "dispatch",
+                    "focuswindow",
+                    &format!("address:{addr}"),
+                ]);
             }
         } else if has("SWAYSOCK") {
             // sway criteria take a regex: match the title literally.
-            let quoted: String = title.chars().flat_map(|c| if "\\^$.|?*+()[]{}\"".contains(c) { vec!['\\', c] } else { vec![c] }).collect();
+            let quoted: String = title
+                .chars()
+                .flat_map(|c| {
+                    if "\\^$.|?*+()[]{}\"".contains(c) {
+                        vec!['\\', c]
+                    } else {
+                        vec![c]
+                    }
+                })
+                .collect();
             run(&["swaymsg", &format!("[title=\"^{quoted}$\"] focus")]);
         } else {
-            let Ok(out) = std::process::Command::new("niri").args(["msg", "--json", "windows"]).output() else { return };
-            let Ok(list) = serde_json::from_slice::<Value>(&out.stdout) else { return };
-            let id = list.as_array().into_iter().flatten().find(|w| w["title"].as_str() == Some(&title)).and_then(|w| w["id"].as_u64());
+            let Ok(out) = std::process::Command::new("niri")
+                .args(["msg", "--json", "windows"])
+                .output()
+            else {
+                return;
+            };
+            let Ok(list) = serde_json::from_slice::<Value>(&out.stdout) else {
+                return;
+            };
+            let id = list
+                .as_array()
+                .into_iter()
+                .flatten()
+                .find(|w| w["title"].as_str() == Some(&title))
+                .and_then(|w| w["id"].as_u64());
             if let Some(id) = id {
-                run(&["niri", "msg", "action", "focus-window", "--id", &id.to_string()]);
+                run(&[
+                    "niri",
+                    "msg",
+                    "action",
+                    "focus-window",
+                    "--id",
+                    &id.to_string(),
+                ]);
             }
         }
     });
@@ -1039,15 +1243,28 @@ impl Host {
         if let Some(t) = views::title(pkg) {
             return t.into();
         }
-        format!("{} — Phone", self.names.get(pkg).cloned().unwrap_or_else(|| pkg.to_owned()))
+        format!(
+            "{} — Phone",
+            self.names
+                .get(pkg)
+                .cloned()
+                .unwrap_or_else(|| pkg.to_owned())
+        )
     }
 
     fn owns_pkg(&self, pkg: &str) -> bool {
-        if views::is_view_pkg(pkg) { self.own_mirror } else { self.own_apps }
+        if views::is_view_pkg(pkg) {
+            self.own_mirror
+        } else {
+            self.own_apps
+        }
     }
 
     fn by_display(&self, d: i64) -> Option<Arc<Session>> {
-        self.sessions.values().find(|s| s.display_id() == Some(d)).cloned()
+        self.sessions
+            .values()
+            .find(|s| s.display_id() == Some(d))
+            .cloned()
     }
 
     fn request(&mut self, r: StartReq, front: bool) {
@@ -1055,8 +1272,8 @@ impl Host {
             self.names.insert(r.pkg.clone(), n.clone());
         }
         // The phone re-sends unanswered invites; one cmd 1 per app is enough.
-        let starting =
-            self.inflight.as_ref().is_some_and(|(q, _)| q.pkg == r.pkg) || self.queue.iter().any(|q| q.pkg == r.pkg);
+        let starting = self.inflight.as_ref().is_some_and(|(q, _)| q.pkg == r.pkg)
+            || self.queue.iter().any(|q| q.pkg == r.pkg);
         if starting {
             println!("already starting {}; ignoring the repeated request", r.pkg);
             return;
@@ -1072,14 +1289,23 @@ impl Host {
     /// Sends the next queued cmd 1. The phone keeps a single pending start per PC, so wait for the
     /// cmd 3 offer (or a cmd 8 state 0 / cmd 12 merge, or 20 s) before the next one.
     fn pump(&mut self) {
-        if self.inflight.as_ref().is_some_and(|(_, t)| t.elapsed() < Duration::from_secs(20)) {
+        if self
+            .inflight
+            .as_ref()
+            .is_some_and(|(_, t)| t.elapsed() < Duration::from_secs(20))
+        {
             return;
         }
         if let Some((r, _)) = self.inflight.take() {
             eprintln!("start of {} timed out", r.pkg);
         }
-        let Some(r) = self.queue.pop_front() else { return };
-        println!("requesting stream: pkg {} cmp {} source {}", r.pkg, r.cmp, r.source);
+        let Some(r) = self.queue.pop_front() else {
+            return;
+        };
+        println!(
+            "requesting stream: pkg {} cmp {} source {}",
+            r.pkg, r.cmp, r.source
+        );
         // The size is the bound the phone fits the stream into. For Ready For desktop it is the
         // desktop resolution, so use the one the user picked on the phone when we know it.
         let (w, h) = match (r.pkg.as_str(), self.view_resolution) {
@@ -1137,17 +1363,23 @@ impl Host {
         let cmd = msg.get("cmd").and_then(Value::as_i64).unwrap_or(-1);
         let body = msg.get("data").cloned().unwrap_or(Value::Null);
         let sid = body.get("sessionId").and_then(Value::as_i64);
-        let pkg = body.get("pkg").and_then(Value::as_str).unwrap_or("").to_owned();
+        let pkg = body
+            .get("pkg")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_owned();
         let mine = sid.and_then(|s| self.sessions.get(&s).cloned());
         let shown = |d: Option<i64>, me: &Self| d.and_then(|d| me.by_display(d));
         // The stream invite (cmd 2) and focus changes (cmd 13) carry the app's icon as base64 PNG:
         // keep it for the GUI (`<icon cache>/<pkg>.png`, written once).
-        if matches!(cmd, 2 | 13) {
-            if let Some(icon) = body.get("icon").and_then(Value::as_str).filter(|i| !i.is_empty()) {
-                if let Some(path) = icons::harvest(&pkg, icon) {
-                    println!("saved the icon of {pkg} to {}", path.display());
-                }
-            }
+        if matches!(cmd, 2 | 13)
+            && let Some(icon) = body
+                .get("icon")
+                .and_then(Value::as_str)
+                .filter(|i| !i.is_empty())
+            && let Some(path) = icons::harvest(&pkg, icon)
+        {
+            println!("saved the icon of {pkg} to {}", path.display());
         }
         match cmd {
             // Stream invite: the phone set up a view (after svc 1) or wants to show an app here
@@ -1161,12 +1393,18 @@ impl Host {
                     println!("ignoring a new {pkg} setup: already open");
                     return Ok(());
                 }
-                let headless = !views::is_view_pkg(&pkg) && self.background && self.actions.take(&pkg, Instant::now());
+                let headless = !views::is_view_pkg(&pkg)
+                    && self.background
+                    && self.actions.take(&pkg, Instant::now());
                 println!(
                     "phone invites stream: pkg {pkg} ({}) source {}{}",
                     body["pkgName"],
                     body["source"],
-                    if headless { " — notification action, running it without a window" } else { "" }
+                    if headless {
+                        " — notification action, running it without a window"
+                    } else {
+                        ""
+                    }
                 );
                 self.request(
                     StartReq {
@@ -1175,7 +1413,10 @@ impl Host {
                         user_id: body.get("userId").cloned().unwrap_or(json!(0)),
                         shortcut_id: body.get("shortcutId").cloned().unwrap_or(Value::Null),
                         source: body.get("source").and_then(Value::as_i64).unwrap_or(1),
-                        name: body.get("pkgName").and_then(Value::as_str).map(str::to_owned),
+                        name: body
+                            .get("pkgName")
+                            .and_then(Value::as_str)
+                            .map(str::to_owned),
                         headless,
                     },
                     true,
@@ -1187,10 +1428,18 @@ impl Host {
                 let s = match (mine, offer) {
                     (Some(s), _) => s,
                     (None, Some(_)) if self.owns_pkg(&pkg) => {
-                        let req = self.inflight.as_ref().map(|(r, _)| r).filter(|r| r.pkg == pkg);
+                        let req = self
+                            .inflight
+                            .as_ref()
+                            .map(|(r, _)| r)
+                            .filter(|r| r.pkg == pkg);
                         let headless = req.is_some_and(|r| r.headless);
                         let field = |k: &str, fallback: Option<&Value>| {
-                            body.get(k).filter(|v| !v.is_null()).or(fallback).cloned().unwrap_or(Value::Null)
+                            body.get(k)
+                                .filter(|v| !v.is_null())
+                                .or(fallback)
+                                .cloned()
+                                .unwrap_or(Value::Null)
                         };
                         let info = SessionInfo {
                             sid,
@@ -1202,7 +1451,9 @@ impl Host {
                             headless,
                         };
                         let filter = ice::CandidateFilter::current(
-                            daemon_status().as_ref().and_then(ice::pc_address_from_status),
+                            daemon_status()
+                                .as_ref()
+                                .and_then(ice::pc_address_from_status),
                         );
                         println!(
                             "[{sid}] new session: pkg {pkg} {}x{}{}; ICE: offering {filter}",
@@ -1220,13 +1471,13 @@ impl Host {
                 };
                 s.learn_display(&body);
                 s.learn_stream_size(&body);
-                if let Some(offer) = offer {
-                    if !s.st.lock().unwrap().answered {
-                        let offer: Value = serde_json::from_str(offer)?;
-                        s.answer(offer["sdp"].as_str().context("offer without sdp")?)?;
-                        self.d.send15(9, None);
-                        self.last_hb = Instant::now();
-                    }
+                if let Some(offer) = offer
+                    && !s.st.lock().unwrap().answered
+                {
+                    let offer: Value = serde_json::from_str(offer)?;
+                    s.answer(offer["sdp"].as_str().context("offer without sdp")?)?;
+                    self.d.send15(9, None);
+                    self.last_hb = Instant::now();
                 }
             }
             20 => {
@@ -1240,7 +1491,9 @@ impl Host {
                     if sid.is_some() {
                         return None;
                     }
-                    body.get("displayId").and_then(Value::as_i64).and_then(|d| self.by_display(d))
+                    body.get("displayId")
+                        .and_then(Value::as_i64)
+                        .and_then(|d| self.by_display(d))
                 });
                 match (state, target) {
                     (1, Some(s)) => {
@@ -1251,7 +1504,10 @@ impl Host {
                         s.learn_display(&body);
                     }
                     (0, Some(s)) => {
-                        let why = format!("phone stopped it (reason {} {})", body["reason"], body["msg"]);
+                        let why = format!(
+                            "phone stopped it (reason {} {})",
+                            body["reason"], body["msg"]
+                        );
                         self.close_session(s.sid, &why, false);
                     }
                     (0, None) => {
@@ -1259,7 +1515,10 @@ impl Host {
                         self.finish_inflight(&pkg, false, &why);
                     }
                     (2, Some(s)) => {
-                        println!("[{}] phone paused encoder (state 2 reason {}); resuming with cmd 6", s.sid, body["reason"]);
+                        println!(
+                            "[{}] phone paused encoder (state 2 reason {}); resuming with cmd 6",
+                            s.sid, body["reason"]
+                        );
                         self.d.send15(6, Some(json!({ "sessionId": s.sid })));
                         s.request_keyframe();
                     }
@@ -1298,8 +1557,10 @@ impl Host {
                 if let Some(s) = shown(d, self) {
                     if s.headless {
                         s.mark_fired();
-                    } else if let Some(name) =
-                        body.get("appName").and_then(Value::as_str).filter(|_| !views::is_view_pkg(&s.pkg))
+                    } else if let Some(name) = body
+                        .get("appName")
+                        .and_then(Value::as_str)
+                        .filter(|_| !views::is_view_pkg(&s.pkg))
                     {
                         if !pkg.is_empty() {
                             self.names.insert(pkg.clone(), name.to_owned());
@@ -1311,21 +1572,30 @@ impl Host {
             16 => {
                 if let Some(s) = mine {
                     let rot = body.get("rotation").and_then(Value::as_u64).unwrap_or(0) as u32;
-                    println!("[{}] cmd 16: rotation {rot} display {}", s.sid, body["displayId"]);
+                    println!(
+                        "[{}] cmd 16: rotation {rot} display {}",
+                        s.sid, body["displayId"]
+                    );
                     s.learn_display(&body);
                     s.set_rotation(rot, self.x11.as_ref());
                 }
             }
             23 => {
                 if let Some(s) = mine {
-                    println!("[{}] cmd 23 display state: state {} display {}", s.sid, body["state"], body["displayId"]);
+                    println!(
+                        "[{}] cmd 23 display state: state {} display {}",
+                        s.sid, body["state"], body["displayId"]
+                    );
                     s.learn_display(&body);
                 }
             }
             26 => {
                 let d = body.get("displayId").and_then(Value::as_i64);
                 if let Some(s) = shown(d, self) {
-                    println!("[{}] resize result: success {} error {}", s.sid, body["success"], body["error"]);
+                    println!(
+                        "[{}] resize result: success {} error {}",
+                        s.sid, body["success"], body["error"]
+                    );
                 }
             }
             10 | 21 => {} // heartbeat ack, audio app list
@@ -1344,7 +1614,10 @@ impl Host {
         if let Some(inv) = views::parse_invite(msg) {
             if self.answer_views {
                 let pkg = views::view_pkg(inv.view).unwrap_or("?");
-                println!("phone asks to start {pkg} (view {}, resolution {:?}): accepting", inv.view, inv.resolution);
+                println!(
+                    "phone asks to start {pkg} (view {}, resolution {:?}): accepting",
+                    inv.view, inv.resolution
+                );
                 if inv.view == 2 {
                     self.view_resolution = inv.resolution;
                 }
@@ -1355,9 +1628,17 @@ impl Host {
         let cmd = msg.get("cmd").and_then(Value::as_i64);
         // 5 = stop/cancel, 11 = error: the phone ended (or refused) the view.
         if self.own_mirror && matches!(cmd, Some(5 | 11)) {
-            println!("svc1 cmd {} {}", cmd.unwrap_or(0), truncate(&msg.to_string(), 300));
-            let ended: Vec<i64> =
-                self.sessions.values().filter(|s| views::is_view_pkg(&s.pkg)).map(|s| s.sid).collect();
+            println!(
+                "svc1 cmd {} {}",
+                cmd.unwrap_or(0),
+                truncate(&msg.to_string(), 300)
+            );
+            let ended: Vec<i64> = self
+                .sessions
+                .values()
+                .filter(|s| views::is_view_pkg(&s.pkg))
+                .map(|s| s.sid)
+                .collect();
             for sid in ended {
                 self.close_session(sid, "phone ended the view", false);
             }
@@ -1392,7 +1673,9 @@ impl Host {
         }
         if let Some(click) = actions::parse_click(ev) {
             let what = match click.kind {
-                actions::ClickKind::Action => "action button: the next invite runs without a window",
+                actions::ClickKind::Action => {
+                    "action button: the next invite runs without a window"
+                }
                 actions::ClickKind::Open => "open: shown in a window",
             };
             println!("notification click for {}: {what}", click.pkg);
@@ -1410,7 +1693,10 @@ impl Host {
                 if let Some(s) = self.sessions.values().find(|s| s.pkg == pkg && !s.headless) {
                     raise_window(s.title.lock().unwrap().clone());
                 }
-                self.request(start_req_for(pkg, v.get("cmp").and_then(Value::as_str), &self.apps), false);
+                self.request(
+                    start_req_for(pkg, v.get("cmp").and_then(Value::as_str), &self.apps),
+                    false,
+                );
                 json!({ "ok": true, "message": "requested" })
             }
             "sessions" => json!({ "ok": true, "sessions": self.sessions.values().map(|s| json!({
@@ -1456,8 +1742,11 @@ impl Host {
         for (sid, why) in dead {
             self.close_session(sid, &why, true);
         }
-        let done: Vec<(i64, &str)> =
-            self.sessions.values().filter_map(|s| s.headless_due(now).map(|w| (s.sid, w))).collect();
+        let done: Vec<(i64, &str)> = self
+            .sessions
+            .values()
+            .filter_map(|s| s.headless_due(now).map(|w| (s.sid, w)))
+            .collect();
         for (sid, why) in done {
             self.close_session(sid, why, true);
         }
@@ -1529,7 +1818,10 @@ fn save_apps(apps: &Value) {
 }
 
 fn load_apps() -> Value {
-    std::fs::read_to_string(apps_cache_path()).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or(json!([]))
+    std::fs::read_to_string(apps_cache_path())
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or(json!([]))
 }
 
 /// A PC-initiated start (source 0). `cmp`/`userId`/name come from the cached app list when known;
@@ -1539,15 +1831,30 @@ fn start_req_for(pkg: &str, cmp: Option<&str>, apps: &Value) -> StartReq {
     if list.as_array().is_none_or(Vec::is_empty) {
         list = load_apps();
     }
-    let known = list.as_array().into_iter().flatten().find(|a| a["pkg"].as_str() == Some(pkg)).cloned();
-    let cmp = cmp.map(|c| json!(c)).or_else(|| known.as_ref().map(|a| a["cmp"].clone())).unwrap_or(json!(""));
+    let known = list
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|a| a["pkg"].as_str() == Some(pkg))
+        .cloned();
+    let cmp = cmp
+        .map(|c| json!(c))
+        .or_else(|| known.as_ref().map(|a| a["cmp"].clone()))
+        .unwrap_or(json!(""));
     StartReq {
         pkg: pkg.to_owned(),
         cmp,
-        user_id: known.as_ref().map(|a| a["userId"].clone()).filter(|u| !u.is_null()).unwrap_or(json!(0)),
+        user_id: known
+            .as_ref()
+            .map(|a| a["userId"].clone())
+            .filter(|u| !u.is_null())
+            .unwrap_or(json!(0)),
         shortcut_id: Value::Null,
         source: 0,
-        name: known.as_ref().and_then(|a| a["name"].as_str()).map(str::to_owned),
+        name: known
+            .as_ref()
+            .and_then(|a| a["name"].as_str())
+            .map(str::to_owned),
         headless: false,
     }
 }
@@ -1579,7 +1886,11 @@ fn h264_only(sdp: &str) -> String {
         }
         if l.starts_with("m=video") {
             let parts: Vec<&str> = l.split(' ').collect();
-            let keep: Vec<&str> = parts[3..].iter().copied().filter(|pt| h264.iter().any(|h| h == pt)).collect();
+            let keep: Vec<&str> = parts[3..]
+                .iter()
+                .copied()
+                .filter(|pt| h264.iter().any(|h| h == pt))
+                .collect();
             out.push(format!("{} {}", parts[..3].join(" "), keep.join(" ")));
         } else if let Some(pt) = pt_of(l) {
             if h264.contains(&pt) {
@@ -1592,7 +1903,8 @@ fn h264_only(sdp: &str) -> String {
     out.join("\r\n")
 }
 
-const BINDINGS: &str = "keys: everything is sent as real key presses (Ctrl+C/V/A, Alt+Tab, arrows, F-keys…)
+const BINDINGS: &str =
+    "keys: everything is sent as real key presses (Ctrl+C/V/A, Alt+Tab, arrows, F-keys…)
   Esc            → Android BACK      (Shift+Esc sends a real Escape)
   Ctrl+Alt+B     → BACK   (also mouse back button)
   Ctrl+Alt+H     → HOME
@@ -1635,7 +1947,9 @@ fn pick_decoder_from(override_dec: Option<&str>) -> String {
                 if ok("nvh264dec") && ok("cudadownload") {
                     return "nvh264dec ! cudadownload ! video/x-raw".into();
                 } else {
-                    eprintln!("nvdec requested but nvh264dec/cudadownload failed instantiation; falling back to avdec_h264");
+                    eprintln!(
+                        "nvdec requested but nvh264dec/cudadownload failed instantiation; falling back to avdec_h264"
+                    );
                     return "avdec_h264 thread-type=slice max-threads=4".into();
                 }
             }
@@ -1645,7 +1959,9 @@ fn pick_decoder_from(override_dec: Option<&str>) -> String {
                 } else if ok("vaapih264dec") {
                     return "vaapih264dec".into();
                 } else {
-                    eprintln!("vaapi requested but vah264dec/vaapih264dec failed instantiation; falling back to avdec_h264");
+                    eprintln!(
+                        "vaapi requested but vah264dec/vaapih264dec failed instantiation; falling back to avdec_h264"
+                    );
                     return "avdec_h264 thread-type=slice max-threads=4".into();
                 }
             }
@@ -1671,7 +1987,11 @@ fn pick_sink() -> String {
         return s;
     }
     let ok = |n: &str| gst::ElementFactory::make(n).build().is_ok();
-    if ok("glimagesink") { "glimagesink".into() } else { "autovideosink".into() }
+    if ok("glimagesink") {
+        "glimagesink".into()
+    } else {
+        "autovideosink".into()
+    }
 }
 
 /// One request/reply on the host's control socket; None when no host is running.
@@ -1708,7 +2028,8 @@ fn serve_control(tx: mpsc::Sender<Ev>) -> Result<()> {
                             if tx.send(Ev::Ctl(v, rtx)).is_err() {
                                 return;
                             }
-                            rrx.recv_timeout(Duration::from_secs(5)).unwrap_or_else(|_| "{\"ok\":false}".into())
+                            rrx.recv_timeout(Duration::from_secs(5))
+                                .unwrap_or_else(|_| "{\"ok\":false}".into())
                         }
                         Err(e) => json!({ "ok": false, "message": e.to_string() }).to_string(),
                     };
@@ -1734,12 +2055,17 @@ fn list_apps(json: bool) -> Result<()> {
     let apps = loop {
         let left = deadline.saturating_duration_since(Instant::now());
         match rx.recv_timeout(left) {
-            Ok(Ev::Phone(17, msg)) if msg.get("cmd").and_then(Value::as_i64) == Some(1) => break app_list(&msg),
+            Ok(Ev::Phone(17, msg)) if msg.get("cmd").and_then(Value::as_i64) == Some(1) => {
+                break app_list(&msg);
+            }
             Ok(Ev::Phone(..)) => continue,
             _ => {
                 let cached = load_apps();
                 if cached.as_array().is_some_and(|a| !a.is_empty()) {
-                    eprintln!("the phone did not answer; showing the cached list ({})", apps_cache_path().display());
+                    eprintln!(
+                        "the phone did not answer; showing the cached list ({})",
+                        apps_cache_path().display()
+                    );
                     break cached;
                 }
                 bail!("the phone did not send its app list (svc 17) within 15 s");
@@ -1779,7 +2105,11 @@ fn main() -> Result<()> {
         }
         "--close" => {
             let sid: i64 = args.get(1).context("--close SESSIONID")?.parse()?;
-            println!("{}", host_call(&json!({ "cmd": "close", "sessionId": sid })).context("no host running")?);
+            println!(
+                "{}",
+                host_call(&json!({ "cmd": "close", "sessionId": sid }))
+                    .context("no host running")?
+            );
             return Ok(());
         }
         "--app" => {
@@ -1805,7 +2135,11 @@ fn main() -> Result<()> {
         "--host" => {}
         other => bail!("unknown argument {other}\n{USAGE}"),
     }
-    for extra in args.iter().skip(1).filter(|a| a.starts_with("--") && mode != "--app") {
+    for extra in args
+        .iter()
+        .skip(1)
+        .filter(|a| a.starts_with("--") && mode != "--app")
+    {
         if !(mode == "--host" && extra == "--resize") {
             eprintln!("ignoring unknown argument {extra} for {mode:?}");
         }
@@ -1831,8 +2165,9 @@ fn main() -> Result<()> {
         serve_control(tx.clone())?;
     }
     let env = |k: &str| std::env::var(k).ok();
-    let resize =
-        is_host && (args.iter().any(|a| a == "--resize") || resize::enabled(env(resize::ENV_RESIZE).as_deref()));
+    let resize = is_host
+        && (args.iter().any(|a| a == "--resize")
+            || resize::enabled(env(resize::ENV_RESIZE).as_deref()));
     let background = is_host && actions::enabled(env(actions::ENV_BACKGROUND).as_deref());
     let host = Rc::new(RefCell::new(Host {
         d: d.clone(),
@@ -1947,17 +2282,26 @@ mod tests {
                      a=rtpmap:102 rtx/90000\r\na=fmtp:102 apt=96";
         let out = h264_only(offer);
         assert!(out.contains("m=video 9 UDP/TLS/RTP/SAVPF 98"));
-        assert!(out.contains("a=rtpmap:98 H264/90000") && out.contains("a=fmtp:98 profile-level-id=42e01f"));
-        assert!(!out.contains("H265") && !out.contains("rtx") && !out.contains("video-orientation"));
+        assert!(
+            out.contains("a=rtpmap:98 H264/90000")
+                && out.contains("a=fmtp:98 profile-level-id=42e01f")
+        );
+        assert!(
+            !out.contains("H265") && !out.contains("rtx") && !out.contains("video-orientation")
+        );
         assert!(out.contains("a=mid:0"));
     }
 
     /// A host whose "daemon" is one end of a socket pair; the other end sees what it sends.
     fn test_host(answer_views: bool) -> (Host, UnixStream) {
         let (ours, theirs) = UnixStream::pair().unwrap();
-        theirs.set_read_timeout(Some(Duration::from_millis(100))).unwrap();
+        theirs
+            .set_read_timeout(Some(Duration::from_millis(100)))
+            .unwrap();
         let host = Host {
-            d: Arc::new(Daemon { cmd: Mutex::new(ours) }),
+            d: Arc::new(Daemon {
+                cmd: Mutex::new(ours),
+            }),
             instance_id: 7,
             own_mirror: true,
             own_apps: true,
@@ -2006,7 +2350,11 @@ mod tests {
     #[test]
     fn action_click_then_invite_runs_headless() {
         let (mut h, theirs) = test_host(true);
-        h.on_frame(actions::SERVICE_LOCAL_EVENTS, &click("action", "com.example.clock")).unwrap();
+        h.on_frame(
+            actions::SERVICE_LOCAL_EVENTS,
+            &click("action", "com.example.clock"),
+        )
+        .unwrap();
         h.on_frame(15, &invite("com.example.clock")).unwrap();
         let (req, _) = h.inflight.as_ref().expect("cmd 1 in flight");
         assert!(req.headless);
@@ -2022,19 +2370,32 @@ mod tests {
     #[test]
     fn open_clicks_and_plain_invites_get_a_window() {
         let (mut h, _theirs) = test_host(true);
-        h.on_frame(actions::SERVICE_LOCAL_EVENTS, &click("action", "com.a")).unwrap();
-        h.on_frame(actions::SERVICE_LOCAL_EVENTS, &click("open", "com.a")).unwrap();
+        h.on_frame(actions::SERVICE_LOCAL_EVENTS, &click("action", "com.a"))
+            .unwrap();
+        h.on_frame(actions::SERVICE_LOCAL_EVENTS, &click("open", "com.a"))
+            .unwrap();
         h.on_frame(15, &invite("com.a")).unwrap();
-        assert!(!h.inflight.as_ref().unwrap().0.headless, "Open wins over an earlier button click");
+        assert!(
+            !h.inflight.as_ref().unwrap().0.headless,
+            "Open wins over an earlier button click"
+        );
         let (mut h, _theirs) = test_host(true);
-        h.on_frame(actions::SERVICE_LOCAL_EVENTS, &click("action", "com.other")).unwrap();
+        h.on_frame(actions::SERVICE_LOCAL_EVENTS, &click("action", "com.other"))
+            .unwrap();
         h.on_frame(15, &invite("com.a")).unwrap();
-        assert!(!h.inflight.as_ref().unwrap().0.headless, "a click for another app");
+        assert!(
+            !h.inflight.as_ref().unwrap().0.headless,
+            "a click for another app"
+        );
         let (mut h, _theirs) = test_host(true);
         h.background = false;
-        h.on_frame(actions::SERVICE_LOCAL_EVENTS, &click("action", "com.a")).unwrap();
+        h.on_frame(actions::SERVICE_LOCAL_EVENTS, &click("action", "com.a"))
+            .unwrap();
         h.on_frame(15, &invite("com.a")).unwrap();
-        assert!(!h.inflight.as_ref().unwrap().0.headless, "SMARTCONNECT_BACKGROUND_ACTIONS=0");
+        assert!(
+            !h.inflight.as_ref().unwrap().0.headless,
+            "SMARTCONNECT_BACKGROUND_ACTIONS=0"
+        );
     }
 
     #[test]
@@ -2056,20 +2417,29 @@ mod tests {
         assert_eq!(out.len(), 2);
         assert_eq!(out[0].0, 1);
         assert_eq!(
-            (out[0].1["cmd"].as_i64(), out[0].1["view"].as_i64(), out[0].1["reply"].as_i64()),
+            (
+                out[0].1["cmd"].as_i64(),
+                out[0].1["view"].as_i64(),
+                out[0].1["reply"].as_i64()
+            ),
             (Some(1), Some(2), Some(1))
         );
         let start = &out[1].1["data"];
         assert_eq!((out[1].0, start["pkg"].as_str()), (15, Some("desktop")));
-        assert_eq!((start["width"].as_i64(), start["height"].as_i64()), (Some(2560), Some(1440)));
+        assert_eq!(
+            (start["width"].as_i64(), start["height"].as_i64()),
+            (Some(2560), Some(1440))
+        );
         assert_eq!(h.title_for("desktop"), "Mobile desktop — Smart Connect");
     }
 
     #[test]
     fn only_the_host_answers_view_invites() {
         let (mut h, theirs) = test_host(false);
-        h.on_frame(1, &json!({ "ver": "1.0.0", "cmd": 0, "view": 1 })).unwrap();
-        h.on_frame(1, &json!({ "ver": "1.0.0", "cmd": 31, "view": 7 })).unwrap();
+        h.on_frame(1, &json!({ "ver": "1.0.0", "cmd": 0, "view": 1 }))
+            .unwrap();
+        h.on_frame(1, &json!({ "ver": "1.0.0", "cmd": 31, "view": 7 }))
+            .unwrap();
         assert!(sent(&theirs).is_empty());
     }
 
@@ -2077,7 +2447,10 @@ mod tests {
     fn start_request_defaults() {
         let apps = json!([{ "pkg": "com.example", "name": "Example", "cmp": "com.example.Main", "userId": 10 }]);
         let r = start_req_for("com.example", None, &apps);
-        assert_eq!((r.cmp.as_str(), r.user_id.as_i64(), r.source), (Some("com.example.Main"), Some(10), 0));
+        assert_eq!(
+            (r.cmp.as_str(), r.user_id.as_i64(), r.source),
+            (Some("com.example.Main"), Some(10), 0)
+        );
         assert_eq!(r.name.as_deref(), Some("Example"));
         assert!(!r.headless, "PC-initiated starts always get a window");
     }
@@ -2160,7 +2533,9 @@ mod tests {
         let _ = gst::init();
         let ev = create_keyframe_request_event();
         assert_eq!(ev.type_(), gst::EventType::CustomUpstream);
-        let s = ev.structure().expect("ForceKeyUnit event must have structure");
+        let s = ev
+            .structure()
+            .expect("ForceKeyUnit event must have structure");
         assert_eq!(s.name(), "GstForceKeyUnit");
         assert_eq!(s.get::<bool>("all-headers"), Ok(true));
     }
@@ -2181,10 +2556,10 @@ mod tests {
         src.static_pad("src").unwrap().add_probe(
             gst::PadProbeType::EVENT_UPSTREAM,
             move |_pad, info| {
-                if let Some(gst::PadProbeData::Event(ref ev)) = info.data {
-                    if let Some(s) = ev.structure() {
-                        received_clone.lock().unwrap().push(s.name().to_string());
-                    }
+                if let Some(gst::PadProbeData::Event(ref ev)) = info.data
+                    && let Some(s) = ev.structure()
+                {
+                    received_clone.lock().unwrap().push(s.name().to_string());
                 }
                 gst::PadProbeReturn::Ok
             },
@@ -2199,7 +2574,9 @@ mod tests {
             cmp: Value::Null,
             shortcut_id: Value::Null,
             headless: false,
-            d: Arc::new(Daemon { cmd: Mutex::new(ours) }),
+            d: Arc::new(Daemon {
+                cmd: Mutex::new(ours),
+            }),
             st: Mutex::default(),
             pipeline: gst::Pipeline::with_name("test-kf-session"),
             webrtc: gst::ElementFactory::make("identity").build().unwrap(),
@@ -2303,7 +2680,9 @@ mod tests {
             cmp: Value::Null,
             shortcut_id: Value::Null,
             headless: false,
-            d: Arc::new(Daemon { cmd: Mutex::new(ours) }),
+            d: Arc::new(Daemon {
+                cmd: Mutex::new(ours),
+            }),
             st: Mutex::default(),
             pipeline: gst::Pipeline::with_name("test-close"),
             webrtc: gst::ElementFactory::make("identity").build().unwrap(),
@@ -2336,7 +2715,9 @@ mod tests {
             cmp: Value::Null,
             shortcut_id: Value::Null,
             headless: false,
-            d: Arc::new(Daemon { cmd: Mutex::new(ours) }),
+            d: Arc::new(Daemon {
+                cmd: Mutex::new(ours),
+            }),
             st: Mutex::default(),
             pipeline: gst::Pipeline::with_name("test"),
             webrtc: gst::ElementFactory::make("identity").build().unwrap(),

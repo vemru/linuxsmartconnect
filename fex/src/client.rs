@@ -72,7 +72,9 @@ pub async fn pull(offer: &Offer, max_bytes: usize) -> Result<Pulled> {
         loop {
             let text = match ws.next().await {
                 Some(Ok(Message::Text(t))) => t,
-                Some(Ok(Message::Close(_))) | None => bail!("fex server closed the WebSocket before offering files"),
+                Some(Ok(Message::Close(_))) | None => {
+                    bail!("fex server closed the WebSocket before offering files")
+                }
                 Some(Ok(_)) => continue,
                 Some(Err(e)) => return Err(e).context("reading the fex WebSocket"),
             };
@@ -89,20 +91,29 @@ pub async fn pull(offer: &Offer, max_bytes: usize) -> Result<Pulled> {
             }
             match f.name {
                 Name::VersionNegotiation => {
-                    if let Ok(v) = f.json::<VersionNegotiation>() {
-                        if v.version != frame::VERSION {
-                            warn!(offered = v.version, "fex: server offers another protocol version; answering with ours");
-                        }
+                    if let Ok(v) = f.json::<VersionNegotiation>()
+                        && v.version != frame::VERSION
+                    {
+                        warn!(
+                            offered = v.version,
+                            "fex: server offers another protocol version; answering with ours"
+                        );
                     }
                     let body = serde_json::to_string(&VersionNegotiation {
                         version: frame::VERSION,
                         token: (!offer.token.is_empty()).then(|| offer.token.clone()),
                     })?;
-                    ws.send(Message::text(Frame::ack(&f.id, Name::VersionNegotiation, Some(body)).to_string())).await?;
+                    ws.send(Message::text(
+                        Frame::ack(&f.id, Name::VersionNegotiation, Some(body)).to_string(),
+                    ))
+                    .await?;
                 }
                 Name::SendRequest => {
                     let req: SendRequest = f.json()?;
-                    ws.send(Message::text(Frame::ack(&f.id, Name::SendRequest, Some("{}".into())).to_string())).await?;
+                    ws.send(Message::text(
+                        Frame::ack(&f.id, Name::SendRequest, Some("{}".into())).to_string(),
+                    ))
+                    .await?;
                     return Ok(req);
                 }
                 _ => {}
@@ -111,7 +122,11 @@ pub async fn pull(offer: &Offer, max_bytes: usize) -> Result<Pulled> {
     })
     .await
     .context("timed out waiting for the phone's sendRequest")??;
-    info!(files = request.file_count, bytes = request.total_size, "fex: phone offers a transfer");
+    info!(
+        files = request.file_count,
+        bytes = request.total_size,
+        "fex: phone offers a transfer"
+    );
 
     // The download runs on its own connection while the WebSocket stays open; keep reading the
     // WebSocket meanwhile so pings are answered.
@@ -141,30 +156,48 @@ pub async fn pull(offer: &Offer, max_bytes: usize) -> Result<Pulled> {
         Ok(_) => (frame::STATUS_COMPLETE, String::new()),
         Err(_) => (frame::STATUS_FAILED, "download failed".to_owned()),
     };
-    let status = Status { task_id: request.id.clone(), kind, reason };
+    let status = Status {
+        task_id: request.id.clone(),
+        kind,
+        reason,
+    };
     if !report(&mut ws, &status).await && result.is_ok() {
         warn!("fex: the phone did not acknowledge the completion status");
     }
     let _ = ws.close(None).await;
-    Ok(Pulled { request, archive: result? })
+    Ok(Pulled {
+        request,
+        archive: result?,
+    })
 }
 
 /// Sends a `status` action and waits briefly for its ack; returns whether it came.
 async fn report<S>(ws: &mut S, status: &Status) -> bool
 where
-    S: futures_util::Sink<Message> + futures_util::Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin,
+    S: futures_util::Sink<Message>
+        + futures_util::Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>>
+        + Unpin,
 {
     let id = ClientIds::default().next_id();
-    let Ok(body) = serde_json::to_string(status) else { return false };
-    if ws.send(Message::text(Frame::action(&id, Name::Status, Some(body)).to_string())).await.is_err() {
+    let Ok(body) = serde_json::to_string(status) else {
+        return false;
+    };
+    if ws
+        .send(Message::text(
+            Frame::action(&id, Name::Status, Some(body)).to_string(),
+        ))
+        .await
+        .is_err()
+    {
         return false;
     }
     tokio::time::timeout(ACK_TIMEOUT, async {
         while let Some(Ok(m)) = ws.next().await {
-            if let Message::Text(t) = m {
-                if Frame::parse(&t).is_ok_and(|f| f.kind == Kind::Ack && f.name == Name::Status && f.id == id) {
-                    return true;
-                }
+            if let Message::Text(t) = m
+                && Frame::parse(&t)
+                    .is_ok_and(|f| f.kind == Kind::Ack && f.name == Name::Status && f.id == id)
+            {
+                return true;
             }
         }
         false
@@ -191,14 +224,22 @@ async fn download(
         let resp = http::get(&mut stream, host, &target, max_bytes).await?;
         if resp.status == 200 && resp.body.starts_with(b"PK") {
             if request.total_size > 0 && resp.body.len() as u64 != request.total_size {
-                bail!("downloaded {} bytes but the phone announced {}", resp.body.len(), request.total_size);
+                bail!(
+                    "downloaded {} bytes but the phone announced {}",
+                    resp.body.len(),
+                    request.total_size
+                );
             }
             return Ok(resp.body);
         }
 
         // 2. Otherwise fallback to /downloadFile (used by SendFilesDirect, e.g. for phone-to-PC file shares).
         let file_list: Vec<(String, i64, u64)> = if !request.files.is_empty() {
-            request.files.iter().map(|f| (f.name.clone(), f.index, f.size)).collect()
+            request
+                .files
+                .iter()
+                .map(|f| (f.name.clone(), f.index, f.size))
+                .collect()
         } else {
             vec![(request.file_name.clone(), 0, request.total_size)]
         };
@@ -215,20 +256,39 @@ async fn download(
                 file_target.push_str(&format!("&token={}", http::encode_query_value(token)));
             }
             let mut file_stream = tls::connect(addr, config.clone()).await?;
-            let file_resp = http::get(&mut file_stream, host, &file_target, max_bytes.saturating_sub(total_downloaded as usize)).await?;
+            let file_resp = http::get(
+                &mut file_stream,
+                host,
+                &file_target,
+                max_bytes.saturating_sub(total_downloaded as usize),
+            )
+            .await?;
             if file_resp.status != 200 {
-                let preview = String::from_utf8_lossy(&file_resp.body[..file_resp.body.len().min(80)]).into_owned();
-                bail!("/downloadFile answered HTTP {}: {:?}", file_resp.status, preview.replace(&request.id, "<task>"));
+                let preview =
+                    String::from_utf8_lossy(&file_resp.body[..file_resp.body.len().min(80)])
+                        .into_owned();
+                bail!(
+                    "/downloadFile answered HTTP {}: {:?}",
+                    file_resp.status,
+                    preview.replace(&request.id, "<task>")
+                );
             }
             total_downloaded += file_resp.body.len() as u64;
             entries.push((name, file_resp.body));
         }
 
         if request.total_size > 0 && total_downloaded != request.total_size {
-            bail!("downloaded {} bytes across files but the phone announced {}", total_downloaded, request.total_size);
+            bail!(
+                "downloaded {} bytes across files but the phone announced {}",
+                total_downloaded,
+                request.total_size
+            );
         }
 
-        let entries_ref: Vec<(&str, &[u8])> = entries.iter().map(|(n, b)| (n.as_str(), b.as_slice())).collect();
+        let entries_ref: Vec<(&str, &[u8])> = entries
+            .iter()
+            .map(|(n, b)| (n.as_str(), b.as_slice()))
+            .collect();
         Ok(zip::write_stored(&entries_ref))
     })
     .await

@@ -24,12 +24,15 @@ use gtk::{gio, glib};
 const PORT: u16 = 52020;
 
 fn opt_dir() -> PathBuf {
-    PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".local/opt/smartconnect-linux")
+    PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
+        .join(".local/opt/smartconnect-linux")
 }
 
 /// Identifies one AppImage build (written by `packaging/appimage/build-in-container.sh`).
 fn build_id(root: &std::path::Path) -> Option<String> {
-    std::fs::read_to_string(root.join("share/smartconnect-linux/build-id")).ok().map(|s| s.trim().to_owned())
+    std::fs::read_to_string(root.join("share/smartconnect-linux/build-id"))
+        .ok()
+        .map(|s| s.trim().to_owned())
 }
 
 /// The AppImage file this app runs from, when it is not the installed copy or a different build.
@@ -45,7 +48,9 @@ pub fn pending_install() -> Option<(PathBuf, bool)> {
 
 /// The same build is installed and this was started from the AppImage file again: open that one.
 pub fn installed_same_build() -> bool {
-    let (Some(_), Some(appdir)) = (std::env::var_os("APPIMAGE"), std::env::var_os("APPDIR")) else { return false };
+    let (Some(_), Some(appdir)) = (std::env::var_os("APPIMAGE"), std::env::var_os("APPDIR")) else {
+        return false;
+    };
     let installed = build_id(&opt_dir());
     installed.is_some() && installed == build_id(std::path::Path::new(&appdir))
 }
@@ -63,10 +68,18 @@ pub fn open_installed_and_quit(app: &adw::Application) {
 }
 
 /// The welcome window. `go_on` builds the normal window (for *Try without installing*).
-pub fn welcome(app: &adw::Application, appimage: PathBuf, update: bool, go_on: impl Fn() + 'static) {
+pub fn welcome(
+    app: &adw::Application,
+    appimage: PathBuf,
+    update: bool,
+    go_on: impl Fn() + 'static,
+) {
     // Nothing is installed yet, so the app icon is only inside the AppImage.
-    if let (Some(appdir), Some(display)) = (std::env::var_os("APPDIR"), gtk::gdk::Display::default()) {
-        gtk::IconTheme::for_display(&display).add_search_path(PathBuf::from(appdir).join("share/smartconnect-linux"));
+    if let (Some(appdir), Some(display)) =
+        (std::env::var_os("APPDIR"), gtk::gdk::Display::default())
+    {
+        gtk::IconTheme::for_display(&display)
+            .add_search_path(PathBuf::from(appdir).join("share/smartconnect-linux"));
     }
     let status = adw::StatusPage::builder()
         .icon_name("dev.smartconnect.Linux")
@@ -86,30 +99,68 @@ pub fn welcome(app: &adw::Application, appimage: PathBuf, update: bool, go_on: i
         .halign(gtk::Align::Center)
         .build();
     let try_it = gtk::Button::builder()
-        .label(if update { "Not now" } else { "Try without installing" })
+        .label(if update {
+            "Not now"
+        } else {
+            "Try without installing"
+        })
         .css_classes(["flat"])
         .halign(gtk::Align::Center)
         .build();
-    let spinner = adw::Spinner::builder().visible(false).halign(gtk::Align::Center).build();
-    let error = gtk::Label::builder().wrap(true).selectable(true).css_classes(["error"]).visible(false).max_width_chars(60).build();
-    let buttons = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(12).build();
-    for w in [set_up.upcast_ref::<gtk::Widget>(), spinner.upcast_ref(), try_it.upcast_ref(), error.upcast_ref()] {
+    let spinner = adw::Spinner::builder()
+        .visible(false)
+        .halign(gtk::Align::Center)
+        .build();
+    let error = gtk::Label::builder()
+        .wrap(true)
+        .selectable(true)
+        .css_classes(["error"])
+        .visible(false)
+        .max_width_chars(60)
+        .build();
+    let buttons = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(12)
+        .build();
+    for w in [
+        set_up.upcast_ref::<gtk::Widget>(),
+        spinner.upcast_ref(),
+        try_it.upcast_ref(),
+        error.upcast_ref(),
+    ] {
         buttons.append(w);
     }
     status.set_child(Some(&buttons));
     let toolbar = adw::ToolbarView::new();
     toolbar.add_top_bar(&adw::HeaderBar::builder().show_title(false).build());
     toolbar.set_content(Some(&status));
-    let window = adw::ApplicationWindow::builder().application(app).default_width(560).default_height(560).content(&toolbar).build();
+    let window = adw::ApplicationWindow::builder()
+        .application(app)
+        .default_width(560)
+        .default_height(560)
+        .content(&toolbar)
+        .build();
 
     let (app_c, window_c) = (app.clone(), window.clone());
     set_up.connect_clicked(move |button| {
         button.set_sensitive(false);
         spinner.set_visible(true);
         error.set_visible(false);
-        let (appimage, app, spinner, error, button) = (appimage.clone(), app_c.clone(), spinner.clone(), error.clone(), button.clone());
+        let (appimage, app, spinner, error, button) = (
+            appimage.clone(),
+            app_c.clone(),
+            spinner.clone(),
+            error.clone(),
+            button.clone(),
+        );
         glib::spawn_future_local(async move {
-            let out = gio::spawn_blocking(move || Command::new(&appimage).args(["--install", "--enable"]).stdin(Stdio::null()).output()).await;
+            let out = gio::spawn_blocking(move || {
+                Command::new(&appimage)
+                    .args(["--install", "--enable"])
+                    .stdin(Stdio::null())
+                    .output()
+            })
+            .await;
             spinner.set_visible(false);
             match out {
                 Ok(Ok(o)) if o.status.success() => open_installed_and_quit(&app),
@@ -146,7 +197,11 @@ pub enum Firewall {
 }
 
 fn active(unit: &str) -> bool {
-    Command::new("systemctl").args(["is-active", "--quiet", unit]).stdin(Stdio::null()).status().is_ok_and(|s| s.success())
+    Command::new("systemctl")
+        .args(["is-active", "--quiet", unit])
+        .stdin(Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
 }
 
 /// Read-only: never asks for authentication.
@@ -159,7 +214,11 @@ pub fn firewall() -> Firewall {
             .stderr(Stdio::null())
             .status()
             .is_ok_and(|s| s.success());
-        return if open { Firewall::Fine } else { Firewall::FirewalldBlocks };
+        return if open {
+            Firewall::Fine
+        } else {
+            Firewall::FirewalldBlocks
+        };
     }
     if active("ufw") {
         return Firewall::UfwMaybe;
@@ -168,7 +227,10 @@ pub fn firewall() -> Firewall {
 }
 
 fn desktop_has_polkit_agent() -> bool {
-    std::env::var("XDG_CURRENT_DESKTOP").is_ok_and(|d| d.split(':').any(|p| matches!(p.to_ascii_lowercase().as_str(), "gnome" | "kde")))
+    std::env::var("XDG_CURRENT_DESKTOP").is_ok_and(|d| {
+        d.split(':')
+            .any(|p| matches!(p.to_ascii_lowercase().as_str(), "gnome" | "kde"))
+    })
 }
 
 /// A hint row for the pairing dialog; hidden until `check` finds a firewall in the way.
@@ -182,19 +244,49 @@ pub struct FirewallHint {
 
 impl FirewallHint {
     pub fn build() -> std::rc::Rc<Self> {
-        let title = gtk::Label::builder().xalign(0.0).wrap(true).css_classes(["heading"]).build();
-        let body = gtk::Label::builder().xalign(0.0).wrap(true).selectable(true).css_classes(["dim-label"]).build();
-        let allow = gtk::Button::builder().label("Allow").css_classes(["suggested-action"]).valign(gtk::Align::Center).build();
-        let copy = gtk::Button::builder().label("Copy commands").valign(gtk::Align::Center).build();
-        let text = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(4).hexpand(true).build();
+        let title = gtk::Label::builder()
+            .xalign(0.0)
+            .wrap(true)
+            .css_classes(["heading"])
+            .build();
+        let body = gtk::Label::builder()
+            .xalign(0.0)
+            .wrap(true)
+            .selectable(true)
+            .css_classes(["dim-label"])
+            .build();
+        let allow = gtk::Button::builder()
+            .label("Allow")
+            .css_classes(["suggested-action"])
+            .valign(gtk::Align::Center)
+            .build();
+        let copy = gtk::Button::builder()
+            .label("Copy commands")
+            .valign(gtk::Align::Center)
+            .build();
+        let text = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(4)
+            .hexpand(true)
+            .build();
         text.append(&title);
         text.append(&body);
-        let widget = gtk::Box::builder().spacing(12).css_classes(["card", "sc-card"]).visible(false).build();
+        let widget = gtk::Box::builder()
+            .spacing(12)
+            .css_classes(["card", "sc-card"])
+            .visible(false)
+            .build();
         widget.append(&gtk::Image::from_icon_name("dialog-warning-symbolic"));
         widget.append(&text);
         widget.append(&allow);
         widget.append(&copy);
-        let hint = std::rc::Rc::new(Self { widget, title, body, allow, copy });
+        let hint = std::rc::Rc::new(Self {
+            widget,
+            title,
+            body,
+            allow,
+            copy,
+        });
         let weak = std::rc::Rc::downgrade(&hint);
         hint.allow.connect_clicked(move |_| {
             if let Some(h) = weak.upgrade() {
@@ -223,7 +315,9 @@ impl FirewallHint {
     pub fn check(self: &std::rc::Rc<Self>) {
         let weak = std::rc::Rc::downgrade(self);
         glib::spawn_future_local(async move {
-            let Ok(state) = gio::spawn_blocking(firewall).await else { return };
+            let Ok(state) = gio::spawn_blocking(firewall).await else {
+                return;
+            };
             let Some(h) = weak.upgrade() else { return };
             h.show(state);
         });
@@ -258,7 +352,13 @@ impl FirewallHint {
         glib::spawn_future_local(async move {
             let port = format!("--add-port={PORT}/tcp");
             let ok = gio::spawn_blocking(move || {
-                let run = |args: &[&str]| Command::new("firewall-cmd").args(args).stdin(Stdio::null()).status().is_ok_and(|s| s.success());
+                let run = |args: &[&str]| {
+                    Command::new("firewall-cmd")
+                        .args(args)
+                        .stdin(Stdio::null())
+                        .status()
+                        .is_ok_and(|s| s.success())
+                };
                 run(&["--permanent", &port, "--add-service=mdns"]) && run(&["--reload"])
             })
             .await
@@ -268,7 +368,9 @@ impl FirewallHint {
             if ok {
                 h.check();
             } else {
-                h.body.set_label("That did not work. Copy the commands and run them in a terminal instead.");
+                h.body.set_label(
+                    "That did not work. Copy the commands and run them in a terminal instead.",
+                );
             }
         });
     }

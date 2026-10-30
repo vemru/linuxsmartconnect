@@ -38,15 +38,22 @@ async fn start_mock(archive: Vec<u8>, files_json: String) -> Mock {
 /// Like [`start_mock`], but `sendRequest` announces `total` bytes.
 async fn start_mock_announcing(archive: Vec<u8>, files_json: String, total: usize) -> Mock {
     let key = rcgen::KeyPair::generate().unwrap();
-    let cert = rcgen::CertificateParams::new(vec!["Lenovo".to_owned()]).unwrap().self_signed(&key).unwrap();
+    let cert = rcgen::CertificateParams::new(vec!["Lenovo".to_owned()])
+        .unwrap()
+        .self_signed(&key)
+        .unwrap();
     let der: CertificateDer<'static> = cert.der().clone();
     let fingerprint = tls::fingerprint(der.as_ref());
-    let config = ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
-        .with_safe_default_protocol_versions()
-        .unwrap()
-        .with_no_client_auth()
-        .with_single_cert(vec![der], PrivatePkcs8KeyDer::from(key.serialize_der()).into())
-        .unwrap();
+    let config =
+        ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_no_client_auth()
+            .with_single_cert(
+                vec![der],
+                PrivatePkcs8KeyDer::from(key.serialize_der()).into(),
+            )
+            .unwrap();
     let acceptor = TlsAcceptor::from(Arc::new(config));
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -55,9 +62,16 @@ async fn start_mock_announcing(archive: Vec<u8>, files_json: String, total: usiz
     tokio::spawn(async move {
         loop {
             let (tcp, _) = listener.accept().await.unwrap();
-            let (acceptor, ev, archive, files_json) = (acceptor.clone(), ev.clone(), archive.clone(), files_json.clone());
+            let (acceptor, ev, archive, files_json) = (
+                acceptor.clone(),
+                ev.clone(),
+                archive.clone(),
+                files_json.clone(),
+            );
             tokio::spawn(async move {
-                let Ok(mut s) = acceptor.accept(tcp).await else { return };
+                let Ok(mut s) = acceptor.accept(tcp).await else {
+                    return;
+                };
                 let mut head = Vec::new();
                 let mut b = [0u8; 1];
                 while !head.ends_with(b"\r\n\r\n") {
@@ -71,7 +85,10 @@ async fn start_mock_announcing(archive: Vec<u8>, files_json: String, total: usiz
                 if target == "/websocket" {
                     let key = head
                         .lines()
-                        .find_map(|l| l.strip_prefix("Sec-WebSocket-Key: ").or_else(|| l.strip_prefix("sec-websocket-key: ")))
+                        .find_map(|l| {
+                            l.strip_prefix("Sec-WebSocket-Key: ")
+                                .or_else(|| l.strip_prefix("sec-websocket-key: "))
+                        })
                         .unwrap();
                     let resp = format!(
                         "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {}\r\n\r\n",
@@ -79,7 +96,11 @@ async fn start_mock_announcing(archive: Vec<u8>, files_json: String, total: usiz
                     );
                     s.write_all(resp.as_bytes()).await.unwrap();
                     let mut ws = WebSocketStream::from_raw_socket(s, Role::Server, None).await;
-                    ws.send(Message::text(r#"action:Server1001:versionNegotiation?{"version":1}"#)).await.unwrap();
+                    ws.send(Message::text(
+                        r#"action:Server1001:versionNegotiation?{"version":1}"#,
+                    ))
+                    .await
+                    .unwrap();
                     let mut sent_request = false;
                     while let Some(Ok(m)) = ws.next().await {
                         let Message::Text(t) = m else { continue };
@@ -92,7 +113,9 @@ async fn start_mock_announcing(archive: Vec<u8>, files_json: String, total: usiz
                             ws.send(Message::text(req)).await.unwrap();
                         } else if let Some(rest) = t.strip_prefix("action:") {
                             let id = rest.split(':').next().unwrap();
-                            ws.send(Message::text(format!("ack:{id}:status"))).await.unwrap();
+                            ws.send(Message::text(format!("ack:{id}:status")))
+                                .await
+                                .unwrap();
                         }
                     }
                 } else {
@@ -102,8 +125,15 @@ async fn start_mock_announcing(archive: Vec<u8>, files_json: String, total: usiz
                     } else {
                         b"download -> taskId x does not exist!".to_vec()
                     };
-                    let ctype = if body.starts_with(b"PK") { "application/zip" } else { "text/plain; charset=utf-8" };
-                    let resp = format!("HTTP/1.1 200 OK\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\n\r\n", body.len());
+                    let ctype = if body.starts_with(b"PK") {
+                        "application/zip"
+                    } else {
+                        "text/plain; charset=utf-8"
+                    };
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\n\r\n",
+                        body.len()
+                    );
                     let _ = s.write_all(resp.as_bytes()).await;
                     let _ = s.write_all(&body).await;
                     let _ = s.shutdown().await;
@@ -111,7 +141,11 @@ async fn start_mock_announcing(archive: Vec<u8>, files_json: String, total: usiz
             });
         }
     });
-    Mock { addr, fingerprint, events }
+    Mock {
+        addr,
+        fingerprint,
+        events,
+    }
 }
 
 fn png(tag: u8) -> Vec<u8> {
@@ -123,10 +157,20 @@ const FILES: &str = r#"[{"name":"a.b_a.b.Main.png","mimeType":"image/png","size"
 #[tokio::test]
 async fn pulls_a_transfer_and_reports_completion() {
     let (a, c) = (png(1), png(2));
-    let archive = build_zip(&[("a.b_a.b.Main.png", &a), ("10_c.d_c.d.Main.png", &c)], false);
+    let archive = build_zip(
+        &[("a.b_a.b.Main.png", &a), ("10_c.d_c.d.Main.png", &c)],
+        false,
+    );
     let mock = start_mock(archive.clone(), FILES.into()).await;
-    let offer = Offer { host: mock.addr.ip(), port: mock.addr.port(), fingerprint: mock.fingerprint.to_uppercase(), token: TOKEN.into() };
-    let pulled = client::pull(&offer, client::DEFAULT_MAX_BYTES).await.unwrap();
+    let offer = Offer {
+        host: mock.addr.ip(),
+        port: mock.addr.port(),
+        fingerprint: mock.fingerprint.to_uppercase(),
+        token: TOKEN.into(),
+    };
+    let pulled = client::pull(&offer, client::DEFAULT_MAX_BYTES)
+        .await
+        .unwrap();
     assert_eq!(pulled.request.id, TASK);
     assert_eq!(pulled.request.files.len(), 2);
     assert_eq!(pulled.archive, archive);
@@ -135,7 +179,8 @@ async fn pulls_a_transfer_and_reports_completion() {
     assert_eq!(
         events,
         [
-            r#"ws ack:Server1001:versionNegotiation?{"version":1,"token":"tok+en/placeholder="}"#.to_owned(),
+            r#"ws ack:Server1001:versionNegotiation?{"version":1,"token":"tok+en/placeholder="}"#
+                .to_owned(),
             "ws ack:Server1002:sendRequest?{}".to_owned(),
             format!("http /download?taskId={TASK}&token=tok%2Ben%2Fplaceholder%3D"),
             format!(r#"ws action:Client1001:status?{{"taskId":"{TASK}","type":1,"reason":""}}"#),
@@ -148,21 +193,40 @@ async fn reports_a_failed_download_to_the_phone() {
     let archive = build_zip(&[("a.b_a.b.Main.png", &png(1))], false);
     let announced = archive.len() + 7;
     let mock = start_mock_announcing(archive, FILES.into(), announced).await;
-    let offer = Offer { host: mock.addr.ip(), port: mock.addr.port(), fingerprint: mock.fingerprint.clone(), token: String::new() };
-    let err = client::pull(&offer, client::DEFAULT_MAX_BYTES).await.unwrap_err();
+    let offer = Offer {
+        host: mock.addr.ip(),
+        port: mock.addr.port(),
+        fingerprint: mock.fingerprint.clone(),
+        token: String::new(),
+    };
+    let err = client::pull(&offer, client::DEFAULT_MAX_BYTES)
+        .await
+        .unwrap_err();
     assert!(format!("{err:#}").contains("announced"), "{err:#}");
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     let events = mock.events.lock().unwrap().clone();
     assert_eq!(events[2], format!("http /download?taskId={TASK}"));
-    assert_eq!(events[3], format!(r#"ws action:Client1001:status?{{"taskId":"{TASK}","type":2,"reason":"download failed"}}"#));
+    assert_eq!(
+        events[3],
+        format!(
+            r#"ws action:Client1001:status?{{"taskId":"{TASK}","type":2,"reason":"download failed"}}"#
+        )
+    );
 }
 
 #[tokio::test]
 async fn refuses_a_server_with_another_certificate() {
     let mock = start_mock(build_zip(&[("a.png", &png(1))], false), FILES.into()).await;
     let wrong = tls::fingerprint(b"some other certificate");
-    let offer = Offer { host: mock.addr.ip(), port: mock.addr.port(), fingerprint: wrong, token: String::new() };
-    let err = client::pull(&offer, client::DEFAULT_MAX_BYTES).await.unwrap_err();
+    let offer = Offer {
+        host: mock.addr.ip(),
+        port: mock.addr.port(),
+        fingerprint: wrong,
+        token: String::new(),
+    };
+    let err = client::pull(&offer, client::DEFAULT_MAX_BYTES)
+        .await
+        .unwrap_err();
     assert!(format!("{err:#}").contains("TLS handshake"), "{err:#}");
     assert!(mock.events.lock().unwrap().is_empty());
 }
@@ -170,7 +234,14 @@ async fn refuses_a_server_with_another_certificate() {
 #[tokio::test]
 async fn fetches_icons_into_the_cache_layout() {
     let (a, c) = (png(1), png(2));
-    let archive = build_zip(&[("a.b_a.b.Main.png", &a), ("10_c.d_c.d.Main.png", &c), ("../escape.png", &a)], true);
+    let archive = build_zip(
+        &[
+            ("a.b_a.b.Main.png", &a),
+            ("10_c.d_c.d.Main.png", &c),
+            ("../escape.png", &a),
+        ],
+        true,
+    );
     let mock = start_mock(archive, FILES.into()).await;
     let data = serde_json::json!({"ver":"1","cmd":1,"port":mock.addr.port(),"fingerprint":mock.fingerprint,"token":TOKEN,
         "appLimit":5,"autoDownload":false,
@@ -180,7 +251,9 @@ async fn fetches_icons_into_the_cache_layout() {
     let advert = AppListAdvert::from_data(&data).unwrap();
     let dir = std::env::temp_dir().join(format!("smartconnect-fex-mock-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    let r = icons::fetch(IpAddr::V4(Ipv4Addr::LOCALHOST), &advert, &dir).await.unwrap();
+    let r = icons::fetch(IpAddr::V4(Ipv4Addr::LOCALHOST), &advert, &dir)
+        .await
+        .unwrap();
     assert_eq!((r.icons, r.written, r.skipped), (2, 2, 1));
     assert_eq!(r.missing, ["e.f_e.f.Main.png"]);
     assert_eq!(std::fs::read(dir.join("10_c.d_c.d.Main.png")).unwrap(), c);

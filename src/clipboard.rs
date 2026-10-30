@@ -79,7 +79,13 @@ enum Seen {
 }
 
 /// Image types we pick up from the Linux clipboard, best first (all are images the phone accepts).
-const IMAGE_TYPES: [&str; 5] = ["image/png", "image/jpeg", "image/webp", "image/gif", "image/bmp"];
+const IMAGE_TYPES: [&str; 5] = [
+    "image/png",
+    "image/jpeg",
+    "image/webp",
+    "image/gif",
+    "image/bmp",
+];
 
 /// The file extension for an image MIME type.
 fn image_ext(mime: &str) -> &'static str {
@@ -102,19 +108,24 @@ impl Session {
     /// Handles one clipboard message from the phone and returns the reply, if it needs one, as
     /// `(service id, data)`: usually service 9, but a PULL of our image is answered on fex (2).
     pub fn handle(&mut self, data: &Value, local: &LocalClipboard) -> Option<(i64, Value)> {
-        self.handle_clipboard(data, local).map(|d| (SERVICE_CLIPBOARD, d)).or_else(|| {
-            (data.get("msgId").and_then(Value::as_i64) == Some(CLIP_PULL))
-                .then(|| data.pointer("/data/clipId").and_then(Value::as_i64))
-                .flatten()
-                .and_then(|clip_id| local.offer_current_image(clip_id))
-                .map(|d| (SERVICE_FILE_EX, d))
-        })
+        self.handle_clipboard(data, local)
+            .map(|d| (SERVICE_CLIPBOARD, d))
+            .or_else(|| {
+                (data.get("msgId").and_then(Value::as_i64) == Some(CLIP_PULL))
+                    .then(|| data.pointer("/data/clipId").and_then(Value::as_i64))
+                    .flatten()
+                    .and_then(|clip_id| local.offer_current_image(clip_id))
+                    .map(|d| (SERVICE_FILE_EX, d))
+            })
     }
 
     fn handle_clipboard(&mut self, data: &Value, local: &LocalClipboard) -> Option<Value> {
         match data.get("msgId").and_then(Value::as_i64)? {
             CLIP_NEGO => {
-                let version = data.pointer("/data/version").and_then(Value::as_i64).unwrap_or(CLIP_VERSION);
+                let version = data
+                    .pointer("/data/version")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(CLIP_VERSION);
                 let version = version.min(CLIP_VERSION);
                 self.negotiated = version > 0;
                 Some(json!({ "msgId": CLIP_CONFIRM, "data": { "version": version } }))
@@ -195,7 +206,10 @@ impl LocalClipboard {
     pub fn new() -> Arc<Self> {
         // The phone keeps the clipId as a Java int; seed from the clock so ids keep rising across
         // daemon restarts without overflowing 31 bits.
-        let seed = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64 & 0x3fff_ffff).unwrap_or(1);
+        let seed = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64 & 0x3fff_ffff)
+            .unwrap_or(1);
         Arc::new(Self {
             last_synced: Mutex::new(None),
             last_image: Mutex::new(None),
@@ -228,7 +242,10 @@ impl LocalClipboard {
         let image = match &*self.current_image.lock().unwrap() {
             Some((id, img)) if *id == clip_id => img.clone(),
             _ => {
-                warn!(clip_id, "clipboard: the phone pulled a clip that isn't our current image");
+                warn!(
+                    clip_id,
+                    "clipboard: the phone pulled a clip that isn't our current image"
+                );
                 return None;
             }
         };
@@ -236,9 +253,17 @@ impl LocalClipboard {
             warn!("clipboard: no fex endpoint configured; can't send the image");
             return None;
         };
-        let file = smartconnect_fex::server::OutFile { name: image.name.clone(), mime_type: image.mime.clone(), data: image.data.clone() };
+        let file = smartconnect_fex::server::OutFile {
+            name: image.name.clone(),
+            mime_type: image.mime.clone(),
+            data: image.data.clone(),
+        };
         let offer = self.fex.offer(&[file], "", "");
-        info!(clip_id, bytes = image.data.len(), "clipboard: the phone pulled our image; offering it over fex");
+        info!(
+            clip_id,
+            bytes = image.data.len(),
+            "clipboard: the phone pulled our image; offering it over fex"
+        );
         Some(json!({
             "ver": "1.0",
             "cmd": FEX_CMD_DOWNLOAD_FROM_PC,
@@ -256,7 +281,10 @@ impl LocalClipboard {
     /// just put there ourselves or is over the phone's limit.
     fn local_image_changed(&self, mime: String, data: Vec<u8>) {
         if data.is_empty() || data.len() > MAX_IMAGE_BYTES {
-            info!(bytes = data.len(), "clipboard: not sending an image over the phone's 10 MB limit");
+            info!(
+                bytes = data.len(),
+                "clipboard: not sending an image over the phone's 10 MB limit"
+            );
             return;
         }
         {
@@ -272,7 +300,11 @@ impl LocalClipboard {
         let image = Arc::new(ClipImage { name, mime, data });
         *self.current_image.lock().unwrap() = Some((id, image.clone()));
         info!(clip_id = id, bytes = image.data.len(), mime = %image.mime, "clipboard: Linux → phone (image)");
-        let _ = self.changes.send(LocalClip { id, text: String::new(), image: Some(image) });
+        let _ = self.changes.send(LocalClip {
+            id,
+            text: String::new(),
+            image: Some(image),
+        });
     }
 
     fn seen(&self, seen: Seen) {
@@ -287,7 +319,10 @@ impl LocalClipboard {
         let mime = image_mime(name);
         *self.last_image.lock().unwrap() = Some(digest(&bytes));
         match wl_copy_bytes(&bytes, Some(mime)).await {
-            Ok(()) => info!(bytes = bytes.len(), mime, "clipboard: phone → Linux (image)"),
+            Ok(()) => info!(
+                bytes = bytes.len(),
+                mime, "clipboard: phone → Linux (image)"
+            ),
             Err(e) => warn!("clipboard: wl-copy of the image failed: {e:#}"),
         }
     }
@@ -312,8 +347,16 @@ impl LocalClipboard {
             }
             *last = Some(text.clone());
         }
-        let clip = LocalClip { id: self.next_id.fetch_add(1, Ordering::Relaxed), text, image: None };
-        info!(clip_id = clip.id, chars = clip.text.chars().count(), "clipboard: Linux → phone");
+        let clip = LocalClip {
+            id: self.next_id.fetch_add(1, Ordering::Relaxed),
+            text,
+            image: None,
+        };
+        info!(
+            clip_id = clip.id,
+            chars = clip.text.chars().count(),
+            "clipboard: Linux → phone"
+        );
         let _ = self.changes.send(clip); // no session connected = nothing to do
     }
 
@@ -328,7 +371,9 @@ impl LocalClipboard {
         let result = match self.clone().watch_wayland().await {
             Err(e) if format!("{e:#}").contains("data-control") => {
                 images.abort();
-                info!("clipboard: the compositor has no data-control protocol; following the clipboard through Xwayland");
+                info!(
+                    "clipboard: the compositor has no data-control protocol; following the clipboard through Xwayland"
+                );
                 self.watch_x11().await
             }
             r => r,
@@ -353,19 +398,38 @@ impl LocalClipboard {
         loop {
             buf.clear();
             if events.read_until(b'\0', &mut buf).await? == 0 {
-                anyhow::bail!("wl-paste --watch (images) exited: {:?}", child.wait().await?);
+                anyhow::bail!(
+                    "wl-paste --watch (images) exited: {:?}",
+                    child.wait().await?
+                );
             }
             let event = String::from_utf8_lossy(&buf);
             let mut lines = event.trim_end_matches('\0').lines();
             let state = lines.next().unwrap_or_default();
             let types: Vec<&str> = lines.map(str::trim).collect();
-            if state == "sensitive" || types.iter().any(|t| t.starts_with("text/") || *t == "UTF8_STRING" || *t == "STRING") {
+            if state == "sensitive"
+                || types
+                    .iter()
+                    .any(|t| t.starts_with("text/") || *t == "UTF8_STRING" || *t == "STRING")
+            {
                 continue;
             }
-            let Some(mime) = IMAGE_TYPES.iter().find(|m| types.contains(m)) else { continue };
-            match Command::new("wl-paste").args(["--no-newline", "--type", mime]).stdin(Stdio::null()).output().await {
-                Ok(out) if out.status.success() => self.local_image_changed((*mime).to_owned(), out.stdout),
-                Ok(out) => debug!("clipboard: wl-paste --type {mime} exited with {}", out.status),
+            let Some(mime) = IMAGE_TYPES.iter().find(|m| types.contains(m)) else {
+                continue;
+            };
+            match Command::new("wl-paste")
+                .args(["--no-newline", "--type", mime])
+                .stdin(Stdio::null())
+                .output()
+                .await
+            {
+                Ok(out) if out.status.success() => {
+                    self.local_image_changed((*mime).to_owned(), out.stdout)
+                }
+                Ok(out) => debug!(
+                    "clipboard: wl-paste --type {mime} exited with {}",
+                    out.status
+                ),
                 Err(e) => warn!("clipboard: wl-paste --type {mime}: {e}"),
             }
         }
@@ -373,7 +437,14 @@ impl LocalClipboard {
 
     async fn watch_wayland(self: Arc<Self>) -> Result<()> {
         let mut child = Command::new("wl-paste")
-            .args(["--type", "text", "--watch", "sh", "-c", r#"printf '%s\n' "$CLIPBOARD_STATE"; cat; printf '\0'"#])
+            .args([
+                "--type",
+                "text",
+                "--watch",
+                "sh",
+                "-c",
+                r#"printf '%s\n' "$CLIPBOARD_STATE"; cat; printf '\0'"#,
+            ])
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -388,7 +459,11 @@ impl LocalClipboard {
             if events.read_until(b'\0', &mut buf).await? == 0 {
                 let mut why = String::new();
                 let _ = tokio::io::AsyncReadExt::read_to_string(&mut stderr, &mut why).await;
-                anyhow::bail!("wl-paste --watch exited ({:?}): {}", child.wait().await?, why.trim());
+                anyhow::bail!(
+                    "wl-paste --watch exited ({:?}): {}",
+                    child.wait().await?,
+                    why.trim()
+                );
             }
             if buf.last() == Some(&b'\0') {
                 buf.pop();
@@ -431,7 +506,9 @@ mod x11 {
     use x11rb::connection::Connection;
     use x11rb::protocol::Event;
     use x11rb::protocol::xfixes::{self, ConnectionExt as _};
-    use x11rb::protocol::xproto::{AtomEnum, ConnectionExt as _, CreateWindowAux, EventMask, Property, WindowClass};
+    use x11rb::protocol::xproto::{
+        AtomEnum, ConnectionExt as _, CreateWindowAux, EventMask, Property, WindowClass,
+    };
 
     use super::{IMAGE_TYPES, MAX_IMAGE_BYTES, Seen};
 
@@ -450,15 +527,41 @@ mod x11 {
         let win = conn.generate_id()?;
         // PropertyChange events carry the pieces of a large (INCR) image.
         let aux = CreateWindowAux::new().event_mask(EventMask::PROPERTY_CHANGE);
-        conn.create_window(0, win, root, 0, 0, 1, 1, 0, WindowClass::INPUT_ONLY, 0, &aux)?;
+        conn.create_window(
+            0,
+            win,
+            root,
+            0,
+            0,
+            1,
+            1,
+            0,
+            WindowClass::INPUT_ONLY,
+            0,
+            &aux,
+        )?;
         conn.xfixes_query_version(5, 0)?.reply().context("XFixes")?;
-        let atom = |name: &str| -> Result<u32> { Ok(conn.intern_atom(false, name.as_bytes())?.reply()?.atom) };
-        let (clipboard, targets, utf8, incr) = (atom("CLIPBOARD")?, atom("TARGETS")?, atom("UTF8_STRING")?, atom("INCR")?);
-        let images: Vec<(u32, &str)> = IMAGE_TYPES.iter().map(|m| Ok((atom(m)?, *m))).collect::<Result<_>>()?;
+        let atom = |name: &str| -> Result<u32> {
+            Ok(conn.intern_atom(false, name.as_bytes())?.reply()?.atom)
+        };
+        let (clipboard, targets, utf8, incr) = (
+            atom("CLIPBOARD")?,
+            atom("TARGETS")?,
+            atom("UTF8_STRING")?,
+            atom("INCR")?,
+        );
+        let images: Vec<(u32, &str)> = IMAGE_TYPES
+            .iter()
+            .map(|m| Ok((atom(m)?, *m)))
+            .collect::<Result<_>>()?;
         // Set by KeePassXC, KDE and others on secrets; such copies never leave the PC.
         let secret = atom("x-kde-passwordManagerHint")?;
         let prop = atom("SMARTCONNECT_CLIP")?;
-        conn.xfixes_select_selection_input(win, clipboard, xfixes::SelectionEventMask::SET_SELECTION_OWNER)?;
+        conn.xfixes_select_selection_input(
+            win,
+            clipboard,
+            xfixes::SelectionEventMask::SET_SELECTION_OWNER,
+        )?;
         conn.flush()?;
         let mut pending: Option<Incr> = None;
         // Reads the whole property (in steps, so it isn't capped at one request) and deletes it.
@@ -466,8 +569,21 @@ mod x11 {
             let mut data = Vec::new();
             let mut type_ = x11rb::NONE;
             loop {
-                let reply = conn.get_property(false, win, prop, AtomEnum::ANY, (data.len() / 4) as u32, 1 << 20)?.reply()?;
-                type_ = if type_ == x11rb::NONE { reply.type_ } else { type_ };
+                let reply = conn
+                    .get_property(
+                        false,
+                        win,
+                        prop,
+                        AtomEnum::ANY,
+                        (data.len() / 4) as u32,
+                        1 << 20,
+                    )?
+                    .reply()?;
+                type_ = if type_ == x11rb::NONE {
+                    reply.type_
+                } else {
+                    type_
+                };
                 data.extend_from_slice(&reply.value);
                 if reply.bytes_after == 0 || data.len() > max {
                     break;
@@ -488,13 +604,22 @@ mod x11 {
                 Event::SelectionNotify(e) if e.property != x11rb::NONE => {
                     if e.target == targets {
                         let (_, raw) = read_all(64 * 1024)?;
-                        let offered: Vec<u32> = raw.as_chunks::<4>().0.iter().map(|c| u32::from_ne_bytes(*c)).collect();
+                        let offered: Vec<u32> = raw
+                            .as_chunks::<4>()
+                            .0
+                            .iter()
+                            .map(|c| u32::from_ne_bytes(*c))
+                            .collect();
                         if offered.contains(&secret) {
-                            tracing::debug!("clipboard: skipping a sensitive (password manager) copy");
+                            tracing::debug!(
+                                "clipboard: skipping a sensitive (password manager) copy"
+                            );
                         } else if offered.contains(&utf8) {
                             conn.convert_selection(win, clipboard, utf8, prop, e.time)?;
                             conn.flush()?;
-                        } else if let Some((image, _)) = images.iter().find(|(a, _)| offered.contains(a)) {
+                        } else if let Some((image, _)) =
+                            images.iter().find(|(a, _)| offered.contains(a))
+                        {
                             conn.convert_selection(win, clipboard, *image, prop, e.time)?;
                             conn.flush()?;
                         }
@@ -511,24 +636,44 @@ mod x11 {
                         let (type_, data) = read_all(MAX_IMAGE_BYTES)?;
                         if type_ == incr {
                             // Deleting the INCR property (done) asks the owner for the first piece.
-                            pending = Some(Incr { mime: (*mime).to_owned(), data: Vec::new() });
-                        } else if data.len() <= MAX_IMAGE_BYTES && tx.send(Seen::Image { mime: (*mime).to_owned(), data }).is_err() {
+                            pending = Some(Incr {
+                                mime: (*mime).to_owned(),
+                                data: Vec::new(),
+                            });
+                        } else if data.len() <= MAX_IMAGE_BYTES
+                            && tx
+                                .send(Seen::Image {
+                                    mime: (*mime).to_owned(),
+                                    data,
+                                })
+                                .is_err()
+                        {
                             return Ok(());
                         }
                     }
                 }
                 // The next piece of an INCR image; an empty piece ends it.
-                Event::PropertyNotify(e) if e.atom == prop && e.state == Property::NEW_VALUE && pending.is_some() => {
+                Event::PropertyNotify(e)
+                    if e.atom == prop && e.state == Property::NEW_VALUE && pending.is_some() =>
+                {
                     let (_, piece) = read_all(MAX_IMAGE_BYTES)?;
                     let done = piece.is_empty();
                     let incr_img = pending.as_mut().expect("checked above");
                     incr_img.data.extend_from_slice(&piece);
                     if incr_img.data.len() > MAX_IMAGE_BYTES {
-                        tracing::info!("clipboard: not sending an image over the phone's 10 MB limit");
+                        tracing::info!(
+                            "clipboard: not sending an image over the phone's 10 MB limit"
+                        );
                         pending = None;
                     } else if done {
                         let img = pending.take().expect("checked above");
-                        if tx.send(Seen::Image { mime: img.mime, data: img.data }).is_err() {
+                        if tx
+                            .send(Seen::Image {
+                                mime: img.mime,
+                                data: img.data,
+                            })
+                            .is_err()
+                        {
                             return Ok(());
                         }
                     }
@@ -542,7 +687,10 @@ mod x11 {
 /// The `clipId` of an image clip worth pulling: exactly one regular file (`attr` 128), an image by
 /// name, within the phone's own 10 MB limit.
 fn image_clip_id(data: &Value) -> Option<i64> {
-    let list = data.get("filelist").or_else(|| data.get("fileList"))?.as_array()?;
+    let list = data
+        .get("filelist")
+        .or_else(|| data.get("fileList"))?
+        .as_array()?;
     let [file] = list.as_slice() else { return None };
     let name = file.get("name").and_then(Value::as_str)?;
     let size = file.get("size").and_then(Value::as_u64).unwrap_or(0);
@@ -573,8 +721,15 @@ pub fn on_file_ex(phone: IpAddr, data: &Value, local: Arc<LocalClipboard>) {
     if data.get("serviceId").and_then(Value::as_i64) != Some(SERVICE_CLIPBOARD) {
         return;
     }
-    let port = data.get("port").and_then(Value::as_u64).and_then(|p| u16::try_from(p).ok()).filter(|p| *p > 0);
-    let fingerprint = data.get("fingerprint").and_then(Value::as_str).filter(|f| !f.is_empty());
+    let port = data
+        .get("port")
+        .and_then(Value::as_u64)
+        .and_then(|p| u16::try_from(p).ok())
+        .filter(|p| *p > 0);
+    let fingerprint = data
+        .get("fingerprint")
+        .and_then(Value::as_str)
+        .filter(|f| !f.is_empty());
     let (Some(port), Some(fingerprint)) = (port, fingerprint) else {
         warn!("clipboard: the phone's image offer has no port or fingerprint");
         return;
@@ -583,7 +738,11 @@ pub fn on_file_ex(phone: IpAddr, data: &Value, local: Arc<LocalClipboard>) {
         host: phone,
         port,
         fingerprint: fingerprint.to_owned(),
-        token: data.get("token").and_then(Value::as_str).unwrap_or_default().to_owned(),
+        token: data
+            .get("token")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned(),
     };
     tokio::spawn(async move {
         match fetch_image(&offer).await {
@@ -598,7 +757,10 @@ async fn fetch_image(offer: &smartconnect_fex::client::Offer) -> Result<(String,
     // The zip adds a little to the image; the phone caps images at 10 MB.
     let pulled = smartconnect_fex::client::pull(offer, MAX_IMAGE_BYTES + 1024 * 1024).await?;
     let entries = smartconnect_fex::zip::read_all(&pulled.archive)?;
-    let entry = entries.into_iter().find(|e| is_image_name(&e.name)).context("the transfer holds no image")?;
+    let entry = entries
+        .into_iter()
+        .find(|e| is_image_name(&e.name))
+        .context("the transfer holds no image")?;
     Ok((entry.name, entry.data))
 }
 
@@ -696,13 +858,21 @@ mod tests {
         std::thread::spawn(move || x11::watch(&tx));
         std::thread::sleep(std::time::Duration::from_millis(500));
         let want = format!("smartconnect clipboard test {}", std::process::id());
-        assert!(std::process::Command::new("wl-copy").arg(&want).status().unwrap().success());
+        assert!(
+            std::process::Command::new("wl-copy")
+                .arg(&want)
+                .status()
+                .unwrap()
+                .success()
+        );
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         loop {
             match rx.try_recv() {
                 Ok(Seen::Text(text)) if text == want => break,
                 Ok(other) => eprintln!("saw {other:?}"),
-                Err(_) if std::time::Instant::now() < deadline => std::thread::sleep(std::time::Duration::from_millis(50)),
+                Err(_) if std::time::Instant::now() < deadline => {
+                    std::thread::sleep(std::time::Duration::from_millis(50))
+                }
                 Err(e) => panic!("no X11 clipboard event for the copy: {e}"),
             }
         }
@@ -713,15 +883,39 @@ mod tests {
     fn nego_is_confirmed_and_enables_sending() {
         let local = LocalClipboard::new();
         let mut s = Session::default();
-        let clip = LocalClip { id: 5, text: "hi".into(), image: None };
-        assert!(s.outgoing(&clip).is_none(), "nothing goes out before the phone negotiates");
+        let clip = LocalClip {
+            id: 5,
+            text: "hi".into(),
+            image: None,
+        };
+        assert!(
+            s.outgoing(&clip).is_none(),
+            "nothing goes out before the phone negotiates"
+        );
 
-        let confirm = s.handle(&json!({ "msgId": 1, "data": { "version": 1 } }), &local).unwrap();
-        assert_eq!(confirm, (9, json!({ "msgId": 2, "data": { "version": 1 } })));
-        assert_eq!(s.outgoing(&clip).unwrap(), json!({ "msgId": 3, "data": { "clipId": 5, "text": "hi" } }));
+        let confirm = s
+            .handle(&json!({ "msgId": 1, "data": { "version": 1 } }), &local)
+            .unwrap();
+        assert_eq!(
+            confirm,
+            (9, json!({ "msgId": 2, "data": { "version": 1 } }))
+        );
+        assert_eq!(
+            s.outgoing(&clip).unwrap(),
+            json!({ "msgId": 3, "data": { "clipId": 5, "text": "hi" } })
+        );
 
-        assert!(s.handle(&json!({ "msgId": 7, "data": { "code": 0, "reason": "" } }), &local).is_none());
-        assert!(s.outgoing(&clip).is_none(), "CLOSE stops sending until the next NEGO");
+        assert!(
+            s.handle(
+                &json!({ "msgId": 7, "data": { "code": 0, "reason": "" } }),
+                &local
+            )
+            .is_none()
+        );
+        assert!(
+            s.outgoing(&clip).is_none(),
+            "CLOSE stops sending until the next NEGO"
+        );
     }
 
     #[test]
@@ -747,7 +941,10 @@ mod tests {
 
         let mut s = Session { negotiated: true };
         let out = s.outgoing(&clip).unwrap();
-        assert_eq!(out["data"]["filelist"][0], json!({ "attr": 128, "name": img.name, "path": "", "size": 9 }));
+        assert_eq!(
+            out["data"]["filelist"][0],
+            json!({ "attr": 128, "name": img.name, "path": "", "size": 9 })
+        );
         assert_eq!(out["data"]["storage"], "");
         assert!(out["data"].get("text").is_none());
 
@@ -755,11 +952,21 @@ mod tests {
         let pull = json!({ "msgId": 4, "data": { "clipId": clip.id } });
         let (svc, fex) = s.handle(&pull, &local).expect("an offer");
         assert_eq!(svc, 2);
-        assert_eq!((fex["cmd"].as_i64(), fex["serviceId"].as_i64(), fex["port"].as_i64()), (Some(1), Some(9), Some(52020)));
+        assert_eq!(
+            (
+                fex["cmd"].as_i64(),
+                fex["serviceId"].as_i64(),
+                fex["port"].as_i64()
+            ),
+            (Some(1), Some(9), Some(52020))
+        );
         assert_eq!(fex["fingerprint"], "ab".repeat(32));
         assert!(local.fex().has_offers());
         // A pull of some other clip gets nothing.
-        assert!(s.handle(&json!({ "msgId": 4, "data": { "clipId": 1 } }), &local).is_none());
+        assert!(
+            s.handle(&json!({ "msgId": 4, "data": { "clipId": 1 } }), &local)
+                .is_none()
+        );
         // The same image again (e.g. our own wl-copy echo) isn't re-announced.
         local.local_image_changed("image/png".into(), b"\x89PNG fake".to_vec());
         assert!(rx.try_recv().is_err());
@@ -773,8 +980,14 @@ mod tests {
     fn an_image_clip_is_pulled() {
         let local = LocalClipboard::new();
         let mut s = Session { negotiated: true };
-        let img = file_clip(9, json!([{ "attr": 128, "name": "a.jpg", "path": "/storage/emulated/0/a.jpg", "size": 1234 }]));
-        assert_eq!(s.handle(&img, &local), Some((9, json!({ "msgId": 4, "data": { "clipId": 9 } }))));
+        let img = file_clip(
+            9,
+            json!([{ "attr": 128, "name": "a.jpg", "path": "/storage/emulated/0/a.jpg", "size": 1234 }]),
+        );
+        assert_eq!(
+            s.handle(&img, &local),
+            Some((9, json!({ "msgId": 4, "data": { "clipId": 9 } })))
+        );
         // The phone's text is untouched by a file clip.
         assert!(local.last_synced.lock().unwrap().is_none());
     }
@@ -785,14 +998,29 @@ mod tests {
         let mut s = Session::default();
         let doc = file_clip(9, json!([{ "attr": 128, "name": "a.pdf", "size": 10 }]));
         assert!(s.handle(&doc, &local).is_none(), "not an image");
-        let two = file_clip(9, json!([{ "attr": 128, "name": "a.jpg", "size": 1 }, { "attr": 128, "name": "b.jpg", "size": 1 }]));
+        let two = file_clip(
+            9,
+            json!([{ "attr": 128, "name": "a.jpg", "size": 1 }, { "attr": 128, "name": "b.jpg", "size": 1 }]),
+        );
         assert!(s.handle(&two, &local).is_none(), "several files");
-        let dir = file_clip(9, json!([{ "attr": 16, "name": "Pictures.png", "size": 0 }]));
+        let dir = file_clip(
+            9,
+            json!([{ "attr": 16, "name": "Pictures.png", "size": 0 }]),
+        );
         assert!(s.handle(&dir, &local).is_none(), "a folder");
-        let huge = file_clip(9, json!([{ "attr": 128, "name": "a.png", "size": 11 * 1024 * 1024 }]));
-        assert!(s.handle(&huge, &local).is_none(), "over the phone's 10 MB limit");
+        let huge = file_clip(
+            9,
+            json!([{ "attr": 128, "name": "a.png", "size": 11 * 1024 * 1024 }]),
+        );
+        assert!(
+            s.handle(&huge, &local).is_none(),
+            "over the phone's 10 MB limit"
+        );
         let empty = file_clip(0, json!([{ "attr": 128, "name": "a.png", "size": 1 }]));
-        assert!(s.handle(&empty, &local).is_none(), "clipId 0 is an empty clip");
+        assert!(
+            s.handle(&empty, &local).is_none(),
+            "clipId 0 is an empty clip"
+        );
         // (A text clip returns before the file-list check; it isn't run here because applying it
         // calls wl-copy, which would replace the clipboard of whoever runs the tests.)
     }
@@ -816,8 +1044,15 @@ mod tests {
     #[test]
     fn long_text_is_truncated_to_the_phone_limit() {
         let s = Session { negotiated: true };
-        let clip = LocalClip { id: 1, text: "é".repeat(MAX_TEXT_CHARS + 10), image: None };
+        let clip = LocalClip {
+            id: 1,
+            text: "é".repeat(MAX_TEXT_CHARS + 10),
+            image: None,
+        };
         let out = s.outgoing(&clip).unwrap();
-        assert_eq!(out["data"]["text"].as_str().unwrap().chars().count(), MAX_TEXT_CHARS);
+        assert_eq!(
+            out["data"]["text"].as_str().unwrap().chars().count(),
+            MAX_TEXT_CHARS
+        );
     }
 }

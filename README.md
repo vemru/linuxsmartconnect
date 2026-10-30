@@ -330,7 +330,7 @@ The action buttons need the stream host, which `smartconnectd` starts and superv
 - [Architecture](docs/architecture.md)
 - [Control socket API](docs/control-socket-api.md)
 - [Development](docs/development.md)
-- [Security](docs/security.md)
+- [Security](docs/security.md) · [Security policy](SECURITY.md)
 - [Protocol notes](docs/protocol/README.md): the Smart Connect wire protocol, one page per service
 - [Contributing](CONTRIBUTING.md) · [Changelog](CHANGELOG.md)
 

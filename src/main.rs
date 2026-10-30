@@ -81,7 +81,9 @@ enum Cmd {
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+        )
         .init();
     let args = Args::parse();
     if let Some(cmd) = &args.command {
@@ -98,7 +100,8 @@ async fn main() -> Result<()> {
     if args.session_log {
         smartconnect::server::enable_session_logs();
     }
-    let extra_tiles = smartconnect::proto::parse_extra_tiles(&args.extra_tiles).map_err(anyhow::Error::msg)?;
+    let extra_tiles =
+        smartconnect::proto::parse_extra_tiles(&args.extra_tiles).map_err(anyhow::Error::msg)?;
     if !extra_tiles.is_empty() {
         let versions = smartconnect::proto::service_versions();
         for (svc, _) in &extra_tiles {
@@ -121,7 +124,11 @@ async fn main() -> Result<()> {
     );
 
     let refresh_ips = args.ip.is_empty();
-    let ips = if refresh_ips { smartconnect::reconnect::detect_lan_ips()? } else { args.ip };
+    let ips = if refresh_ips {
+        smartconnect::reconnect::detect_lan_ips()?
+    } else {
+        args.ip
+    };
     if ips.is_empty() {
         bail!("no LAN IPv4 address found; pass --ip");
     }
@@ -135,7 +142,9 @@ async fn main() -> Result<()> {
         match smartconnect::ble::start(&identity).await {
             Ok(h) => Some(h),
             Err(e) => {
-                tracing::warn!("BLE peripheral disabled: {e:#} (first-time pairing needs it; Wi-Fi reconnect may still work)");
+                tracing::warn!(
+                    "BLE peripheral disabled: {e:#} (first-time pairing needs it; Wi-Fi reconnect may still work)"
+                );
                 None
             }
         }
@@ -152,16 +161,24 @@ async fn main() -> Result<()> {
         args.port,
         ips,
         Duration::from_secs(args.token_ttl),
-        QrOutput { invert: !args.light_terminal, svg_path: state_dir.join("pairing-qr.svg") },
+        QrOutput {
+            invert: !args.light_terminal,
+            svg_path: state_dir.join("pairing-qr.svg"),
+        },
         state_dir.join("sessions"),
         ble_address,
     ));
     daemon.set_ble_wake(!args.no_ble_wake);
     // Clipboard images to the phone are served over fex on this same port and certificate.
-    daemon.clipboard.set_fex_endpoint(args.port, daemon.identity.fp_hex());
+    daemon
+        .clipboard
+        .set_fex_endpoint(args.port, daemon.identity.fp_hex());
     tokio::spawn(daemon.clone().invite_loop());
     // Reconnect promptly after a resume, a network change, or Bluetooth being switched on.
-    tokio::spawn(smartconnect::reconnect::watch_system(daemon.clone(), refresh_ips));
+    tokio::spawn(smartconnect::reconnect::watch_system(
+        daemon.clone(),
+        refresh_ips,
+    ));
     if !args.no_ble_wake {
         let daemon = daemon.clone();
         tokio::spawn(async move {
@@ -170,7 +187,10 @@ async fn main() -> Result<()> {
             }
         });
     }
-    tokio::spawn(smartconnect::pc_lock::run(daemon.clone(), args.lock_command.clone()));
+    tokio::spawn(smartconnect::pc_lock::run(
+        daemon.clone(),
+        args.lock_command.clone(),
+    ));
     // Persistence: if the paired phone isn't back shortly after startup, reconnect on our own
     // (Bluetooth works even when the phone app is in the background).
     {
@@ -183,17 +203,27 @@ async fn main() -> Result<()> {
         });
     }
 
-    match smartconnect::notifications::Notifier::new(daemon.to_phone.clone(), daemon.from_phone.clone()).await {
+    match smartconnect::notifications::Notifier::new(
+        daemon.to_phone.clone(),
+        daemon.from_phone.clone(),
+    )
+    .await
+    {
         Ok(n) => {
             let _ = daemon.notifier.set(n);
         }
-        Err(e) => tracing::warn!("notifications: no desktop notification server, phone notifications won't show: {e:#}"),
+        Err(e) => tracing::warn!(
+            "notifications: no desktop notification server, phone notifications won't show: {e:#}"
+        ),
     }
     // Phone → PC sharing: links/files arrive on service 2/24 (or a URL copied on the phone) and
     // become a notification whose Open/Save actions go through the desktop portal.
     match smartconnect::share::SystemDesktop::connect().await {
         Ok(desktop) => {
-            let shares = smartconnect::share::ShareManager::new(desktop, smartconnect::status::runtime_dir().join("shares"));
+            let shares = smartconnect::share::ShareManager::new(
+                desktop,
+                smartconnect::status::runtime_dir().join("shares"),
+            );
             shares.start();
             let _ = daemon.share.set(shares);
         }
@@ -205,7 +235,9 @@ async fn main() -> Result<()> {
     let _advert = match smartconnect::discovery::advertise(&daemon.identity, args.port) {
         Ok(child) => Some(child),
         Err(e) => {
-            tracing::warn!("mdns: not advertising, the phone's Connect button won't reach us: {e:#}");
+            tracing::warn!(
+                "mdns: not advertising, the phone's Connect button won't reach us: {e:#}"
+            );
             None
         }
     };
@@ -236,7 +268,9 @@ async fn main() -> Result<()> {
             }
         });
     } else {
-        tracing::warn!("clipboard: no Wayland session, Linux → phone sync is off (phone → Linux needs wl-copy too)");
+        tracing::warn!(
+            "clipboard: no Wayland session, Linux → phone sync is off (phone → Linux needs wl-copy too)"
+        );
     }
 
     // Stream host + cross control client, so phone-initiated requests always get an answer.

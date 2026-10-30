@@ -16,8 +16,27 @@ pub const ENV: &str = "SMARTCONNECT_ICE_ADDRESSES";
 
 /// Interface name prefixes skipped by the private-address fallback.
 const VIRTUAL_IFACES: &[&str] = &[
-    "lo", "docker", "br-", "veth", "virbr", "vnet", "tun", "tap", "wg", "tailscale", "zt", "vmnet", "vboxnet", "podman",
-    "cni", "flannel", "cali", "lxc", "lxd", "incus", "nordlynx",
+    "lo",
+    "docker",
+    "br-",
+    "veth",
+    "virbr",
+    "vnet",
+    "tun",
+    "tap",
+    "wg",
+    "tailscale",
+    "zt",
+    "vmnet",
+    "vboxnet",
+    "podman",
+    "cni",
+    "flannel",
+    "cali",
+    "lxc",
+    "lxd",
+    "incus",
+    "nordlynx",
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -35,7 +54,11 @@ impl Rule {
             Rule::Addr(a) => a == ip,
             Rule::Net(net, len) => match ip {
                 IpAddr::V4(v4) => {
-                    let mask = if len == 0 { 0 } else { u32::MAX << (32 - u32::from(len)) };
+                    let mask = if len == 0 {
+                        0
+                    } else {
+                        u32::MAX << (32 - u32::from(len))
+                    };
                     u32::from(v4) & mask == u32::from(net) & mask
                 }
                 IpAddr::V6(_) => false,
@@ -55,7 +78,10 @@ impl Filter {
     /// Offer every UDP candidate.
     #[cfg(test)]
     pub fn any(why: &str) -> Filter {
-        Filter { rules: vec![Rule::Any], why: why.to_owned() }
+        Filter {
+            rules: vec![Rule::Any],
+            why: why.to_owned(),
+        }
     }
 
     /// Any RFC 1918 address (no interface check): the last resort when nothing else matched.
@@ -72,20 +98,36 @@ impl Filter {
 
     /// Picks the rules: `env` (the variable's value) over `pc_address` over the local private
     /// addresses (`ifaces`, `None` when they could not be listed).
-    pub fn choose(env: Option<&str>, pc_address: Option<&str>, ifaces: Option<&[(String, IpAddr)]>) -> Filter {
+    pub fn choose(
+        env: Option<&str>,
+        pc_address: Option<&str>,
+        ifaces: Option<&[(String, IpAddr)]>,
+    ) -> Filter {
         if let Some(v) = env.filter(|v| !v.trim().is_empty()) {
             match parse_list(v) {
-                Ok(rules) => return Filter { rules, why: format!("{ENV}={v}") },
+                Ok(rules) => {
+                    return Filter {
+                        rules,
+                        why: format!("{ENV}={v}"),
+                    };
+                }
                 Err(e) => eprintln!("{ENV}: {e}; ignoring it"),
             }
         }
         if let Some(ip) = pc_address.and_then(normalize) {
-            return Filter { rules: vec![Rule::Addr(ip)], why: format!("{ip}, the address the phone reached (daemon pcAddress)") };
+            return Filter {
+                rules: vec![Rule::Addr(ip)],
+                why: format!("{ip}, the address the phone reached (daemon pcAddress)"),
+            };
         }
-        let Some(ifaces) = ifaces else { return Filter::private_ranges() };
+        let Some(ifaces) = ifaces else {
+            return Filter::private_ranges();
+        };
         let rules: Vec<Rule> = ifaces
             .iter()
-            .filter(|(name, ip)| !is_virtual_iface(name) && matches!(ip, IpAddr::V4(v4) if is_rfc1918(*v4)))
+            .filter(|(name, ip)| {
+                !is_virtual_iface(name) && matches!(ip, IpAddr::V4(v4) if is_rfc1918(*v4))
+            })
             .map(|(_, ip)| Rule::Addr(*ip))
             .collect();
         if rules.is_empty() {
@@ -96,7 +138,10 @@ impl Filter {
             .filter(|(_, ip)| rules.contains(&Rule::Addr(*ip)))
             .map(|(n, ip)| format!("{ip} ({n})"))
             .collect();
-        Filter { rules, why: format!("private LAN address(es) {}", list.join(", ")) }
+        Filter {
+            rules,
+            why: format!("private LAN address(es) {}", list.join(", ")),
+        }
     }
 
     /// From the environment, else the daemon's `pcAddress` (asked only then), else this machine's
@@ -106,15 +151,24 @@ impl Filter {
         if let Some(v) = env.as_deref()
             && let Ok(rules) = parse_list(v)
         {
-            return Filter { rules, why: format!("{ENV}={v}") };
+            return Filter {
+                rules,
+                why: format!("{ENV}={v}"),
+            };
         }
-        Filter::choose(env.as_deref(), pc_address().as_deref(), local_addrs().as_deref())
+        Filter::choose(
+            env.as_deref(),
+            pc_address().as_deref(),
+            local_addrs().as_deref(),
+        )
     }
 
     /// Whether to offer this `candidate:…` line to the phone.
     pub fn allows(&self, candidate: &str) -> bool {
         match candidate_addr(candidate) {
-            Some((proto, ip)) => proto.eq_ignore_ascii_case("udp") && self.rules.iter().any(|r| r.matches(ip)),
+            Some((proto, ip)) => {
+                proto.eq_ignore_ascii_case("udp") && self.rules.iter().any(|r| r.matches(ip))
+            }
             None => false,
         }
     }
@@ -127,11 +181,19 @@ pub fn parse_list(v: &str) -> Result<Vec<Rule>, String> {
         if item.eq_ignore_ascii_case("all") || item == "*" {
             rules.push(Rule::Any);
         } else if let Some((net, len)) = item.split_once('/') {
-            let net: Ipv4Addr = net.parse().map_err(|_| format!("{item}: not an IPv4 network"))?;
-            let len: u8 = len.parse().ok().filter(|l| *l <= 32).ok_or_else(|| format!("{item}: bad prefix length"))?;
+            let net: Ipv4Addr = net
+                .parse()
+                .map_err(|_| format!("{item}: not an IPv4 network"))?;
+            let len: u8 = len
+                .parse()
+                .ok()
+                .filter(|l| *l <= 32)
+                .ok_or_else(|| format!("{item}: bad prefix length"))?;
             rules.push(Rule::Net(net, len));
         } else {
-            rules.push(Rule::Addr(normalize(item).ok_or_else(|| format!("{item}: not an IP address"))?));
+            rules.push(Rule::Addr(
+                normalize(item).ok_or_else(|| format!("{item}: not an IP address"))?,
+            ));
         }
     }
     if rules.is_empty() {
@@ -156,7 +218,8 @@ pub fn normalize(s: &str) -> Option<IpAddr> {
 pub fn candidate_addr(c: &str) -> Option<(String, IpAddr)> {
     let c = c.trim().trim_start_matches("a=");
     let mut f = c.strip_prefix("candidate:")?.split_whitespace();
-    let (_foundation, _component, proto, _priority, addr) = (f.next()?, f.next()?, f.next()?, f.next()?, f.next()?);
+    let (_foundation, _component, proto, _priority, addr) =
+        (f.next()?, f.next()?, f.next()?, f.next()?, f.next()?);
     Some((proto.to_owned(), normalize(addr)?))
 }
 
@@ -185,13 +248,17 @@ pub fn local_addrs() -> Option<Vec<(String, IpAddr)>> {
             continue;
         }
         // SAFETY: ifa_name is a NUL-terminated string owned by the list.
-        let name = unsafe { std::ffi::CStr::from_ptr(ifa.ifa_name) }.to_string_lossy().into_owned();
+        let name = unsafe { std::ffi::CStr::from_ptr(ifa.ifa_name) }
+            .to_string_lossy()
+            .into_owned();
         // SAFETY: ifa_addr points to a sockaddr whose family says which struct it really is.
         let ip = unsafe {
             match i32::from((*ifa.ifa_addr).sa_family) {
                 libc::AF_INET => {
                     let sin = &*(ifa.ifa_addr as *const libc::sockaddr_in);
-                    Some(IpAddr::V4(Ipv4Addr::from(u32::from_be(sin.sin_addr.s_addr))))
+                    Some(IpAddr::V4(Ipv4Addr::from(u32::from_be(
+                        sin.sin_addr.s_addr,
+                    ))))
                 }
                 libc::AF_INET6 => {
                     let sin6 = &*(ifa.ifa_addr as *const libc::sockaddr_in6);
@@ -233,13 +300,25 @@ mod tests {
 
     #[test]
     fn parses_candidate_lines() {
-        assert_eq!(candidate_addr(HOST), Some(("UDP".into(), "192.168.1.20".parse().unwrap())));
         assert_eq!(
-            candidate_addr("a=candidate:2 1 tcp 1015022079 10.0.0.5 9 typ host tcptype active").map(|c| c.0),
+            candidate_addr(HOST),
+            Some(("UDP".into(), "192.168.1.20".parse().unwrap()))
+        );
+        assert_eq!(
+            candidate_addr("a=candidate:2 1 tcp 1015022079 10.0.0.5 9 typ host tcptype active")
+                .map(|c| c.0),
             Some("tcp".into())
         );
-        assert_eq!(candidate_addr("candidate:3 1 UDP 1 fe80::1%wlan0 5000 typ host").unwrap().1, "fe80::1".parse::<IpAddr>().unwrap());
-        assert_eq!(candidate_addr("candidate:4 1 UDP 1 abcd.local 5000 typ host"), None);
+        assert_eq!(
+            candidate_addr("candidate:3 1 UDP 1 fe80::1%wlan0 5000 typ host")
+                .unwrap()
+                .1,
+            "fe80::1".parse::<IpAddr>().unwrap()
+        );
+        assert_eq!(
+            candidate_addr("candidate:4 1 UDP 1 abcd.local 5000 typ host"),
+            None
+        );
         assert_eq!(candidate_addr("garbage"), None);
     }
 
@@ -256,13 +335,24 @@ mod tests {
     #[test]
     fn fallback_is_private_ipv4_on_real_interfaces() {
         let f = Filter::choose(None, None, Some(&ifaces()));
-        assert_eq!(f.rules, vec![Rule::Addr("192.168.1.20".parse().unwrap()), Rule::Addr("10.0.0.5".parse().unwrap())]);
+        assert_eq!(
+            f.rules,
+            vec![
+                Rule::Addr("192.168.1.20".parse().unwrap()),
+                Rule::Addr("10.0.0.5".parse().unwrap())
+            ]
+        );
         assert!(f.allows(HOST));
         assert!(!f.allows("candidate:1 1 UDP 1 172.17.0.1 4000 typ host")); // docker0
         assert!(!f.allows("candidate:1 1 UDP 1 10.8.0.2 4000 typ host")); // wg0
         assert!(!f.allows("candidate:1 1 UDP 1 100.64.0.1 4000 typ host")); // tailscale
         // An unparsable daemon address falls through to the interfaces.
-        assert_eq!(Filter::choose(None, Some("not-an-ip"), Some(&ifaces())).rules.len(), 2);
+        assert_eq!(
+            Filter::choose(None, Some("not-an-ip"), Some(&ifaces()))
+                .rules
+                .len(),
+            2
+        );
     }
 
     #[test]
@@ -272,8 +362,21 @@ mod tests {
         let only_virtual = vec![("docker0".to_owned(), "172.17.0.1".parse().unwrap())];
         let f = Filter::choose(None, None, Some(&only_virtual));
         assert_eq!(f.rules, Filter::private_ranges().rules);
-        for (ip, ok) in [("10.1.2.3", true), ("172.15.255.255", false), ("172.16.0.1", true), ("172.31.255.1", true), ("172.32.0.1", false), ("192.168.0.1", true), ("192.169.0.1", false), ("8.8.8.8", false)] {
-            assert_eq!(f.allows(&format!("candidate:1 1 UDP 1 {ip} 4000 typ host")), ok, "{ip}");
+        for (ip, ok) in [
+            ("10.1.2.3", true),
+            ("172.15.255.255", false),
+            ("172.16.0.1", true),
+            ("172.31.255.1", true),
+            ("172.32.0.1", false),
+            ("192.168.0.1", true),
+            ("192.169.0.1", false),
+            ("8.8.8.8", false),
+        ] {
+            assert_eq!(
+                f.allows(&format!("candidate:1 1 UDP 1 {ip} 4000 typ host")),
+                ok,
+                "{ip}"
+            );
         }
     }
 
@@ -290,22 +393,41 @@ mod tests {
         let f = Filter::choose(Some("10.0.0.0/40"), Some("192.168.9.9"), None);
         assert_eq!(f.rules, vec![Rule::Addr("192.168.9.9".parse().unwrap())]);
         assert!(parse_list("nope").is_err() && parse_list(" , ").is_err());
-        assert_eq!(parse_list("0.0.0.0/0").unwrap(), vec![Rule::Net(Ipv4Addr::UNSPECIFIED, 0)]);
+        assert_eq!(
+            parse_list("0.0.0.0/0").unwrap(),
+            vec![Rule::Net(Ipv4Addr::UNSPECIFIED, 0)]
+        );
         assert!(Rule::Net(Ipv4Addr::UNSPECIFIED, 0).matches("1.2.3.4".parse().unwrap()));
     }
 
     #[test]
     fn normalizes_addresses() {
-        assert_eq!(normalize("::ffff:192.168.1.20"), Some("192.168.1.20".parse().unwrap()));
-        assert_eq!(normalize("[fe80::1%wlan0]"), Some("fe80::1".parse().unwrap()));
+        assert_eq!(
+            normalize("::ffff:192.168.1.20"),
+            Some("192.168.1.20".parse().unwrap())
+        );
+        assert_eq!(
+            normalize("[fe80::1%wlan0]"),
+            Some("fe80::1".parse().unwrap())
+        );
         assert_eq!(normalize(" 10.0.0.1 "), Some("10.0.0.1".parse().unwrap()));
         assert_eq!(normalize("x"), None);
-        assert!(is_virtual_iface("docker0") && is_virtual_iface("veth12") && !is_virtual_iface("wlan0") && !is_virtual_iface("enp3s0"));
+        assert!(
+            is_virtual_iface("docker0")
+                && is_virtual_iface("veth12")
+                && !is_virtual_iface("wlan0")
+                && !is_virtual_iface("enp3s0")
+        );
     }
 
     #[test]
     fn lists_local_addresses() {
         // Every Linux machine has at least loopback.
-        assert!(local_addrs().unwrap().iter().any(|(n, ip)| n == "lo" && ip.is_loopback()));
+        assert!(
+            local_addrs()
+                .unwrap()
+                .iter()
+                .any(|(n, ip)| n == "lo" && ip.is_loopback())
+        );
     }
 }

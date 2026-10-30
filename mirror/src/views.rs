@@ -46,7 +46,10 @@ pub fn parse_invite(msg: &Value) -> Option<ViewInvite> {
     if msg.get("cmd").and_then(Value::as_i64) != Some(0) {
         return None;
     }
-    let view = msg.get("view").and_then(Value::as_i64).filter(|v| view_pkg(*v).is_some())?;
+    let view = msg
+        .get("view")
+        .and_then(Value::as_i64)
+        .filter(|v| view_pkg(*v).is_some())?;
     let resolution = msg
         .get("resolution")
         .and_then(|r| Some((r.get("width")?.as_i64()?, r.get("height")?.as_i64()?)))
@@ -74,29 +77,46 @@ mod tests {
     fn invite_parsing() {
         assert_eq!(
             parse_invite(&json!({ "ver": "1.0.0", "cmd": 0, "view": 1 })),
-            Some(ViewInvite { view: 1, resolution: None })
+            Some(ViewInvite {
+                view: 1,
+                resolution: None
+            })
         );
         assert_eq!(
             parse_invite(
                 &json!({ "ver": "1.0.0", "cmd": 0, "view": 2, "resolution": { "width": 2560, "height": 1440 } })
             ),
-            Some(ViewInvite { view: 2, resolution: Some((2560, 1440)) })
+            Some(ViewInvite {
+                view: 2,
+                resolution: Some((2560, 1440))
+            })
         );
         assert_eq!(
-            parse_invite(&json!({ "cmd": 0, "view": 2, "resolution": { "width": 0, "height": 0 } }))
-                .unwrap()
-                .resolution,
+            parse_invite(
+                &json!({ "cmd": 0, "view": 2, "resolution": { "width": 0, "height": 0 } })
+            )
+            .unwrap()
+            .resolution,
             None
         );
-        assert!(parse_invite(&json!({ "cmd": 0, "view": 7 })).is_none(), "unknown view");
-        assert!(parse_invite(&json!({ "cmd": 31, "view": 7 })).is_none(), "supported-views broadcast");
+        assert!(
+            parse_invite(&json!({ "cmd": 0, "view": 7 })).is_none(),
+            "unknown view"
+        );
+        assert!(
+            parse_invite(&json!({ "cmd": 31, "view": 7 })).is_none(),
+            "supported-views broadcast"
+        );
         assert!(parse_invite(&json!({ "cmd": 11, "errorCode": 145 })).is_none());
     }
 
     #[test]
     fn answers() {
         let a = accept(2);
-        assert_eq!((a["cmd"].as_i64(), a["view"].as_i64(), a["reply"].as_i64()), (Some(1), Some(2), Some(1)));
+        assert_eq!(
+            (a["cmd"].as_i64(), a["view"].as_i64(), a["reply"].as_i64()),
+            (Some(1), Some(2), Some(1))
+        );
         assert_eq!(a["ver"], "1.0.0");
         assert_eq!(a["drawerMode"], false);
         assert_eq!(start(1)["reply"], 0);

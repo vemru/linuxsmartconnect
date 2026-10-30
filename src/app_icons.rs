@@ -26,7 +26,9 @@ pub fn enabled() -> bool {
 
 /// Called for every service 17 frame from the phone at `phone`.
 pub fn on_app_list(phone: IpAddr, data: &Value) {
-    let Some(advert) = AppListAdvert::from_data(data) else { return };
+    let Some(advert) = AppListAdvert::from_data(data) else {
+        return;
+    };
     if !enabled() {
         return;
     }

@@ -86,11 +86,21 @@ pub struct Frame {
 
 impl Frame {
     pub fn action(id: impl Into<String>, name: Name, payload: Option<String>) -> Frame {
-        Frame { kind: Kind::Action, id: id.into(), name, payload }
+        Frame {
+            kind: Kind::Action,
+            id: id.into(),
+            name,
+            payload,
+        }
     }
 
     pub fn ack(id: impl Into<String>, name: Name, payload: Option<String>) -> Frame {
-        Frame { kind: Kind::Ack, id: id.into(), name, payload }
+        Frame {
+            kind: Kind::Ack,
+            id: id.into(),
+            name,
+            payload,
+        }
     }
 
     /// Parses one text message. Trailing data that isn't a JSON object is ignored, as the phone's
@@ -111,20 +121,37 @@ impl Frame {
             None => (rest, None),
         };
         let name = Name::parse(name).with_context(|| format!("unknown fex frame name {name:?}"))?;
-        let payload = payload.filter(|p| p.starts_with('{') && p.ends_with('}')).map(str::to_owned);
-        Ok(Frame { kind, id: id.to_owned(), name, payload })
+        let payload = payload
+            .filter(|p| p.starts_with('{') && p.ends_with('}'))
+            .map(str::to_owned);
+        Ok(Frame {
+            kind,
+            id: id.to_owned(),
+            name,
+            payload,
+        })
     }
 
     /// Decodes the JSON payload.
     pub fn json<T: DeserializeOwned>(&self) -> Result<T> {
-        let p = self.payload.as_deref().with_context(|| format!("{} frame without a payload", self.name.as_str()))?;
-        serde_json::from_str(p).with_context(|| format!("decoding the {} payload", self.name.as_str()))
+        let p = self
+            .payload
+            .as_deref()
+            .with_context(|| format!("{} frame without a payload", self.name.as_str()))?;
+        serde_json::from_str(p)
+            .with_context(|| format!("decoding the {} payload", self.name.as_str()))
     }
 }
 
 impl fmt::Display for Frame {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}:{}:{}", self.kind.as_str(), self.id, self.name.as_str())?;
+        write!(
+            f,
+            "{}:{}:{}",
+            self.kind.as_str(),
+            self.id,
+            self.name.as_str()
+        )?;
         if let Some(p) = &self.payload {
             write!(f, "?{p}")?;
         }
@@ -219,13 +246,22 @@ mod tests {
         assert_eq!(f.kind, Kind::Action);
         assert_eq!(f.id, "Server1001");
         assert_eq!(f.name, Name::VersionNegotiation);
-        assert_eq!(f.json::<VersionNegotiation>().unwrap(), VersionNegotiation { version: 1, token: None });
+        assert_eq!(
+            f.json::<VersionNegotiation>().unwrap(),
+            VersionNegotiation {
+                version: 1,
+                token: None
+            }
+        );
         assert_eq!(f.to_string(), VN);
     }
 
     #[test]
     fn serializes_version_negotiation_with_token() {
-        let vn = VersionNegotiation { version: 1, token: Some("abc".into()) };
+        let vn = VersionNegotiation {
+            version: 1,
+            token: Some("abc".into()),
+        };
         let s = serde_json::to_string(&vn).unwrap();
         assert_eq!(s, r#"{"version":1,"token":"abc"}"#);
         let back: VersionNegotiation = serde_json::from_str(&s).unwrap();
@@ -235,7 +271,10 @@ mod tests {
     #[test]
     fn parses_send_request() {
         let f = Frame::parse(SR).unwrap();
-        assert_eq!((f.kind, f.name, f.id.as_str()), (Kind::Action, Name::SendRequest, "Server1002"));
+        assert_eq!(
+            (f.kind, f.name, f.id.as_str()),
+            (Kind::Action, Name::SendRequest, "Server1002")
+        );
         let r: SendRequest = f.json().unwrap();
         assert_eq!(r.id, "TASK0000000001");
         assert_eq!(r.file_count, 2);
@@ -247,25 +286,56 @@ mod tests {
     #[test]
     fn encodes_client_frames_exactly() {
         // The acks and the completion status this client sends (known-answer strings).
-        let ack = Frame::ack("Server1001", Name::VersionNegotiation, Some(r#"{"version":1}"#.into()));
-        assert_eq!(ack.to_string(), r#"ack:Server1001:versionNegotiation?{"version":1}"#);
-        assert_eq!(Frame::ack("Server1002", Name::SendRequest, Some("{}".into())).to_string(), "ack:Server1002:sendRequest?{}");
-        let st = Status { task_id: "TASK0000000001".into(), kind: STATUS_COMPLETE, reason: String::new() };
+        let ack = Frame::ack(
+            "Server1001",
+            Name::VersionNegotiation,
+            Some(r#"{"version":1}"#.into()),
+        );
+        assert_eq!(
+            ack.to_string(),
+            r#"ack:Server1001:versionNegotiation?{"version":1}"#
+        );
+        assert_eq!(
+            Frame::ack("Server1002", Name::SendRequest, Some("{}".into())).to_string(),
+            "ack:Server1002:sendRequest?{}"
+        );
+        let st = Status {
+            task_id: "TASK0000000001".into(),
+            kind: STATUS_COMPLETE,
+            reason: String::new(),
+        };
         let mut ids = ClientIds::default();
-        let f = Frame::action(ids.next_id(), Name::Status, Some(serde_json::to_string(&st).unwrap()));
-        assert_eq!(f.to_string(), r#"action:Client1001:status?{"taskId":"TASK0000000001","type":1,"reason":""}"#);
+        let f = Frame::action(
+            ids.next_id(),
+            Name::Status,
+            Some(serde_json::to_string(&st).unwrap()),
+        );
+        assert_eq!(
+            f.to_string(),
+            r#"action:Client1001:status?{"taskId":"TASK0000000001","type":1,"reason":""}"#
+        );
         assert_eq!(ids.next_id(), "Client1002");
     }
 
     #[test]
     fn parses_bare_ack() {
         let f = Frame::parse("ack:Client1001:status").unwrap();
-        assert_eq!((f.kind, f.name, f.id.as_str(), f.payload), (Kind::Ack, Name::Status, "Client1001", None));
+        assert_eq!(
+            (f.kind, f.name, f.id.as_str(), f.payload),
+            (Kind::Ack, Name::Status, "Client1001", None)
+        );
     }
 
     #[test]
     fn rejects_garbage() {
-        for bad in ["", "hello", "action:Server1:bogus", "nope:Server1:status", "action::status", "action:a b:status"] {
+        for bad in [
+            "",
+            "hello",
+            "action:Server1:bogus",
+            "nope:Server1:status",
+            "action::status",
+            "action:a b:status",
+        ] {
             assert!(Frame::parse(bad).is_err(), "{bad:?} parsed");
         }
         // A non-object payload is dropped, not an error.

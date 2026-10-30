@@ -15,7 +15,10 @@ pub struct Response {
 
 impl Response {
     pub fn header(&self, name: &str) -> Option<&str> {
-        self.headers.iter().find(|(k, _)| k.eq_ignore_ascii_case(name)).map(|(_, v)| v.as_str())
+        self.headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(name))
+            .map(|(_, v)| v.as_str())
     }
 }
 
@@ -34,7 +37,9 @@ pub fn encode_query_value(v: &str) -> String {
 
 /// The request bytes for `GET target`.
 pub fn request(host: &str, target: &str) -> String {
-    format!("GET {target} HTTP/1.1\r\nHost: {host}\r\nUser-Agent: smartconnect-fex\r\nAccept: */*\r\nConnection: close\r\n\r\n")
+    format!(
+        "GET {target} HTTP/1.1\r\nHost: {host}\r\nUser-Agent: smartconnect-fex\r\nAccept: */*\r\nConnection: close\r\n\r\n"
+    )
 }
 
 /// Sends `GET target` on `stream` and reads the response, refusing bodies over `max_body` bytes.
@@ -61,14 +66,23 @@ where
     };
     let (status, headers) = parse_head(&buf[..head_end])?;
     let mut body = buf.split_off(head_end);
-    let header = |name: &str| headers.iter().find(|(k, _)| k.eq_ignore_ascii_case(name)).map(|(_, v)| v.as_str());
-    let chunked = header("transfer-encoding").is_some_and(|v| v.to_ascii_lowercase().contains("chunked"));
+    let header = |name: &str| {
+        headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(name))
+            .map(|(_, v)| v.as_str())
+    };
+    let chunked =
+        header("transfer-encoding").is_some_and(|v| v.to_ascii_lowercase().contains("chunked"));
     let length = match header("content-length") {
         Some(v) if !chunked => Some(v.trim().parse::<usize>().context("bad Content-Length")?),
         _ => None,
     };
     if length.is_some_and(|l| l > max_body) {
-        bail!("HTTP body of {} bytes is over the {max_body}-byte limit", length.unwrap_or_default());
+        bail!(
+            "HTTP body of {} bytes is over the {max_body}-byte limit",
+            length.unwrap_or_default()
+        );
     }
     loop {
         if length.is_some_and(|l| body.len() >= l) {
@@ -94,7 +108,11 @@ where
             bail!("HTTP body over the {max_body}-byte limit");
         }
     }
-    Ok(Response { status, headers, body })
+    Ok(Response {
+        status,
+        headers,
+        body,
+    })
 }
 
 /// Reads once; a peer that closes without a TLS close_notify counts as end of stream.
@@ -120,7 +138,10 @@ pub fn parse_head(head: &[u8]) -> Result<(u16, Vec<(String, String)>)> {
     if !version.starts_with("HTTP/1.") {
         bail!("not an HTTP/1.x response: {status_line:?}");
     }
-    let status = parts.next().and_then(|s| s.parse().ok()).with_context(|| format!("bad status line {status_line:?}"))?;
+    let status = parts
+        .next()
+        .and_then(|s| s.parse().ok())
+        .with_context(|| format!("bad status line {status_line:?}"))?;
     let headers = lines
         .filter(|l| !l.is_empty())
         .filter_map(|l| l.split_once(':'))
@@ -170,12 +191,17 @@ mod tests {
 
     #[test]
     fn parses_heads_and_chunks() {
-        let (status, headers) =
-            parse_head(b"HTTP/1.1 200 OK\r\nContent-Type: application/zip\r\nContent-Length: 5\r\n\r\n").unwrap();
+        let (status, headers) = parse_head(
+            b"HTTP/1.1 200 OK\r\nContent-Type: application/zip\r\nContent-Length: 5\r\n\r\n",
+        )
+        .unwrap();
         assert_eq!(status, 200);
         assert_eq!(headers[1], ("Content-Length".to_owned(), "5".to_owned()));
         assert!(parse_head(b"SSH-2.0-x\r\n\r\n").is_err());
-        assert_eq!(decode_chunked(b"4\r\nWiki\r\n5;x=1\r\npedia\r\n0\r\n\r\n").unwrap(), b"Wikipedia");
+        assert_eq!(
+            decode_chunked(b"4\r\nWiki\r\n5;x=1\r\npedia\r\n0\r\n\r\n").unwrap(),
+            b"Wikipedia"
+        );
         assert!(decode_chunked(b"9\r\nabc").is_err());
     }
 
@@ -186,9 +212,14 @@ mod tests {
             let mut req = vec![0u8; 1024];
             let n = server.read(&mut req).await.unwrap();
             assert!(req[..n].starts_with(b"GET /download?taskId=T1 HTTP/1.1\r\n"));
-            server.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nPK!").await.unwrap();
+            server
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nPK!")
+                .await
+                .unwrap();
         });
-        let r = get(&mut client, "h", "/download?taskId=T1", 10).await.unwrap();
+        let r = get(&mut client, "h", "/download?taskId=T1", 10)
+            .await
+            .unwrap();
         srv.await.unwrap();
         assert_eq!((r.status, r.body.as_slice()), (200, &b"PK!"[..]));
         assert_eq!(r.header("content-length"), Some("3"));
@@ -200,7 +231,9 @@ mod tests {
         tokio::spawn(async move {
             let mut req = vec![0u8; 1024];
             let _ = server.read(&mut req).await;
-            let _ = server.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 999\r\n\r\n").await;
+            let _ = server
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 999\r\n\r\n")
+                .await;
         });
         assert!(get(&mut client, "h", "/", 10).await.is_err());
     }

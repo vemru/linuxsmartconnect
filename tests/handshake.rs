@@ -13,7 +13,9 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::TlsConnector;
-use tokio_rustls::rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
+use tokio_rustls::rustls::client::danger::{
+    HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier,
+};
 use tokio_rustls::rustls::crypto::{self, CryptoProvider};
 use tokio_rustls::rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use tokio_rustls::rustls::{self, ClientConfig, DigitallySignedStruct, SignatureScheme};
@@ -55,7 +57,12 @@ impl ServerCertVerifier for FingerprintPin {
         cert: &CertificateDer<'_>,
         dss: &DigitallySignedStruct,
     ) -> Result<HandshakeSignatureValid, rustls::Error> {
-        crypto::verify_tls12_signature(message, cert, dss, &self.provider.signature_verification_algorithms)
+        crypto::verify_tls12_signature(
+            message,
+            cert,
+            dss,
+            &self.provider.signature_verification_algorithms,
+        )
     }
 
     fn verify_tls13_signature(
@@ -64,11 +71,18 @@ impl ServerCertVerifier for FingerprintPin {
         cert: &CertificateDer<'_>,
         dss: &DigitallySignedStruct,
     ) -> Result<HandshakeSignatureValid, rustls::Error> {
-        crypto::verify_tls13_signature(message, cert, dss, &self.provider.signature_verification_algorithms)
+        crypto::verify_tls13_signature(
+            message,
+            cert,
+            dss,
+            &self.provider.signature_verification_algorithms,
+        )
     }
 
     fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
-        self.provider.signature_verification_algorithms.supported_schemes()
+        self.provider
+            .signature_verification_algorithms
+            .supported_schemes()
     }
 }
 
@@ -86,7 +100,10 @@ impl Drop for TempDir {
 }
 
 async fn start() -> Harness {
-    let dir = std::env::temp_dir().join(format!("scd-test-{}", smartconnect::invite::gen_key().replace(['/', '+', '='], "")));
+    let dir = std::env::temp_dir().join(format!(
+        "scd-test-{}",
+        smartconnect::invite::gen_key().replace(['/', '+', '='], "")
+    ));
     let identity = Identity::load_or_create(&dir, Some("test-pc".into())).unwrap();
     let acceptor = server::tls_acceptor(&identity).unwrap();
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -97,17 +114,28 @@ async fn start() -> Harness {
         addr.port(),
         vec![IpAddr::V4(Ipv4Addr::LOCALHOST)],
         Duration::from_secs(60),
-        QrOutput { invert: true, svg_path: dir.join("qr.svg") },
+        QrOutput {
+            invert: true,
+            svg_path: dir.join("qr.svg"),
+        },
         dir.join("sessions"),
         Some("00:11:22:33:44:55".to_string()),
     ));
     tokio::spawn(server::serve(daemon.clone(), listener, acceptor));
-    Harness { daemon, addr, _state: TempDir(dir) }
+    Harness {
+        daemon,
+        addr,
+        _state: TempDir(dir),
+    }
 }
 
 /// Issues an invite and returns the QR's `wsData`, parsed the way the phone does.
 fn scan_qr(h: &Harness) -> Value {
-    let inv = Invite::new(h.addr.port(), vec![IpAddr::V4(Ipv4Addr::LOCALHOST)], Duration::from_secs(60));
+    let inv = Invite::new(
+        h.addr.port(),
+        vec![IpAddr::V4(Ipv4Addr::LOCALHOST)],
+        Duration::from_secs(60),
+    );
     let payload = inv.qr_payload(&h.daemon.identity, h.daemon.ble_address.as_deref());
     *h.daemon.invite.lock().unwrap() = Some(inv);
     assert!(payload.starts_with(QR_PREFIX));
@@ -125,7 +153,10 @@ async fn phone_connect(ws_data: &Value) -> PhoneWs {
 async fn phone_connect_path(ws_data: &Value, path: &str) -> PhoneWs {
     let fp = B64.decode(ws_data["fp"].as_str().unwrap()).unwrap();
     let provider = Arc::new(rustls::crypto::ring::default_provider());
-    let verifier = FingerprintPin { expected_hex: hex::encode(fp), provider: provider.clone() };
+    let verifier = FingerprintPin {
+        expected_hex: hex::encode(fp),
+        provider: provider.clone(),
+    };
     let config = ClientConfig::builder_with_provider(provider)
         .with_safe_default_protocol_versions()
         .unwrap()
@@ -172,7 +203,11 @@ async fn qr_pairing_handshake_is_verified() {
     assert_eq!(ws_data["serviceId"], 19);
     let mut ws = phone_connect(&ws_data).await;
 
-    ws.send(Message::text(phone_hello(ws_data["token"].as_str().unwrap()))).await.unwrap();
+    ws.send(Message::text(phone_hello(
+        ws_data["token"].as_str().unwrap(),
+    )))
+    .await
+    .unwrap();
     let reply = match ws.next().await.unwrap().unwrap() {
         Message::Text(t) => serde_json::from_str::<Value>(&t).unwrap(),
         other => panic!("expected text reply, got {other:?}"),
@@ -183,8 +218,13 @@ async fn qr_pairing_handshake_is_verified() {
     assert_eq!(reply["data"]["cmd"], 0);
     assert_eq!(reply["data"]["ver"], 3);
     assert_eq!(reply["data"]["token"], "OK");
-    assert_eq!(reply["data"]["device"]["realDeviceId"], h.daemon.identity.real_device_id.as_str());
-    let key = B64.decode(reply["data"]["device"]["key"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        reply["data"]["device"]["realDeviceId"],
+        h.daemon.identity.real_device_id.as_str()
+    );
+    let key = B64
+        .decode(reply["data"]["device"]["key"].as_str().unwrap())
+        .unwrap();
     assert_eq!(key.len(), 32);
 
     // The phone only brings up services the PC advertises; clipboard (9) must be listed.
@@ -206,7 +246,11 @@ async fn phone_key_exchange_gets_our_key() {
     let h = start().await;
     let ws_data = scan_qr(&h);
     let mut ws = phone_connect(&ws_data).await;
-    ws.send(Message::text(phone_hello(ws_data["token"].as_str().unwrap()))).await.unwrap();
+    ws.send(Message::text(phone_hello(
+        ws_data["token"].as_str().unwrap(),
+    )))
+    .await
+    .unwrap();
     let reply = next_json(&mut ws).await;
     let our_key = reply["data"]["device"]["key"].as_str().unwrap().to_owned();
     assert_eq!(next_json(&mut ws).await["serviceId"], 25); // tile cap map follows the verify reply
@@ -227,10 +271,24 @@ async fn phone_key_exchange_gets_our_key() {
     assert_eq!(answer["data"]["device"]["key"], our_key.as_str());
     // The phone files the pair (and its home tile) under device.deviceId and shows the tile online
     // only if a live connection has that id as its realDeviceId — so both must be the real id.
-    assert_eq!(answer["data"]["device"]["deviceId"], h.daemon.identity.real_device_id.as_str());
-    assert_eq!(answer["data"]["device"]["realDeviceId"], h.daemon.identity.real_device_id.as_str());
+    assert_eq!(
+        answer["data"]["device"]["deviceId"],
+        h.daemon.identity.real_device_id.as_str()
+    );
+    assert_eq!(
+        answer["data"]["device"]["realDeviceId"],
+        h.daemon.identity.real_device_id.as_str()
+    );
     assert!(!answer["data"]["device"]["sn"].as_str().unwrap().is_empty());
-    let stored = h.daemon.pairing.lock().unwrap().get("phone-real-id").unwrap().phone_key.clone();
+    let stored = h
+        .daemon
+        .pairing
+        .lock()
+        .unwrap()
+        .get("phone-real-id")
+        .unwrap()
+        .phone_key
+        .clone();
     assert_eq!(stored.as_deref(), Some(phone_key.as_str()));
 }
 
@@ -239,7 +297,11 @@ async fn clipboard_nego_is_confirmed() {
     let h = start().await;
     let ws_data = scan_qr(&h);
     let mut ws = phone_connect(&ws_data).await;
-    ws.send(Message::text(phone_hello(ws_data["token"].as_str().unwrap()))).await.unwrap();
+    ws.send(Message::text(phone_hello(
+        ws_data["token"].as_str().unwrap(),
+    )))
+    .await
+    .unwrap();
     assert!(matches!(ws.next().await, Some(Ok(Message::Text(_)))));
     // Right after the verify reply: svc 25 `cap` map, which gates the phone's feature tiles.
     let status = match ws.next().await.unwrap().unwrap() {
@@ -269,7 +331,9 @@ async fn wrong_token_is_dropped() {
     let h = start().await;
     let ws_data = scan_qr(&h);
     let mut ws = phone_connect(&ws_data).await;
-    ws.send(Message::text(phone_hello("not-the-token"))).await.unwrap();
+    ws.send(Message::text(phone_hello("not-the-token")))
+        .await
+        .unwrap();
     match ws.next().await {
         None | Some(Err(_)) | Some(Ok(Message::Close(_))) => {}
         Some(Ok(other)) => panic!("expected the connection to drop, got {other:?}"),
@@ -289,7 +353,10 @@ async fn token_reusable_and_reconnect_without_token() {
 
     // Reconnect of the now-paired device (same realDeviceId) with NO valid token — still accepted.
     let mut second = phone_connect(&ws_data).await;
-    second.send(Message::text(phone_hello("not-the-token"))).await.unwrap();
+    second
+        .send(Message::text(phone_hello("not-the-token")))
+        .await
+        .unwrap();
     assert!(matches!(second.next().await, Some(Ok(Message::Text(_)))));
 }
 
@@ -299,14 +366,24 @@ async fn connect_button_trigger_gets_an_invite() {
     let h = start().await;
     let ws_data = scan_qr(&h);
     let mut ws = phone_connect(&ws_data).await;
-    ws.send(Message::text(phone_hello(ws_data["token"].as_str().unwrap()))).await.unwrap();
-    let key = next_json(&mut ws).await["data"]["device"]["key"].as_str().unwrap().to_owned();
+    ws.send(Message::text(phone_hello(
+        ws_data["token"].as_str().unwrap(),
+    )))
+    .await
+    .unwrap();
+    let key = next_json(&mut ws).await["data"]["device"]["key"]
+        .as_str()
+        .unwrap()
+        .to_owned();
 
     // The phone (Connect tapped) dials our /readyfor/mdns with a cmd:0 trigger sealed under our key,
     // prefixed with its own salted nonce id.
     let mut mdns = phone_connect_path(&ws_data, discovery::MDNS_PATH).await;
-    let phone_nonce = B64.decode(smartconnect::identity::nonce_id("phone-real-id")).unwrap();
-    let trigger = discovery::seal(&key, &phone_nonce, br#"{"ver":1,"cmd":0,"serviceId":19}"#).unwrap();
+    let phone_nonce = B64
+        .decode(smartconnect::identity::nonce_id("phone-real-id"))
+        .unwrap();
+    let trigger =
+        discovery::seal(&key, &phone_nonce, br#"{"ver":1,"cmd":0,"serviceId":19}"#).unwrap();
     mdns.send(Message::binary(trigger)).await.unwrap();
 
     let frame = match mdns.next().await.unwrap().unwrap() {
@@ -315,13 +392,20 @@ async fn connect_button_trigger_gets_an_invite() {
     };
     let (prefix, kind, pt) = discovery::open(&key, &frame).unwrap();
     assert_eq!(kind, 1);
-    assert!(smartconnect::identity::is_nonce_of(&prefix, &h.daemon.identity.real_device_id));
+    assert!(smartconnect::identity::is_nonce_of(
+        &prefix,
+        &h.daemon.identity.real_device_id
+    ));
     let invite: Value = serde_json::from_slice(&pt).unwrap();
     assert_eq!(invite["cmd"], 1);
     assert_eq!(invite["wsPort"], h.addr.port());
     assert_eq!(invite["fp"], ws_data["fp"]);
     // The token must get the phone back in on the control socket.
     let mut back = phone_connect(&ws_data).await;
-    back.send(Message::text(phone_hello(invite["token"].as_str().unwrap()))).await.unwrap();
+    back.send(Message::text(phone_hello(
+        invite["token"].as_str().unwrap(),
+    )))
+    .await
+    .unwrap();
     assert_eq!(next_json(&mut back).await["data"]["token"], "OK");
 }

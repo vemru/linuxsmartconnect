@@ -89,13 +89,31 @@ impl Daemon {
     pub fn ensure_running() -> (Self, bool) {
         if socket_alive() {
             // Already up; don't touch it. Note whether systemd owns it, for Quit.
-            return (Self { child: None, systemd: unit_active() }, false);
+            return (
+                Self {
+                    child: None,
+                    systemd: unit_active(),
+                },
+                false,
+            );
         }
         if unit_installed() && systemctl_ok(&["start", UNIT]) {
-            return (Self { child: None, systemd: true }, true);
+            return (
+                Self {
+                    child: None,
+                    systemd: true,
+                },
+                true,
+            );
         }
         match spawn_child() {
-            Ok(child) => (Self { child: Some(child), systemd: false }, true),
+            Ok(child) => (
+                Self {
+                    child: Some(child),
+                    systemd: false,
+                },
+                true,
+            ),
             Err(e) => {
                 eprintln!("smartconnect-gui: could not start {UNIT}: {e}");
                 (Self::default(), false)
@@ -133,7 +151,9 @@ fn config_home() -> PathBuf {
     std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
-        .unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".config"))
+        .unwrap_or_else(|| {
+            PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".config")
+        })
 }
 
 fn autostart_path_in(config_home: &Path) -> PathBuf {
@@ -219,7 +239,10 @@ mod tests {
             }
             !alive
         });
-        assert!(gone, "socket still accepting 1 s after the listener was dropped");
+        assert!(
+            gone,
+            "socket still accepting 1 s after the listener was dropped"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -246,15 +269,24 @@ mod tests {
 
     #[test]
     fn daemon_binary_uses_the_project_convention() {
-        assert_eq!(crate::mirror::env_var(UNIT), "SMARTCONNECT_SMARTCONNECTD_BIN");
+        assert_eq!(
+            crate::mirror::env_var(UNIT),
+            "SMARTCONNECT_SMARTCONNECTD_BIN"
+        );
     }
 
     #[test]
     fn stop_terminates_a_spawned_child() {
         // A harmless stand-in for the daemon (never the real one).
-        let child = Command::new("sleep").arg("60").spawn().expect("spawn sleep");
+        let child = Command::new("sleep")
+            .arg("60")
+            .spawn()
+            .expect("spawn sleep");
         let pid = child.id() as libc::pid_t;
-        let mut daemon = Daemon { child: Some(child), systemd: false };
+        let mut daemon = Daemon {
+            child: Some(child),
+            systemd: false,
+        };
         daemon.stop();
         // After stop the child is reaped; signalling the pid now fails.
         let alive = unsafe { libc::kill(pid, 0) } == 0;

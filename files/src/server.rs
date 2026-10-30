@@ -94,7 +94,9 @@ impl ClientCertVerifier for PinnedClientVerifier {
     }
 
     fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
-        self.provider.signature_verification_algorithms.supported_schemes()
+        self.provider
+            .signature_verification_algorithms
+            .supported_schemes()
     }
 }
 
@@ -141,10 +143,18 @@ impl NfsServer {
         show_hidden: bool,
         allow_delete: bool,
     ) -> Result<Self> {
-        let fs = LocalFs::new(share_dir).context("opening the shared directory")?.show_hidden(show_hidden);
+        let fs = LocalFs::new(share_dir)
+            .context("opening the shared directory")?
+            .show_hidden(show_hidden);
         let vfs = Arc::new(ReadOnlyAdapter::new(fs.clone()));
         let config = server_config(id, pinned)?;
-        Ok(Self { acceptor: TlsAcceptor::from(config), vfs, fs, export_label, allow_delete })
+        Ok(Self {
+            acceptor: TlsAcceptor::from(config),
+            vfs,
+            fs,
+            export_label,
+            allow_delete,
+        })
     }
 
     /// Accepts connections forever, running one NFS session per TLS stream. Returns only on a fatal
@@ -157,7 +167,10 @@ impl NfsServer {
         // handle onto it.
         let root_fh: Arc<[u8]> = Arc::from(base.root_dir().data.as_ref());
         loop {
-            let (tcp, peer) = listener.accept().await.context("accepting a TLS connection")?;
+            let (tcp, peer) = listener
+                .accept()
+                .await
+                .context("accepting a TLS connection")?;
             let _ = tcp.set_nodelay(true);
             let acceptor = self.acceptor.clone();
             let ctx = base.clone();
@@ -182,7 +195,14 @@ impl NfsServer {
                         debug!("NFS core for {peer} ended: {e}");
                     }
                 });
-                let session = crate::router::Session { fs, label, allow_delete, root_fh, trace: trace_enabled(), peer };
+                let session = crate::router::Session {
+                    fs,
+                    label,
+                    allow_delete,
+                    root_fh,
+                    trace: trace_enabled(),
+                    peer,
+                };
                 if let Err(e) = crate::router::run(tls, router_end, session).await {
                     debug!("NFS session with {peer} ended: {e}");
                 }
@@ -269,7 +289,10 @@ pub async fn bind(port: u16) -> Result<(TcpListener, u16)> {
     let listener = TcpListener::bind(("0.0.0.0", port))
         .await
         .with_context(|| format!("binding the NFS-over-TLS listener on port {port}"))?;
-    let actual = listener.local_addr().context("reading the listener address")?.port();
+    let actual = listener
+        .local_addr()
+        .context("reading the listener address")?
+        .port();
     if actual != port && port != 0 {
         warn!("requested port {port} unavailable; bound {actual} instead");
     }
@@ -281,7 +304,10 @@ mod zero_root_tests {
     use super::*;
 
     fn unhex(s: &str) -> Vec<u8> {
-        (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap()).collect()
+        (0..s.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+            .collect()
     }
 
     /// The phone's real NFS ACCESS call on the 64-byte all-zero root handle (captured on a device,
@@ -319,7 +345,11 @@ mod zero_root_tests {
         let frag = phone_access_on_zero_root();
         let (out, proc_) = rewrite_zero_root(&frag, &root).expect("should rewrite");
         assert_eq!(proc_, 4, "ACCESS");
-        assert_eq!(out.len(), frag.len(), "same-length handle, same record length");
+        assert_eq!(
+            out.len(),
+            frag.len(),
+            "same-length handle, same record length"
+        );
         let args = out.len() - 4 - (4 + 64);
         assert_eq!(&out[args + 4..args + 68], root.as_slice());
         assert_eq!(&out[out.len() - 4..], &1u32.to_be_bytes());
@@ -347,7 +377,9 @@ mod zero_root_tests {
     fn other_records_pass_through() {
         let root: Vec<u8> = (1..=16).collect();
         // NFS NULL (no arguments) is not rewritten.
-        let null = unhex("80000048545ebfb50000000000000002000186a300000003000000000000000100000020000000000000000a6c6f63616c686f737400000000000000000000000000000000");
+        let null = unhex(
+            "80000048545ebfb50000000000000002000186a300000003000000000000000100000020000000000000000a6c6f63616c686f737400000000000000000000000000000000",
+        );
         assert!(rewrite_zero_root(&null, &root).is_none());
         // A real (non-zero) handle is left alone.
         let mut frag = phone_access_on_zero_root();
@@ -366,14 +398,19 @@ mod tests {
     use std::path::PathBuf;
 
     use nfs3_client::Nfs3ConnectionBuilder;
-    use nfs3_client::nfs3_types::nfs3::{Nfs3Result, READ3args, READDIRPLUS3args, diropargs3, filename3, LOOKUP3args};
+    use nfs3_client::nfs3_types::nfs3::{
+        LOOKUP3args, Nfs3Result, READ3args, READDIRPLUS3args, diropargs3, filename3,
+    };
 
     use crate::cert::Identity;
     use crate::tls::{TlsNfsConnector, client_config};
 
     fn tmp(tag: &str) -> PathBuf {
-        let d = std::env::temp_dir()
-            .join(format!("scfiles-it-{}-{tag}-{:?}", std::process::id(), std::time::SystemTime::now()));
+        let d = std::env::temp_dir().join(format!(
+            "scfiles-it-{}-{tag}-{:?}",
+            std::process::id(),
+            std::time::SystemTime::now()
+        ));
         std::fs::create_dir_all(&d).unwrap();
         d
     }
@@ -393,10 +430,21 @@ mod tests {
         let client_id = Identity::load_or_create(&tmp("client-id")).unwrap();
 
         let pinned = super::new_pinned();
-        pinned.write().unwrap().insert(client_id.fingerprint.clone());
+        pinned
+            .write()
+            .unwrap()
+            .insert(client_id.fingerprint.clone());
 
         let (listener, port) = super::bind(0).await.unwrap();
-        let srv = super::NfsServer::new(&server_id, share, "/PhoneShare".into(), pinned, false, false).unwrap();
+        let srv = super::NfsServer::new(
+            &server_id,
+            share,
+            "/PhoneShare".into(),
+            pinned,
+            false,
+            false,
+        )
+        .unwrap();
         tokio::spawn(srv.serve(listener));
 
         // Client: present our client cert, pin the server's fp — the mirror of the phone.
@@ -412,7 +460,13 @@ mod tests {
 
         // List the root: we should see both top-level names.
         let root = conn.root_nfs_fh3();
-        let args = READDIRPLUS3args { dir: root.clone(), cookie: 0, cookieverf: Default::default(), dircount: 8192, maxcount: 32768 };
+        let args = READDIRPLUS3args {
+            dir: root.clone(),
+            cookie: 0,
+            cookieverf: Default::default(),
+            dircount: 8192,
+            maxcount: 32768,
+        };
         let names: Vec<String> = match conn.readdirplus(&args).await.unwrap() {
             Nfs3Result::Ok(ok) => ok
                 .reply
@@ -427,12 +481,21 @@ mod tests {
         assert!(names.contains(&"docs".to_string()), "got {names:?}");
 
         // LOOKUP + READ the file, verifying the bytes round-trip over the wire.
-        let look = LOOKUP3args { what: diropargs3 { dir: root, name: filename3::from(b"hello.txt".to_vec()) } };
+        let look = LOOKUP3args {
+            what: diropargs3 {
+                dir: root,
+                name: filename3::from(b"hello.txt".to_vec()),
+            },
+        };
         let fh = match conn.lookup(&look).await.unwrap() {
             Nfs3Result::Ok(ok) => ok.object,
             Nfs3Result::Err((c, _)) => panic!("lookup failed: {c:?}"),
         };
-        let read = READ3args { file: fh, offset: 0, count: 4096 };
+        let read = READ3args {
+            file: fh,
+            offset: 0,
+            count: 4096,
+        };
         let data = match conn.read(&read).await.unwrap() {
             Nfs3Result::Ok(ok) => ok.data.as_ref().to_vec(),
             Nfs3Result::Err((c, _)) => panic!("read failed: {c:?}"),
@@ -454,7 +517,15 @@ mod tests {
         // Note: the client's fp is NOT inserted into the pinned set.
         let pinned = super::new_pinned();
         let (listener, port) = super::bind(0).await.unwrap();
-        let srv = super::NfsServer::new(&server_id, share, "/PhoneShare".into(), pinned, false, false).unwrap();
+        let srv = super::NfsServer::new(
+            &server_id,
+            share,
+            "/PhoneShare".into(),
+            pinned,
+            false,
+            false,
+        )
+        .unwrap();
         tokio::spawn(srv.serve(listener));
 
         let config = client_config(&client_id, &server_id.fingerprint).unwrap();
@@ -465,6 +536,9 @@ mod tests {
             .connect_from_privileged_port(false)
             .mount()
             .await;
-        assert!(res.is_err(), "an unpinned client certificate must be refused");
+        assert!(
+            res.is_err(),
+            "an unpinned client certificate must be refused"
+        );
     }
 }

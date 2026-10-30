@@ -29,7 +29,10 @@ To load it at every boot:
 #[derive(Debug, Clone, PartialEq)]
 pub enum Output {
     /// `/dev/videoN` of a v4l2loopback device, with its card label.
-    V4l2 { device: PathBuf, label: String },
+    V4l2 {
+        device: PathBuf,
+        label: String,
+    },
     PipeWire,
     /// Decode and drop (testing).
     Discard,
@@ -38,7 +41,9 @@ pub enum Output {
 impl Output {
     pub fn describe(&self) -> String {
         match self {
-            Output::V4l2 { device, label } => format!("v4l2loopback {} (\"{label}\")", device.display()),
+            Output::V4l2 { device, label } => {
+                format!("v4l2loopback {} (\"{label}\")", device.display())
+            }
             Output::PipeWire => format!("PipeWire camera node \"{PIPEWIRE_DESCRIPTION}\""),
             Output::Discard => "nowhere (decode only)".into(),
         }
@@ -56,12 +61,17 @@ pub fn loopback_devices() -> Vec<(PathBuf, String)> {
 }
 
 fn loopback_devices_in(class_dir: &Path) -> Vec<(PathBuf, String)> {
-    let Ok(entries) = std::fs::read_dir(class_dir) else { return Vec::new() };
+    let Ok(entries) = std::fs::read_dir(class_dir) else {
+        return Vec::new();
+    };
     let mut found: Vec<(PathBuf, String)> = entries
         .flatten()
         .filter(|e| e.file_name().to_string_lossy().starts_with("video") && is_virtual(&e.path()))
         .map(|e| {
-            let label = std::fs::read_to_string(e.path().join("name")).unwrap_or_default().trim().to_owned();
+            let label = std::fs::read_to_string(e.path().join("name"))
+                .unwrap_or_default()
+                .trim()
+                .to_owned();
             (Path::new("/dev").join(e.file_name()), label)
         })
         .collect();
@@ -74,15 +84,30 @@ fn loopback_devices_in(class_dir: &Path) -> Vec<(PathBuf, String)> {
 pub fn choose(kind: &str, device: Option<&Path>) -> Result<Output> {
     let v4l2 = || -> Result<Option<Output>> {
         if let Some(dev) = device {
-            let name = dev.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            let name = dev
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
             let sys = Path::new("/sys/class/video4linux").join(&name);
             if !is_virtual(&sys) {
-                bail!("{} is not a v4l2loopback device; refusing to write to a real camera", dev.display());
+                bail!(
+                    "{} is not a v4l2loopback device; refusing to write to a real camera",
+                    dev.display()
+                );
             }
-            let label = std::fs::read_to_string(sys.join("name")).unwrap_or_default().trim().to_owned();
-            return Ok(Some(Output::V4l2 { device: dev.to_owned(), label }));
+            let label = std::fs::read_to_string(sys.join("name"))
+                .unwrap_or_default()
+                .trim()
+                .to_owned();
+            return Ok(Some(Output::V4l2 {
+                device: dev.to_owned(),
+                label,
+            }));
         }
-        Ok(loopback_devices().into_iter().next().map(|(device, label)| Output::V4l2 { device, label }))
+        Ok(loopback_devices()
+            .into_iter()
+            .next()
+            .map(|(device, label)| Output::V4l2 { device, label }))
     };
     match kind {
         "auto" => Ok(v4l2()?.unwrap_or(Output::PipeWire)),
@@ -105,7 +130,11 @@ mod tests {
         // Whatever this machine has: every device we'd pick must resolve under /sys/devices/virtual.
         for (dev, _) in loopback_devices() {
             let sys = Path::new("/sys/class/video4linux").join(dev.file_name().unwrap());
-            assert!(std::fs::canonicalize(sys).unwrap().starts_with("/sys/devices/virtual/"));
+            assert!(
+                std::fs::canonicalize(sys)
+                    .unwrap()
+                    .starts_with("/sys/devices/virtual/")
+            );
         }
     }
 

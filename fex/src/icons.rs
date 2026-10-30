@@ -77,11 +77,21 @@ impl AppListAdvert {
 
     /// The `iconName`s the list refers to.
     pub fn icon_names(&self) -> BTreeSet<String> {
-        self.apps.iter().chain(&self.wp_apps).map(|a| a.icon_name.clone()).filter(|n| !n.is_empty()).collect()
+        self.apps
+            .iter()
+            .chain(&self.wp_apps)
+            .map(|a| a.icon_name.clone())
+            .filter(|n| !n.is_empty())
+            .collect()
     }
 
     pub fn offer(&self, host: IpAddr) -> Offer {
-        Offer { host, port: self.port, fingerprint: self.fingerprint.clone(), token: self.token.clone() }
+        Offer {
+            host,
+            port: self.port,
+            fingerprint: self.fingerprint.clone(),
+            token: self.token.clone(),
+        }
     }
 }
 
@@ -156,7 +166,11 @@ pub fn store(entries: &[zip::Entry], expected: &BTreeSet<String>, dir: &Path) ->
         report.icons += 1;
         seen.insert(e.name.as_str());
     }
-    report.missing = expected.iter().filter(|n| !seen.contains(n.as_str())).cloned().collect();
+    report.missing = expected
+        .iter()
+        .filter(|n| !seen.contains(n.as_str()))
+        .cloned()
+        .collect();
     Ok(report)
 }
 
@@ -183,7 +197,9 @@ pub struct FetchLock {
 
 impl FetchLock {
     pub fn path() -> PathBuf {
-        let base = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
+        let base = std::env::var_os("XDG_RUNTIME_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir);
         base.join("smartconnectd").join("app-icons.lock")
     }
 
@@ -193,7 +209,11 @@ impl FetchLock {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let file = File::options().create(true).truncate(false).write(true).open(&path)?;
+        let file = File::options()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&path)?;
         // SAFETY: flock on a descriptor we own.
         if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
             return Ok(Some(FetchLock { _file: file }));
@@ -213,7 +233,10 @@ mod tests {
     use serde_json::json;
 
     fn scratch(tag: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("smartconnect-fex-test-{tag}-{}", std::process::id()));
+        let d = std::env::temp_dir().join(format!(
+            "smartconnect-fex-test-{tag}-{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&d);
         d
     }
@@ -228,16 +251,28 @@ mod tests {
         let a = AppListAdvert::from_data(&data).unwrap();
         assert_eq!((a.port, a.app_limit, a.auto_download), (50000, 5, false));
         assert_eq!(a.apps[1].user_id, 10);
-        assert_eq!(a.icon_names().into_iter().collect::<Vec<_>>(), ["10_c.d_c.d.Main.png", "a.b_a.b.Main.png"]);
+        assert_eq!(
+            a.icon_names().into_iter().collect::<Vec<_>>(),
+            ["10_c.d_c.d.Main.png", "a.b_a.b.Main.png"]
+        );
         assert!(AppListAdvert::from_data(&json!({"cmd":10,"port":1,"fingerprint":"x"})).is_none());
         assert!(AppListAdvert::from_data(&json!({"cmd":1,"apps":[]})).is_none());
     }
 
     #[test]
     fn icon_name_safety() {
-        assert!(is_safe_icon_name("com.google.android.youtube_com.google.android.youtube.app.honeycomb.Shell$HomeActivity.png"));
+        assert!(is_safe_icon_name(
+            "com.google.android.youtube_com.google.android.youtube.app.honeycomb.Shell$HomeActivity.png"
+        ));
         assert!(is_safe_icon_name("10_c.d_c.d.Main.PNG"));
-        for bad in ["", "../x.png", "a/b.png", ".hidden.png", "x.txt", "a\\b.png"] {
+        for bad in [
+            "",
+            "../x.png",
+            "a/b.png",
+            ".hidden.png",
+            "x.txt",
+            "a\\b.png",
+        ] {
             assert!(!is_safe_icon_name(bad), "{bad:?}");
         }
     }
@@ -247,11 +282,21 @@ mod tests {
         let dir = scratch("store");
         let png = |b: u8| [PNG_MAGIC, &[b]].concat();
         let entries = vec![
-            zip::Entry { name: "a.b_a.b.Main.png".into(), data: png(1) },
-            zip::Entry { name: "../evil.png".into(), data: png(2) },
-            zip::Entry { name: "notes.png".into(), data: b"not a png".to_vec() },
+            zip::Entry {
+                name: "a.b_a.b.Main.png".into(),
+                data: png(1),
+            },
+            zip::Entry {
+                name: "../evil.png".into(),
+                data: png(2),
+            },
+            zip::Entry {
+                name: "notes.png".into(),
+                data: b"not a png".to_vec(),
+            },
         ];
-        let expected: BTreeSet<String> = ["a.b_a.b.Main.png".to_owned(), "gone.png".to_owned()].into();
+        let expected: BTreeSet<String> =
+            ["a.b_a.b.Main.png".to_owned(), "gone.png".to_owned()].into();
         let r = store(&entries, &expected, &dir).unwrap();
         assert_eq!((r.icons, r.written, r.unchanged, r.skipped), (1, 1, 0, 2));
         assert_eq!(r.missing, ["gone.png"]);
@@ -259,11 +304,22 @@ mod tests {
 
         let r = store(&entries[..1], &expected, &dir).unwrap();
         assert_eq!((r.written, r.unchanged), (0, 1));
-        let r = store(&[zip::Entry { name: "a.b_a.b.Main.png".into(), data: png(3) }], &expected, &dir).unwrap();
+        let r = store(
+            &[zip::Entry {
+                name: "a.b_a.b.Main.png".into(),
+                data: png(3),
+            }],
+            &expected,
+            &dir,
+        )
+        .unwrap();
         assert_eq!(r.written, 1);
         assert_eq!(std::fs::read(dir.join("a.b_a.b.Main.png")).unwrap(), png(3));
         // Only the icon is left: no temp files, nothing outside the directory.
-        let names: Vec<_> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name()).collect();
+        let names: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
         assert_eq!(names, ["a.b_a.b.Main.png"]);
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -7,7 +7,10 @@ pub const KEYCODE_BACK: i64 = 4;
 pub const KEYCODE_APP_SWITCH: i64 = 187;
 
 pub fn is_modifier(c: (i64, i64)) -> bool {
-    matches!(c, (0x1D | 0x2A | 0x36 | 0x38, 0) | (0x1D | 0x38 | 0x5B | 0x5C, E0))
+    matches!(
+        c,
+        (0x1D | 0x2A | 0x36 | 0x38, 0) | (0x1D | 0x38 | 0x5B | 0x5C, E0)
+    )
 }
 
 /// X keysym name → PC/AT set-1 scancode and flags (0x100 = E0-extended), US layout.
@@ -21,7 +24,14 @@ pub fn scancode(key: &str) -> Option<(i64, i64)> {
             return Some((0x10 + i as i64, 0));
         }
         if c.is_ascii_digit() {
-            return Some((if c == b'0' { 0x0B } else { 0x02 + (c - b'1') as i64 }, 0));
+            return Some((
+                if c == b'0' {
+                    0x0B
+                } else {
+                    0x02 + (c - b'1') as i64
+                },
+                0,
+            ));
         }
     }
     let (code, flags) = match key {

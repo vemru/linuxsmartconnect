@@ -90,7 +90,9 @@ fn host_socket() -> PathBuf {
 fn cache_dir() -> PathBuf {
     std::env::var_os("XDG_CACHE_HOME")
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".cache"))
+        .unwrap_or_else(|| {
+            PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".cache")
+        })
         .join("smartconnect")
 }
 
@@ -115,8 +117,12 @@ fn ensure_host() -> Result<(), String> {
         return Ok(());
     }
     let bin = binary(MIRROR_BIN);
-    let log = std::fs::create_dir_all(cache_dir())
-        .and_then(|()| std::fs::OpenOptions::new().create(true).append(true).open(cache_dir().join("mirror-host.log")));
+    let log = std::fs::create_dir_all(cache_dir()).and_then(|()| {
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(cache_dir().join("mirror-host.log"))
+    });
     let (out, err) = match log.and_then(|f| Ok((f.try_clone()?, f))) {
         Ok((a, b)) => (Stdio::from(a), Stdio::from(b)),
         Err(_) => (Stdio::null(), Stdio::null()),
@@ -142,7 +148,10 @@ fn ensure_host() -> Result<(), String> {
             if host_running() {
                 return Ok(());
             }
-            return Err(format!("The stream host exited ({status}); see {}", cache_dir().join("mirror-host.log").display()));
+            return Err(format!(
+                "The stream host exited ({status}); see {}",
+                cache_dir().join("mirror-host.log").display()
+            ));
         }
     }
     std::thread::spawn(move || child.wait());
@@ -151,11 +160,19 @@ fn ensure_host() -> Result<(), String> {
 
 fn reply_result(reply: Option<Value>) -> Result<String, String> {
     let r = reply.ok_or("The stream host did not answer")?;
-    let msg = r.get("message").and_then(Value::as_str).unwrap_or_default().to_owned();
+    let msg = r
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
     if r.get("ok").and_then(Value::as_bool) == Some(true) {
         Ok(msg)
     } else {
-        Err(if msg.is_empty() { "The stream host refused the request".into() } else { msg })
+        Err(if msg.is_empty() {
+            "The stream host refused the request".into()
+        } else {
+            msg
+        })
     }
 }
 
@@ -200,7 +217,10 @@ fn parse_apps(text: &str) -> Option<Vec<App>> {
 }
 
 fn cached_apps() -> Vec<App> {
-    std::fs::read_to_string(cache_dir().join("apps.json")).ok().and_then(|t| parse_apps(&t)).unwrap_or_default()
+    std::fs::read_to_string(cache_dir().join("apps.json"))
+        .ok()
+        .and_then(|t| parse_apps(&t))
+        .unwrap_or_default()
 }
 
 /// Asks the phone for its app list (up to ~15 s).
@@ -213,7 +233,11 @@ fn fetch_apps() -> Result<Vec<App>, String> {
         .map_err(|e| format!("Could not run {}: {e}", bin.display()))?;
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr);
-        let line = err.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("could not get the app list");
+        let line = err
+            .lines()
+            .rev()
+            .find(|l| !l.trim().is_empty())
+            .unwrap_or("could not get the app list");
         return Err(line.trim_start_matches("Error: ").to_owned());
     }
     // stdout is the JSON array on its last non-empty line.
@@ -277,15 +301,26 @@ struct AppsState {
 
 impl AppsPage {
     pub fn build(toasts: &adw::ToastOverlay) -> (Rc<Self>, gtk::Widget) {
-        let search = gtk::SearchEntry::builder().hexpand(true).placeholder_text("Search apps").build();
-        let refresh = gtk::Button::builder().label("Refresh").tooltip_text("Reload the app list from the phone").valign(gtk::Align::Center).build();
+        let search = gtk::SearchEntry::builder()
+            .hexpand(true)
+            .placeholder_text("Search apps")
+            .build();
+        let refresh = gtk::Button::builder()
+            .label("Refresh")
+            .tooltip_text("Reload the app list from the phone")
+            .valign(gtk::Align::Center)
+            .build();
         let spinner = adw::Spinner::builder().visible(false).build();
         let bar = gtk::Box::builder().spacing(8).build();
         bar.append(&search);
         bar.append(&spinner);
         bar.append(&refresh);
         // The search bar stays a sensible width even on a wide window; the grid below fills it.
-        let bar_clamp = adw::Clamp::builder().maximum_size(760).tightening_threshold(760).child(&bar).build();
+        let bar_clamp = adw::Clamp::builder()
+            .maximum_size(760)
+            .tightening_threshold(760)
+            .child(&bar)
+            .build();
 
         let running = adw::PreferencesGroup::builder()
             .title("Running")
@@ -302,8 +337,18 @@ impl AppsPage {
             .column_spacing(8)
             .row_spacing(8)
             .build();
-        let recent_group = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(8).visible(false).build();
-        recent_group.append(&gtk::Label::builder().label("Recent").xalign(0.0).css_classes(["heading"]).build());
+        let recent_group = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(8)
+            .visible(false)
+            .build();
+        recent_group.append(
+            &gtk::Label::builder()
+                .label("Recent")
+                .xalign(0.0)
+                .css_classes(["heading"])
+                .build(),
+        );
         recent_group.append(&recent_flow);
 
         // All apps: an icon grid that adds columns as the window widens (fills the full width).
@@ -316,8 +361,17 @@ impl AppsPage {
             .row_spacing(8)
             .hexpand(true)
             .build();
-        let all_group = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(8).build();
-        all_group.append(&gtk::Label::builder().label("All apps").xalign(0.0).css_classes(["heading"]).build());
+        let all_group = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(8)
+            .build();
+        all_group.append(
+            &gtk::Label::builder()
+                .label("All apps")
+                .xalign(0.0)
+                .css_classes(["heading"])
+                .build(),
+        );
         all_group.append(&flow);
 
         let column = gtk::Box::builder()
@@ -332,15 +386,27 @@ impl AppsPage {
         column.append(&running);
         column.append(&recent_group);
         column.append(&all_group);
-        let clamp = adw::Clamp::builder().maximum_size(1700).tightening_threshold(1700).child(&column).build();
-        let scroller = gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).vexpand(true).child(&clamp).build();
+        let clamp = adw::Clamp::builder()
+            .maximum_size(1700)
+            .tightening_threshold(1700)
+            .child(&column)
+            .build();
+        let scroller = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vexpand(true)
+            .child(&clamp)
+            .build();
 
         let empty = adw::StatusPage::builder()
             .icon_name("view-app-grid-symbolic")
             .title("No App List Yet")
             .description("Connect the phone, then load its apps to open them in their own windows.")
             .build();
-        let load = gtk::Button::builder().label("Load Apps").css_classes(["pill", "suggested-action"]).halign(gtk::Align::Center).build();
+        let load = gtk::Button::builder()
+            .label("Load Apps")
+            .css_classes(["pill", "suggested-action"])
+            .halign(gtk::Align::Center)
+            .build();
         empty.set_child(Some(&load));
         let stack = gtk::Stack::new();
         stack.add_named(&empty, Some("empty"));
@@ -349,7 +415,9 @@ impl AppsPage {
         // Watch the icon cache dir (created if missing, so the monitor has something to watch).
         let icon_dir = icons::cache_dir();
         let _ = std::fs::create_dir_all(&icon_dir);
-        let icon_monitor = gio::File::for_path(&icon_dir).monitor_directory(gio::FileMonitorFlags::NONE, gio::Cancellable::NONE).ok();
+        let icon_monitor = gio::File::for_path(&icon_dir)
+            .monitor_directory(gio::FileMonitorFlags::NONE, gio::Cancellable::NONE)
+            .ok();
 
         let page = Rc::new(Self {
             toasts: toasts.clone(),
@@ -362,7 +430,10 @@ impl AppsPage {
             recent_group,
             recent_flow,
             flow,
-            state: RefCell::new(AppsState { recent: prefs::load().apps.recent, ..AppsState::default() }),
+            state: RefCell::new(AppsState {
+                recent: prefs::load().apps.recent,
+                ..AppsState::default()
+            }),
             polling: Cell::new(false),
             on_sessions: RefCell::default(),
             _icon_monitor: icon_monitor,
@@ -405,7 +476,12 @@ impl AppsPage {
 
     /// A phone app's name from the (cached) app list.
     pub fn app_name(&self, pkg: &str) -> Option<String> {
-        self.state.borrow().apps.iter().find(|a| a.pkg == pkg).map(|a| a.name.clone())
+        self.state
+            .borrow()
+            .apps
+            .iter()
+            .find(|a| a.pkg == pkg)
+            .map(|a| a.name.clone())
     }
 
     /// The icon query for a package other pages know only by package and name (notifications,
@@ -413,9 +489,20 @@ impl AppsPage {
     /// (the owner's entry first).
     pub fn icon_query(&self, pkg: &str, name: &str) -> icons::Query {
         let st = self.state.borrow();
-        let known = st.apps.iter().filter(|a| a.pkg == pkg).min_by_key(|a| (a.work, a.user_id.unwrap_or(0)));
+        let known = st
+            .apps
+            .iter()
+            .filter(|a| a.pkg == pkg)
+            .min_by_key(|a| (a.work, a.user_id.unwrap_or(0)));
         match known {
-            Some(app) => icons::Query { name: if name.is_empty() { app.name.clone() } else { name.to_owned() }, ..app.query() },
+            Some(app) => icons::Query {
+                name: if name.is_empty() {
+                    app.name.clone()
+                } else {
+                    name.to_owned()
+                },
+                ..app.query()
+            },
             None => icons::Query::new(pkg, name),
         }
     }
@@ -445,7 +532,12 @@ impl AppsPage {
 
     /// The host's whole-screen mirror session, if one is open.
     pub fn mirror_session(&self) -> Option<i64> {
-        self.state.borrow().sessions.iter().find(|s| s.pkg == "mirror").map(|s| s.session_id)
+        self.state
+            .borrow()
+            .sessions
+            .iter()
+            .find(|s| s.pkg == "mirror")
+            .map(|s| s.session_id)
     }
 
     pub fn set_connected(self: &Rc<Self>, connected: bool) {
@@ -474,7 +566,8 @@ impl AppsPage {
         let st = self.state.borrow();
         self.refresh.set_sensitive(st.connected && !st.fetching);
         self.spinner.set_visible(st.fetching);
-        self.stack.set_visible_child_name(if st.apps.is_empty() { "empty" } else { "list" });
+        self.stack
+            .set_visible_child_name(if st.apps.is_empty() { "empty" } else { "list" });
         self.search.set_placeholder_text(Some(&match st.apps.len() {
             0 => "Search apps".to_owned(),
             n => format!("Search {n} apps"),
@@ -502,7 +595,9 @@ impl AppsPage {
         self.update_controls();
         let weak = Rc::downgrade(self);
         glib::spawn_future_local(async move {
-            let result = gio::spawn_blocking(fetch_apps).await.unwrap_or_else(|_| Err("app list thread failed".into()));
+            let result = gio::spawn_blocking(fetch_apps)
+                .await
+                .unwrap_or_else(|_| Err("app list thread failed".into()));
             let Some(p) = weak.upgrade() else { return };
             {
                 let mut st = p.state.borrow_mut();
@@ -537,8 +632,16 @@ impl AppsPage {
             let (button, icon) = self.app_tile(app, 48);
             self.flow.append(&button);
             // FlowBox wraps each child in a FlowBoxChild; that is what we hide when filtering.
-            let child = button.parent().and_downcast::<gtk::FlowBoxChild>().expect("flowbox child");
-            st.rows.push(Tile { child, hay: format!("{} {}", app.name, app.pkg).to_lowercase(), icon, query: app.query() });
+            let child = button
+                .parent()
+                .and_downcast::<gtk::FlowBoxChild>()
+                .expect("flowbox child");
+            st.rows.push(Tile {
+                child,
+                hay: format!("{} {}", app.name, app.pkg).to_lowercase(),
+                icon,
+                query: app.query(),
+            });
         }
         st.apps = apps;
         drop(st);
@@ -549,7 +652,10 @@ impl AppsPage {
 
     /// One app tile: an icon over the name, the package id on hover. `size` is the icon pixel size.
     fn app_tile(self: &Rc<Self>, app: &App, size: i32) -> (gtk::Button, IconSlot) {
-        let inner = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(6).build();
+        let inner = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(6)
+            .build();
         let icon = IconSlot::new(size);
         icon.set(&app.query());
         inner.append(icon.widget());
@@ -564,8 +670,16 @@ impl AppsPage {
             .css_classes(["caption"])
             .build();
         inner.append(&name);
-        let tooltip = if app.work { format!("{} · work profile", app.pkg) } else { app.pkg.clone() };
-        let button = gtk::Button::builder().css_classes(["flat", "sc-tile"]).tooltip_text(&tooltip).child(&inner).build();
+        let tooltip = if app.work {
+            format!("{} · work profile", app.pkg)
+        } else {
+            app.pkg.clone()
+        };
+        let button = gtk::Button::builder()
+            .css_classes(["flat", "sc-tile"])
+            .tooltip_text(&tooltip)
+            .child(&inner)
+            .build();
         let weak = Rc::downgrade(self);
         let app = app.clone();
         let btn = button.downgrade();
@@ -583,8 +697,18 @@ impl AppsPage {
         let icon = IconSlot::new(24);
         icon.set(&app.query());
         inner.append(icon.widget());
-        inner.append(&gtk::Label::builder().label(&app.name).ellipsize(gtk::pango::EllipsizeMode::End).max_width_chars(16).build());
-        let button = gtk::Button::builder().css_classes(["card", "sc-chip"]).tooltip_text(&app.pkg).child(&inner).build();
+        inner.append(
+            &gtk::Label::builder()
+                .label(&app.name)
+                .ellipsize(gtk::pango::EllipsizeMode::End)
+                .max_width_chars(16)
+                .build(),
+        );
+        let button = gtk::Button::builder()
+            .css_classes(["card", "sc-chip"])
+            .tooltip_text(&app.pkg)
+            .child(&inner)
+            .build();
         let weak = Rc::downgrade(self);
         let app = app.clone();
         let btn = button.downgrade();
@@ -603,7 +727,10 @@ impl AppsPage {
         }
         let apps: Vec<App> = {
             let st = self.state.borrow();
-            st.recent.iter().filter_map(|pkg| st.apps.iter().find(|a| &a.pkg == pkg).cloned()).collect()
+            st.recent
+                .iter()
+                .filter_map(|pkg| st.apps.iter().find(|a| &a.pkg == pkg).cloned())
+                .collect()
         };
         for app in &apps {
             let chip = self.recent_chip(app);
@@ -634,7 +761,8 @@ impl AppsPage {
     fn apply_filter(&self) {
         let query = self.search.text().trim().to_lowercase();
         for tile in &self.state.borrow().rows {
-            tile.child.set_visible(query.split_whitespace().all(|w| tile.hay.contains(w)));
+            tile.child
+                .set_visible(query.split_whitespace().all(|w| tile.hay.contains(w)));
         }
     }
 
@@ -667,7 +795,9 @@ impl AppsPage {
     fn close_session(self: &Rc<Self>, sid: i64) {
         let weak = Rc::downgrade(self);
         glib::spawn_future_local(async move {
-            let result = gio::spawn_blocking(move || close(sid)).await.unwrap_or_else(|_| Err("close thread failed".into()));
+            let result = gio::spawn_blocking(move || close(sid))
+                .await
+                .unwrap_or_else(|_| Err("close thread failed".into()));
             let Some(p) = weak.upgrade() else { return };
             if let Err(e) = result {
                 p.toast(&e);
@@ -682,7 +812,9 @@ impl AppsPage {
         self.poll_now();
         let weak = Rc::downgrade(self);
         glib::timeout_add_local(POLL, move || {
-            let Some(p) = weak.upgrade() else { return glib::ControlFlow::Break };
+            let Some(p) = weak.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
             p.poll_now();
             glib::ControlFlow::Continue
         });
@@ -723,7 +855,11 @@ impl AppsPage {
             self.running.remove(&row);
         }
         for s in &list {
-            let name = st.apps.iter().find(|a| a.pkg == s.pkg).map(|a| a.name.clone());
+            let name = st
+                .apps
+                .iter()
+                .find(|a| a.pkg == s.pkg)
+                .map(|a| a.name.clone());
             let title = match (s.pkg.as_str(), s.title.as_deref().filter(|t| !t.is_empty())) {
                 ("mirror", _) => "Phone screen".to_owned(),
                 (_, Some(t)) => t.trim_end_matches(" — Phone").to_owned(),
@@ -731,15 +867,27 @@ impl AppsPage {
             };
             let row = adw::ActionRow::builder()
                 .title(&title)
-                .subtitle(if s.pkg == "mirror" { "Screen mirror".to_owned() } else { s.pkg.clone() })
+                .subtitle(if s.pkg == "mirror" {
+                    "Screen mirror".to_owned()
+                } else {
+                    s.pkg.clone()
+                })
                 .use_markup(false)
                 .build();
             if s.pkg == "mirror" {
-                row.add_prefix(&gtk::Image::builder().icon_name("phone-symbolic").pixel_size(32).build());
+                row.add_prefix(
+                    &gtk::Image::builder()
+                        .icon_name("phone-symbolic")
+                        .pixel_size(32)
+                        .build(),
+                );
             } else {
                 // `st` is borrowed here, so build the query from the list directly (not icon_query).
                 let query = match st.apps.iter().find(|a| a.pkg == s.pkg) {
-                    Some(app) => icons::Query { name: title.clone(), ..app.query() },
+                    Some(app) => icons::Query {
+                        name: title.clone(),
+                        ..app.query()
+                    },
                     None => icons::Query::new(&s.pkg, &title),
                 };
                 let icon = IconSlot::new(32);
@@ -797,7 +945,11 @@ mod tests {
             ]
         );
         // An older cache without the new fields still parses.
-        let old = parse_apps(r#"[{"pkg":"com.example.a","name":"A","cmp":"com.example.a.Main"}]"#).unwrap();
-        assert_eq!(old[0].query().icon_file().as_deref(), Some("com.example.a_com.example.a.Main.png"));
+        let old = parse_apps(r#"[{"pkg":"com.example.a","name":"A","cmp":"com.example.a.Main"}]"#)
+            .unwrap();
+        assert_eq!(
+            old[0].query().icon_file().as_deref(),
+            Some("com.example.a_com.example.a.Main.png")
+        );
     }
 }

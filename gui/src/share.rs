@@ -85,7 +85,9 @@ fn last_log_line(log: &str) -> Option<String> {
 fn spawn_serve(dir: &std::path::Path, hidden: bool, read_only: bool) -> Result<Child, String> {
     let bin = binary(BIN);
     let log = File::create(log_path()).map_err(|e| format!("could not open the share log: {e}"))?;
-    let log2 = log.try_clone().map_err(|e| format!("could not open the share log: {e}"))?;
+    let log2 = log
+        .try_clone()
+        .map_err(|e| format!("could not open the share log: {e}"))?;
     let mut cmd = Command::new(&bin);
     cmd.arg("serve").arg("--sharedir").arg(dir);
     if hidden {
@@ -132,9 +134,20 @@ impl ShareSection {
             .title("Share a folder with the phone")
             .subtitle("The phone can browse it in its Files app while it's connected")
             .build();
-        let folder = adw::ActionRow::builder().title("Shared folder").use_markup(false).build();
-        let open = gtk::Button::builder().icon_name("folder-open-symbolic").tooltip_text("Open the shared folder").valign(gtk::Align::Center).css_classes(["flat"]).build();
-        let change = gtk::Button::builder().label("Change…").valign(gtk::Align::Center).build();
+        let folder = adw::ActionRow::builder()
+            .title("Shared folder")
+            .use_markup(false)
+            .build();
+        let open = gtk::Button::builder()
+            .icon_name("folder-open-symbolic")
+            .tooltip_text("Open the shared folder")
+            .valign(gtk::Align::Center)
+            .css_classes(["flat"])
+            .build();
+        let change = gtk::Button::builder()
+            .label("Change…")
+            .valign(gtk::Align::Center)
+            .build();
         folder.add_suffix(&open);
         folder.add_suffix(&change);
         let hidden = adw::SwitchRow::builder()
@@ -145,7 +158,11 @@ impl ShareSection {
             .title("Let the phone delete files")
             .subtitle("Deleted files go to the Trash, so you can restore them")
             .build();
-        let status = adw::ActionRow::builder().title("Status").use_markup(false).subtitle_selectable(true).build();
+        let status = adw::ActionRow::builder()
+            .title("Status")
+            .use_markup(false)
+            .subtitle_selectable(true)
+            .build();
         let group = adw::PreferencesGroup::builder()
             .title("Share with the phone")
             .description("The phone sees the folder in its Files app and in Smart Connect's Files tab. It can open and copy files, but not change them.")
@@ -163,7 +180,13 @@ impl ShareSection {
             hidden,
             delete,
             status,
-            st: RefCell::new(State { connected: false, child: None, offered_at: None, error: None, restart_pending: false }),
+            st: RefCell::new(State {
+                connected: false,
+                child: None,
+                offered_at: None,
+                error: None,
+                restart_pending: false,
+            }),
             syncing: std::cell::Cell::new(false),
             watching: std::cell::Cell::new(false),
         });
@@ -217,7 +240,8 @@ impl ShareSection {
     }
 
     pub fn set_connected(self: &Rc<Self>, connected: bool) {
-        let changed = std::mem::replace(&mut self.st.borrow_mut().connected, connected) != connected;
+        let changed =
+            std::mem::replace(&mut self.st.borrow_mut().connected, connected) != connected;
         if changed && connected {
             self.start_if_wanted();
         }
@@ -318,7 +342,9 @@ impl ShareSection {
         }
         let weak = Rc::downgrade(self);
         glib::timeout_add_local(Duration::from_secs(1), move || {
-            let Some(s) = weak.upgrade() else { return glib::ControlFlow::Break };
+            let Some(s) = weak.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
             let ended = {
                 let mut st = s.st.borrow_mut();
                 match st.child.as_mut().map(Child::try_wait) {
@@ -345,7 +371,8 @@ impl ShareSection {
 
     fn on_exit(self: &Rc<Self>, status: std::process::ExitStatus) {
         let log = std::fs::read_to_string(log_path()).unwrap_or_default();
-        let reason = last_log_line(&log).unwrap_or_else(|| format!("the share helper exited ({status})"));
+        let reason =
+            last_log_line(&log).unwrap_or_else(|| format!("the share helper exited ({status})"));
         let retry = {
             let mut st = self.st.borrow_mut();
             st.error = Some(reason);
@@ -434,15 +461,22 @@ impl ShareSection {
         }
         let parent = button.root().and_downcast::<gtk::Window>();
         let toasts = self.toasts.clone();
-        gtk::FileLauncher::new(Some(&gio::File::for_path(&dir))).launch(parent.as_ref(), gio::Cancellable::NONE, move |res| {
-            if let Err(e) = res {
-                toasts.add_toast(adw::Toast::new(&format!("Could not open the folder: {e}")));
-            }
-        });
+        gtk::FileLauncher::new(Some(&gio::File::for_path(&dir))).launch(
+            parent.as_ref(),
+            gio::Cancellable::NONE,
+            move |res| {
+                if let Err(e) = res {
+                    toasts.add_toast(adw::Toast::new(&format!("Could not open the folder: {e}")));
+                }
+            },
+        );
     }
 
     fn choose_folder(self: &Rc<Self>, button: &gtk::Button) {
-        let dialog = gtk::FileDialog::builder().title("Choose the folder to share").accept_label("Share folder").build();
+        let dialog = gtk::FileDialog::builder()
+            .title("Choose the folder to share")
+            .accept_label("Share folder")
+            .build();
         dialog.set_initial_folder(Some(&gio::File::for_path(prefs::load().files.share_path())));
         let parent = button.root().and_downcast::<gtk::Window>();
         let weak = Rc::downgrade(self);
@@ -454,7 +488,9 @@ impl ShareSection {
                         s.save_dir(&path.display().to_string());
                     }
                 }
-                Err(e) if !e.matches(gtk::DialogError::Dismissed) => s.toast(&format!("Could not choose a folder: {e}")),
+                Err(e) if !e.matches(gtk::DialogError::Dismissed) => {
+                    s.toast(&format!("Could not choose a folder: {e}"))
+                }
                 Err(_) => {}
             }
         });
@@ -497,19 +533,27 @@ mod tests {
         assert_eq!(milestone(""), Milestone::Starting);
         let waiting = "x INFO r: sharing \"/PhoneShare\" to the phone on 192.168.1.20:2049 (fp AB…); waiting for the phone's File Station handshake\n";
         assert_eq!(milestone(waiting), Milestone::Waiting);
-        let offered = format!("{waiting}x INFO r: replied type:1 (SSL) — phone should now mount \"/PhoneShare\"\n");
+        let offered = format!(
+            "{waiting}x INFO r: replied type:1 (SSL) — phone should now mount \"/PhoneShare\"\n"
+        );
         assert_eq!(milestone(&offered), Milestone::Offered);
-        let connected = format!("{offered}x INFO s: phone connected for file sharing from 192.168.1.30:1234\n");
+        let connected =
+            format!("{offered}x INFO s: phone connected for file sharing from 192.168.1.30:1234\n");
         assert_eq!(milestone(&connected), Milestone::PhoneConnected);
         // A later re-offer (phone reconnecting) keeps it shown as connected.
-        let again = format!("{connected}x INFO r: replied type:1 (SSL) — phone should now mount \"/PhoneShare\"\n");
+        let again = format!(
+            "{connected}x INFO r: replied type:1 (SSL) — phone should now mount \"/PhoneShare\"\n"
+        );
         assert_eq!(milestone(&again), Milestone::PhoneConnected);
     }
 
     #[test]
     fn last_line_drops_the_prefix() {
         let log = "2026-01-01T00:00:00Z  INFO smartconnect_files::server: phone connected\nError: connecting to the daemon at /run/x.sock\n";
-        assert_eq!(last_log_line(log).as_deref(), Some("connecting to the daemon at /run/x.sock"));
+        assert_eq!(
+            last_log_line(log).as_deref(),
+            Some("connecting to the daemon at /run/x.sock")
+        );
         assert_eq!(last_log_line("\n\n"), None);
     }
 }

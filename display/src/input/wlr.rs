@@ -54,7 +54,7 @@ struct OutputInfo {
 
 impl OutputInfo {
     fn rect(&self) -> Option<(i32, i32, u32, u32)> {
-        (self.w > 0 && self.h > 0).then(|| (self.x, self.y, self.w as u32, self.h as u32))
+        (self.w > 0 && self.h > 0).then_some((self.x, self.y, self.w as u32, self.h as u32))
     }
 }
 
@@ -75,15 +75,20 @@ impl WlrSink {
     /// `target` = the captured screen area in compositor logical px. Pins the virtual pointer to
     /// the output named `output` (else to the output whose logical rect equals `target`) when
     /// `allow_pin`; unpinned, absolute motion spans the bounding box of all outputs.
-    pub fn new(target: (i32, i32, u32, u32), output: Option<&str>, allow_pin: bool) -> Result<Self> {
+    pub fn new(
+        target: (i32, i32, u32, u32),
+        output: Option<&str>,
+        allow_pin: bool,
+    ) -> Result<Self> {
         let conn = Connection::connect_to_env().context("connect to Wayland")?;
         let (globals, mut queue) = registry_queue_init::<State>(&conn).context("registry")?;
         let qh = queue.handle();
         let mut state = State::default();
 
         let seat: WlSeat = globals.bind(&qh, 1..=7, ()).context("wl_seat")?;
-        let vp_mgr: ZwlrVirtualPointerManagerV1 =
-            globals.bind(&qh, 1..=2, ()).context("compositor lacks zwlr_virtual_pointer_manager_v1")?;
+        let vp_mgr: ZwlrVirtualPointerManagerV1 = globals
+            .bind(&qh, 1..=2, ())
+            .context("compositor lacks zwlr_virtual_pointer_manager_v1")?;
         let vk_mgr: Option<ZwpVirtualKeyboardManagerV1> = globals.bind(&qh, 1..=1, ()).ok();
         let xo_mgr: Option<ZxdgOutputManagerV1> = globals.bind(&qh, 1..=3, ()).ok();
 
@@ -95,31 +100,50 @@ impl WlrSink {
                 if let Some(m) = &xo_mgr {
                     m.get_xdg_output(&wl, &qh, idx);
                 }
-                state.outputs.push(OutputInfo { wl, name: None, x: 0, y: 0, w: 0, h: 0 });
+                state.outputs.push(OutputInfo {
+                    wl,
+                    name: None,
+                    x: 0,
+                    y: 0,
+                    w: 0,
+                    h: 0,
+                });
             }
         }
         // Grab the seat keymap for the virtual keyboard.
         let kb = vk_mgr.as_ref().map(|_| seat.get_keyboard(&qh, ()));
         queue.roundtrip(&mut state)?;
         queue.roundtrip(&mut state)?;
-        if let Some(kb) = kb {
-            if kb.version() >= 3 {
-                kb.release();
-            }
+        if let Some(kb) = kb
+            && kb.version() >= 3
+        {
+            kb.release();
         }
 
         let pinned = if allow_pin && vp_mgr.version() >= 2 {
             output
-                .and_then(|n| state.outputs.iter().position(|o| o.name.as_deref() == Some(n)))
+                .and_then(|n| {
+                    state
+                        .outputs
+                        .iter()
+                        .position(|o| o.name.as_deref() == Some(n))
+                })
                 .or_else(|| state.outputs.iter().position(|o| o.rect() == Some(target)))
         } else {
             None
         };
         if let (Some(n), None) = (output, pinned) {
-            eprintln!("[input] output {n:?} not found (or no virtual-pointer v2); mapping over the whole layout");
+            eprintln!(
+                "[input] output {n:?} not found (or no virtual-pointer v2); mapping over the whole layout"
+            );
         }
         let pointer = match pinned {
-            Some(i) => vp_mgr.create_virtual_pointer_with_output(Some(&seat), Some(&state.outputs[i].wl), &qh, ()),
+            Some(i) => vp_mgr.create_virtual_pointer_with_output(
+                Some(&seat),
+                Some(&state.outputs[i].wl),
+                &qh,
+                (),
+            ),
             None => vp_mgr.create_virtual_pointer(Some(&seat), &qh, ()),
         };
 
@@ -134,12 +158,23 @@ impl WlrSink {
                 Some(vk)
             }
             None => {
-                eprintln!("[input] compositor lacks zwp_virtual_keyboard_manager_v1: keyboard disabled");
+                eprintln!(
+                    "[input] compositor lacks zwp_virtual_keyboard_manager_v1: keyboard disabled"
+                );
                 None
             }
         };
         conn.flush()?;
-        Ok(Self { conn, queue, state, pointer, keyboard, pinned, target, epoch: Instant::now() })
+        Ok(Self {
+            conn,
+            queue,
+            state,
+            pointer,
+            keyboard,
+            pinned,
+            target,
+            epoch: Instant::now(),
+        })
     }
 
     /// Absolute-motion space (origin x, origin y, w, h) in global logical px: the pinned output's
@@ -191,7 +226,13 @@ impl Sink for WlrSink {
         let rx = (x - sx as f64).clamp(0.0, sw.saturating_sub(1) as f64);
         let ry = (y - sy as f64).clamp(0.0, sh.saturating_sub(1) as f64);
         // Sub-pixel precision: extents ×16.
-        self.pointer.motion_absolute(t, (rx * 16.0).round() as u32, (ry * 16.0).round() as u32, sw * 16, sh * 16);
+        self.pointer.motion_absolute(
+            t,
+            (rx * 16.0).round() as u32,
+            (ry * 16.0).round() as u32,
+            sw * 16,
+            sh * 16,
+        );
         self.pointer.frame();
     }
 
@@ -201,13 +242,26 @@ impl Sink for WlrSink {
     }
 
     fn button(&mut self, b: u32, down: bool) {
-        self.pointer.button(self.time(), b, if down { ButtonState::Pressed } else { ButtonState::Released });
+        self.pointer.button(
+            self.time(),
+            b,
+            if down {
+                ButtonState::Pressed
+            } else {
+                ButtonState::Released
+            },
+        );
         self.pointer.frame();
     }
 
     fn wheel(&mut self, steps: i32) {
         self.pointer.axis_source(AxisSource::Wheel);
-        self.pointer.axis_discrete(self.time(), Axis::VerticalScroll, steps as f64 * 15.0, steps);
+        self.pointer.axis_discrete(
+            self.time(),
+            Axis::VerticalScroll,
+            steps as f64 * 15.0,
+            steps,
+        );
         self.pointer.frame();
     }
 
@@ -231,9 +285,17 @@ impl Sink for WlrSink {
         self.pointer.frame();
     }
 
-    fn key(&mut self, code: u32, down: bool, (depressed, locked): (u32, u32), modifier: bool) -> bool {
+    fn key(
+        &mut self,
+        code: u32,
+        down: bool,
+        (depressed, locked): (u32, u32),
+        modifier: bool,
+    ) -> bool {
         let t = self.time();
-        let Some(vk) = &self.keyboard else { return false };
+        let Some(vk) = &self.keyboard else {
+            return false;
+        };
         vk.key(t, code, down as u32);
         // A virtual keyboard has to announce the modifier state itself.
         if modifier {
@@ -253,25 +315,32 @@ impl Sink for WlrSink {
 }
 
 /// Bounding box of output rects (niri's `global_bounding_rectangle`, used for unpinned absolute motion).
-pub fn layout_bbox(rects: impl Iterator<Item = (i32, i32, u32, u32)>) -> Option<(i32, i32, u32, u32)> {
-    let (x0, y0, x1, y1) = rects.fold(None, |acc: Option<(i32, i32, i32, i32)>, (x, y, w, h)| {
-        let (x1, y1) = (x + w as i32, y + h as i32);
-        Some(match acc {
-            None => (x, y, x1, y1),
-            Some((a, b, c, d)) => (a.min(x), b.min(y), c.max(x1), d.max(y1)),
-        })
-    })?;
+pub fn layout_bbox(
+    rects: impl Iterator<Item = (i32, i32, u32, u32)>,
+) -> Option<(i32, i32, u32, u32)> {
+    let (x0, y0, x1, y1) =
+        rects.fold(None, |acc: Option<(i32, i32, i32, i32)>, (x, y, w, h)| {
+            let (x1, y1) = (x + w as i32, y + h as i32);
+            Some(match acc {
+                None => (x, y, x1, y1),
+                Some((a, b, c, d)) => (a.min(x), b.min(y), c.max(x1), d.max(y1)),
+            })
+        })?;
     Some((x0, y0, (x1 - x0) as u32, (y1 - y0) as u32))
 }
 
 fn us_keymap_fd() -> Result<(OwnedFd, u32)> {
-    let out = std::process::Command::new("xkbcli").args(["compile-keymap", "--layout", "us"]).output()?;
+    let out = std::process::Command::new("xkbcli")
+        .args(["compile-keymap", "--layout", "us"])
+        .output()?;
     if !out.status.success() || out.stdout.is_empty() {
         return Err(anyhow!("xkbcli compile-keymap failed"));
     }
     let mut data = out.stdout;
     data.push(0);
-    let dir = std::env::var_os("XDG_RUNTIME_DIR").map(std::path::PathBuf::from).unwrap_or_else(std::env::temp_dir);
+    let dir = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
     let path = dir.join(format!("smartconnect-keymap-{}", std::process::id()));
     std::fs::write(&path, &data)?;
     let f = std::fs::File::open(&path)?;
@@ -280,20 +349,49 @@ fn us_keymap_fd() -> Result<(OwnedFd, u32)> {
 }
 
 impl Dispatch<WlRegistry, GlobalListContents> for State {
-    fn event(_: &mut Self, _: &WlRegistry, _: wayland_client::protocol::wl_registry::Event, _: &GlobalListContents, _: &Connection, _: &QueueHandle<Self>) {}
+    fn event(
+        _: &mut Self,
+        _: &WlRegistry,
+        _: wayland_client::protocol::wl_registry::Event,
+        _: &GlobalListContents,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+    }
 }
 
 impl Dispatch<WlKeyboard, ()> for State {
-    fn event(state: &mut Self, _: &WlKeyboard, ev: wl_keyboard::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
-        if let wl_keyboard::Event::Keymap { format: WEnum::Value(wl_keyboard::KeymapFormat::XkbV1), fd, size } = ev {
+    fn event(
+        state: &mut Self,
+        _: &WlKeyboard,
+        ev: wl_keyboard::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let wl_keyboard::Event::Keymap {
+            format: WEnum::Value(wl_keyboard::KeymapFormat::XkbV1),
+            fd,
+            size,
+        } = ev
+        {
             state.keymap = Some((fd, size));
         }
     }
 }
 
 impl Dispatch<ZxdgOutputV1, usize> for State {
-    fn event(state: &mut Self, _: &ZxdgOutputV1, ev: zxdg_output_v1::Event, idx: &usize, _: &Connection, _: &QueueHandle<Self>) {
-        let Some(o) = state.outputs.get_mut(*idx) else { return };
+    fn event(
+        state: &mut Self,
+        _: &ZxdgOutputV1,
+        ev: zxdg_output_v1::Event,
+        idx: &usize,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        let Some(o) = state.outputs.get_mut(*idx) else {
+            return;
+        };
         match ev {
             zxdg_output_v1::Event::LogicalPosition { x, y } => {
                 o.x = x;
@@ -310,7 +408,14 @@ impl Dispatch<ZxdgOutputV1, usize> for State {
 }
 
 impl Dispatch<WlOutput, usize> for State {
-    fn event(state: &mut Self, _: &WlOutput, ev: wl_output::Event, idx: &usize, _: &Connection, _: &QueueHandle<Self>) {
+    fn event(
+        state: &mut Self,
+        _: &WlOutput,
+        ev: wl_output::Event,
+        idx: &usize,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
         if let (wl_output::Event::Name { name }, Some(o)) = (ev, state.outputs.get_mut(*idx)) {
             o.name = Some(name);
         }
@@ -324,4 +429,11 @@ macro_rules! ignore_events {
         }
     )*};
 }
-ignore_events!(WlSeat, ZxdgOutputManagerV1, ZwlrVirtualPointerManagerV1, ZwlrVirtualPointerV1, ZwpVirtualKeyboardManagerV1, ZwpVirtualKeyboardV1);
+ignore_events!(
+    WlSeat,
+    ZxdgOutputManagerV1,
+    ZwlrVirtualPointerManagerV1,
+    ZwlrVirtualPointerV1,
+    ZwpVirtualKeyboardManagerV1,
+    ZwpVirtualKeyboardV1
+);

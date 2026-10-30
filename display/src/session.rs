@@ -25,8 +25,8 @@ use gst::glib;
 use gst::prelude::*;
 use serde_json::{Value, json};
 
-use crate::opts::{self, Opts, Share, SizePref};
 use crate::desktop::{self, Desktop};
+use crate::opts::{self, Opts, Share, SizePref};
 use crate::{audio, capture, ice, input};
 
 const SERVICE: i64 = 202;
@@ -73,7 +73,9 @@ impl Daemon {
                 }
             }
         });
-        Ok(Arc::new(Daemon { cmd: Mutex::new(cmd) }))
+        Ok(Arc::new(Daemon {
+            cmd: Mutex::new(cmd),
+        }))
     }
 
     /// Sends one svc 202 message: `{ver:"1",cmd,data,sessionId}` (the daemon adds the envelope).
@@ -97,7 +99,9 @@ fn pc_address() -> Option<String> {
     let mut line = String::new();
     BufReader::new(&s).read_line(&mut line).ok()?;
     let v: Value = serde_json::from_str(&line).ok()?;
-    v.get("pcAddress").and_then(Value::as_str).map(str::to_owned)
+    v.get("pcAddress")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
 }
 
 enum Ev {
@@ -107,13 +111,14 @@ enum Ev {
 
 fn watch(tx: mpsc::Sender<Ev>) -> Result<()> {
     let watch = UnixStream::connect(socket_path()).context("is smartconnectd running?")?;
-    (&watch).write_all(format!("{}\n", json!({ "cmd": "watch", "services": [SERVICE] })).as_bytes())?;
+    (&watch)
+        .write_all(format!("{}\n", json!({ "cmd": "watch", "services": [SERVICE] })).as_bytes())?;
     std::thread::spawn(move || {
         for line in BufReader::new(watch).lines().map_while(Result::ok) {
-            if let Ok(v) = serde_json::from_str::<Value>(&line) {
-                if v.get("service").and_then(Value::as_i64) == Some(SERVICE) {
-                    let _ = tx.send(Ev::Phone(v["data"].clone()));
-                }
+            if let Ok(v) = serde_json::from_str::<Value>(&line)
+                && v.get("service").and_then(Value::as_i64) == Some(SERVICE)
+            {
+                let _ = tx.send(Ev::Phone(v["data"].clone()));
             }
         }
         eprintln!("daemon closed the watch stream");
@@ -125,7 +130,9 @@ fn watch(tx: mpsc::Sender<Ev>) -> Result<()> {
 /// The phone sends the inner `data` as a JSON string (sometimes a bare string like "iceFailure").
 fn inner(msg: &Value) -> Value {
     match msg.get("data") {
-        Some(Value::String(s)) => serde_json::from_str(s).unwrap_or_else(|_| Value::String(s.clone())),
+        Some(Value::String(s)) => {
+            serde_json::from_str(s).unwrap_or_else(|_| Value::String(s.clone()))
+        }
         Some(v) => v.clone(),
         None => Value::Null,
     }
@@ -183,7 +190,9 @@ fn single_instance_at(path: &std::path::Path, replace: bool) -> Result<std::fs::
         let pid: Option<i32> = text.trim().parse().ok();
         let who = pid.map_or("unknown pid".to_owned(), |p| format!("pid {p}"));
         if !replace {
-            bail!("smartconnect-display is already running ({who}); stop it first or pass --replace");
+            bail!(
+                "smartconnect-display is already running ({who}); stop it first or pass --replace"
+            );
         }
         if let Some(p) = pid.filter(|p| *p > 0) {
             println!("stopping the running smartconnect-display ({who})");
@@ -232,7 +241,8 @@ impl Orient {
         match self {
             Orient::Landscape => (long, short),
             Orient::Portrait if cap > 0 && long > cap => {
-                let narrow = (u64::from(short) * u64::from(cap) + u64::from(long) / 2) / u64::from(long);
+                let narrow =
+                    (u64::from(short) * u64::from(cap) + u64::from(long) / 2) / u64::from(long);
                 (narrow as u32, cap)
             }
             Orient::Portrait => (short, long),
@@ -241,7 +251,10 @@ impl Orient {
 }
 
 fn portrait_max() -> u32 {
-    std::env::var("SMARTCONNECT_DISPLAY_PORTRAIT_MAX").ok().and_then(|v| v.trim().parse().ok()).unwrap_or(PORTRAIT_MAX)
+    std::env::var("SMARTCONNECT_DISPLAY_PORTRAIT_MAX")
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(PORTRAIT_MAX)
 }
 
 /// The stream size for `base` (the landscape size from the offer, cmd 70 or `--size`): turned to
@@ -271,11 +284,17 @@ impl Source {
     /// Extend: moves the screen to the side the placement file now names (the user dragged the
     /// phone on the Cross Control page).
     fn reposition(&mut self) -> Result<bool> {
-        let Some(cap) = self.cap.as_mut() else { return Ok(false) };
+        let Some(cap) = self.cap.as_mut() else {
+            return Ok(false);
+        };
         if !cap.reposition()? {
             return Ok(false);
         }
-        println!("{} moved to {:?} (the phone's place changed)", cap.output_name(), cap.geometry());
+        println!(
+            "{} moved to {:?} (the phone's place changed)",
+            cap.output_name(),
+            cap.geometry()
+        );
         self.target = Some(cap.input_target());
         Ok(true)
     }
@@ -283,9 +302,17 @@ impl Source {
     /// Extend: resizes/turns the output in place (it stays on, so its windows stay on it).
     /// `Ok(false)` = not an extend capture (open a new source instead).
     fn reconfigure(&mut self, size: (u32, u32)) -> Result<bool> {
-        let Some(cap) = self.cap.as_mut().filter(|c| c.is_extend()) else { return Ok(false) };
+        let Some(cap) = self.cap.as_mut().filter(|c| c.is_extend()) else {
+            return Ok(false);
+        };
         cap.reconfigure_extend(size.0, size.1)?;
-        println!("{} is now {}x{}, geometry {:?}", cap.output_name(), cap.width, cap.height, cap.geometry());
+        println!(
+            "{} is now {}x{}, geometry {:?}",
+            cap.output_name(),
+            cap.width,
+            cap.height,
+            cap.geometry()
+        );
         self.desc = cap.source_description();
         self.size = size;
         self.target = Some(cap.input_target());
@@ -297,7 +324,9 @@ fn open_source(o: &Opts, size: (u32, u32)) -> Result<Source> {
     let (w, h) = size;
     if let Some(p) = &o.test_pattern {
         return Ok(Source {
-            desc: format!("videotestsrc is-live=true pattern={p} ! video/x-raw,width={w},height={h},framerate=30/1"),
+            desc: format!(
+                "videotestsrc is-live=true pattern={p} ! video/x-raw,width={w},height={h},framerate=30/1"
+            ),
             size,
             target: None,
             cap: None,
@@ -340,11 +369,22 @@ struct InputState {
 impl InputState {
     fn handle(&mut self, b: &[u8]) {
         self.packets += 1;
-        if self.packets <= 3 || self.packets % 500 == 0 {
-            let ty = b.get(..4).map(|t| u32::from_le_bytes([t[0], t[1], t[2], t[3]])).unwrap_or(u32::MAX);
+        if self.packets <= 3 || self.packets.is_multiple_of(500) {
+            let ty = b
+                .get(..4)
+                .map(|t| u32::from_le_bytes([t[0], t[1], t[2], t[3]]))
+                .unwrap_or(u32::MAX);
             let head: String = b.iter().take(32).map(|x| format!("{x:02x}")).collect();
-            let what = if self.inj.is_some() { "injected" } else { "not injected" };
-            println!("input packet #{}: type {ty}, {} bytes, {head}… ({what})", self.packets, b.len());
+            let what = if self.inj.is_some() {
+                "injected"
+            } else {
+                "not injected"
+            };
+            println!(
+                "input packet #{}: type {ty}, {} bytes, {head}… ({what})",
+                self.packets,
+                b.len()
+            );
         }
         if let Some(inj) = self.inj.as_mut() {
             inj.handle_packet(b);
@@ -356,7 +396,11 @@ impl InputState {
     fn retarget(&mut self, target: &Option<input::Target>, fresh: bool) {
         let Some(t) = target else { return };
         let (rect, output) = (t.rect, &t.output);
-        if let Some(inj) = self.inj.as_mut().filter(|_| !fresh && self.output == *output) {
+        if let Some(inj) = self
+            .inj
+            .as_mut()
+            .filter(|_| !fresh && self.output == *output)
+        {
             inj.set_target(t);
             println!("phone input now maps to {output} {rect:?}");
             return;
@@ -383,12 +427,11 @@ type SharedInput = Arc<Mutex<InputState>>;
 fn pick_h264(sdp: &str) -> Option<(u32, String)> {
     let mut cands: Vec<(u32, String, bool)> = Vec::new();
     for l in sdp.lines() {
-        if let Some(r) = l.strip_prefix("a=rtpmap:") {
-            if r.contains(" H264/90000") {
-                if let Some(pt) = r.split(' ').next().and_then(|p| p.parse().ok()) {
-                    cands.push((pt, String::new(), false));
-                }
-            }
+        if let Some(r) = l.strip_prefix("a=rtpmap:")
+            && r.contains(" H264/90000")
+            && let Some(pt) = r.split(' ').next().and_then(|p| p.parse().ok())
+        {
+            cands.push((pt, String::new(), false));
         }
     }
     for l in sdp.lines() {
@@ -396,19 +439,32 @@ fn pick_h264(sdp: &str) -> Option<(u32, String)> {
             let (pt, params) = r.split_once(' ').unwrap_or((r, ""));
             if let Some(c) = cands.iter_mut().find(|c| c.0.to_string() == pt) {
                 c.2 = params.contains("packetization-mode=1");
-                c.1 = params.split(';').find_map(|p| p.trim().strip_prefix("profile-level-id=")).unwrap_or("").to_owned();
+                c.1 = params
+                    .split(';')
+                    .find_map(|p| p.trim().strip_prefix("profile-level-id="))
+                    .unwrap_or("")
+                    .to_owned();
             }
         }
     }
     let cb = |c: &&(u32, String, bool)| c.2 && (c.1.starts_with("42e0") || c.1.starts_with("42c0"));
-    cands.iter().find(cb).or_else(|| cands.iter().find(|c| c.2)).or_else(|| cands.first()).map(|c| (c.0, c.1.clone()))
+    cands
+        .iter()
+        .find(cb)
+        .or_else(|| cands.iter().find(|c| c.2))
+        .or_else(|| cands.first())
+        .map(|c| (c.0, c.1.clone()))
 }
 
 /// Keeps only payload type `keep` in the video m-line (the phone offers VP8/VP9/H265/AV1 + RTX too).
 fn video_only_pt(sdp: &str, keep: u32) -> String {
     let lines: Vec<&str> = sdp.split("\r\n").flat_map(|l| l.split('\n')).collect();
     let pt_of = |l: &str| -> Option<String> {
-        ["a=rtpmap:", "a=fmtp:", "a=rtcp-fb:"].iter().find_map(|p| l.strip_prefix(p)).and_then(|r| r.split(' ').next()).map(str::to_owned)
+        ["a=rtpmap:", "a=fmtp:", "a=rtcp-fb:"]
+            .iter()
+            .find_map(|p| l.strip_prefix(p))
+            .and_then(|r| r.split(' ').next())
+            .map(str::to_owned)
     };
     let keep_s = keep.to_string();
     let mut out = Vec::new();
@@ -436,7 +492,10 @@ fn video_only_pt(sdp: &str, keep: u32) -> String {
 
 /// Direction attribute (`a=sendonly`…) of the first `m=<kind>` section, or "-" without one.
 fn direction(sdp: &str, kind: &str) -> String {
-    let mut lines = sdp.lines().map(str::trim).skip_while(|l| !l.starts_with(&format!("m={kind}")));
+    let mut lines = sdp
+        .lines()
+        .map(str::trim)
+        .skip_while(|l| !l.starts_with(&format!("m={kind}")));
     if lines.next().is_none() {
         return "-".into();
     }
@@ -450,7 +509,9 @@ fn direction(sdp: &str, kind: &str) -> String {
 /// Feeds every SCTP message that webrtcbin's `sctpdec` receives (one src pad per stream) to the
 /// input handler, skipping the DCEP DATA_CHANNEL_OPEN (type 3, carries the label).
 fn tap_sctp(webrtc: &gst::Element, input: SharedInput, tapped: Arc<AtomicBool>) {
-    let Some(bin) = webrtc.downcast_ref::<gst::Bin>() else { return };
+    let Some(bin) = webrtc.downcast_ref::<gst::Bin>() else {
+        return;
+    };
     bin.connect_element_added(move |_, el| {
         if el.factory().is_none_or(|f| f.name() != "sctpdec") {
             return;
@@ -465,7 +526,8 @@ fn tap_sctp(webrtc: &gst::Element, input: SharedInput, tapped: Arc<AtomicBool>) 
             pad.add_probe(gst::PadProbeType::BUFFER, move |_, info| {
                 if let Some(map) = info.buffer().and_then(|b| b.map_readable().ok()) {
                     let b = map.as_slice();
-                    let dcep_open = b.first() == Some(&3) && b.windows(16).any(|w| w == b"touchDataChannel");
+                    let dcep_open =
+                        b.first() == Some(&3) && b.windows(16).any(|w| w == b"touchDataChannel");
                     if !dcep_open {
                         input.lock().unwrap().handle(b);
                     }
@@ -478,7 +540,10 @@ fn tap_sctp(webrtc: &gst::Element, input: SharedInput, tapped: Arc<AtomicBool>) 
 
 /// Keeps the last offer/answer in $XDG_RUNTIME_DIR for debugging.
 fn dump(what: &str, sdp: &str) {
-    let _ = std::fs::write(socket_path().with_file_name(format!("smartconnect-display.{what}.sdp")), sdp);
+    let _ = std::fs::write(
+        socket_path().with_file_name(format!("smartconnect-display.{what}.sdp")),
+        sdp,
+    );
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -537,7 +602,9 @@ fn pick_encoder(o: &Opts) -> String {
     let kbps = o.bitrate;
     // key-int-max=30: a keyframe at least every 0.5–1 s (30–60 fps), so the phone recovers quickly.
     if !o.force_x264 && gst::ElementFactory::find("vah264enc").is_some() {
-        format!("vah264enc key-int-max=30 b-frames=0 rate-control=cbr bitrate={kbps} target-usage=7")
+        format!(
+            "vah264enc key-int-max=30 b-frames=0 rate-control=cbr bitrate={kbps} target-usage=7"
+        )
     } else {
         format!("x264enc tune=zerolatency speed-preset=ultrafast key-int-max=30 bitrate={kbps}")
     }
@@ -550,7 +617,11 @@ fn size_caps(w: u32, h: u32, va: bool) -> gst::Caps {
         .field("width", w as i32)
         .field("height", h as i32)
         .field("pixel-aspect-ratio", gst::Fraction::new(1, 1));
-    if va { caps.features(["memory:VAMemory"]).build() } else { caps.build() }
+    if va {
+        caps.features(["memory:VAMemory"]).build()
+    } else {
+        caps.build()
+    }
 }
 
 /// Converts and scales the captured frames for the encoder. With the VA encoder, `vapostproc` does
@@ -561,7 +632,10 @@ fn convert_description(enc: &str) -> (String, bool) {
     if enc.starts_with("vah264enc") && gst::ElementFactory::find("vapostproc").is_some() {
         ("vapostproc add-borders=true".to_owned(), true)
     } else {
-        ("videoconvert n-threads=0 ! videoscale add-borders=true n-threads=0".to_owned(), false)
+        (
+            "videoconvert n-threads=0 ! videoscale add-borders=true n-threads=0".to_owned(),
+            false,
+        )
     }
 }
 
@@ -571,19 +645,36 @@ fn convert_description(enc: &str) -> (String, bool) {
 /// before set-remote-description, they no longer intersect the offer, webrtcbin makes a fresh
 /// recvonly transceiver and answers `a=inactive` (seen live).
 fn sendonly_pad(webrtc: &gst::Element, caps: &gst::Caps) -> Result<gst::Pad> {
-    let templ = webrtc.pad_template("sink_%u").context("no sink_%u template")?;
-    let pad = webrtc.request_pad(&templ, None, Some(caps)).context("webrtcbin refused a sink pad")?;
+    let templ = webrtc
+        .pad_template("sink_%u")
+        .context("no sink_%u template")?;
+    let pad = webrtc
+        .request_pad(&templ, None, Some(caps))
+        .context("webrtcbin refused a sink pad")?;
     let trans = pad.property::<gst_webrtc::WebRTCRTPTransceiver>("transceiver");
-    trans.set_property("direction", gst_webrtc::WebRTCRTPTransceiverDirection::Sendonly);
+    trans.set_property(
+        "direction",
+        gst_webrtc::WebRTCRTPTransceiverDirection::Sendonly,
+    );
     trans.set_property("codec-preferences", caps);
     Ok(pad)
 }
 
 impl Stream {
-    fn start(d: &Arc<Daemon>, sid: i32, cfg: StreamCfg, input: SharedInput, offer_sdp: &str) -> Result<Stream> {
+    fn start(
+        d: &Arc<Daemon>,
+        sid: i32,
+        cfg: StreamCfg,
+        input: SharedInput,
+        offer_sdp: &str,
+    ) -> Result<Stream> {
         let (w, h) = cfg.size;
         let (pt, plid) = pick_h264(offer_sdp).context("the phone's offer has no H.264")?;
-        let profile = if plid.starts_with("42") { "constrained-baseline" } else { "main" };
+        let profile = if plid.starts_with("42") {
+            "constrained-baseline"
+        } else {
+            "main"
+        };
         let enc = pick_encoder(cfg.opts);
         println!(
             "sending H.264 pt {pt} (offer profile-level-id {plid}, encoding {profile}) at {w}x{h}, at most {} fps, {} kbit/s with {}",
@@ -592,9 +683,15 @@ impl Stream {
             enc.split(' ').next().unwrap_or("")
         );
         let offer_sdp = video_only_pt(offer_sdp, pt);
-        let mids: Vec<String> = offer_sdp.lines().filter_map(|l| l.strip_prefix("a=mid:")).map(|m| m.trim().to_owned()).collect();
+        let mids: Vec<String> = offer_sdp
+            .lines()
+            .filter_map(|l| l.strip_prefix("a=mid:"))
+            .map(|m| m.trim().to_owned())
+            .collect();
 
-        let rtp_caps = format!("application/x-rtp,media=video,encoding-name=H264,clock-rate=90000,payload={pt}");
+        let rtp_caps = format!(
+            "application/x-rtp,media=video,encoding-name=H264,clock-rate=90000,payload={pt}"
+        );
         // drop-only: frames above the cap are dropped as they come, none are held back or added.
         let fps = cfg.opts.fps;
         let (convert, va) = convert_description(&enc);
@@ -610,16 +707,26 @@ impl Stream {
              ! rtph264pay config-interval=-1 aggregate-mode=zero-latency pt={pt} \
              ! capsfilter name=rtpcaps caps={rtp_caps}"
         );
-        let pipeline = gst::parse::launch(&desc)?.downcast::<gst::Pipeline>().map_err(|_| anyhow!("not a pipeline"))?;
+        let pipeline = gst::parse::launch(&desc)?
+            .downcast::<gst::Pipeline>()
+            .map_err(|_| anyhow!("not a pipeline"))?;
         let head = pipeline.by_name("head").context("no head queue")?;
         let size = pipeline.by_name("size").context("no size filter")?;
 
         // The pipeline also stays in READY until the answer is set (see sendonly_pad).
-        let webrtc = gst::ElementFactory::make("webrtcbin").name("webrtc").property_from_str("bundle-policy", "max-bundle").build()?;
+        let webrtc = gst::ElementFactory::make("webrtcbin")
+            .name("webrtc")
+            .property_from_str("bundle-policy", "max-bundle")
+            .build()?;
         pipeline.add(&webrtc)?;
         let caps = gst::Caps::from_str(&rtp_caps).map_err(|_| anyhow!("bad rtp caps"))?;
         let sinkpad = sendonly_pad(&webrtc, &caps)?;
-        pipeline.by_name("rtpcaps").context("no rtpcaps")?.static_pad("src").context("no rtpcaps src")?.link(&sinkpad)?;
+        pipeline
+            .by_name("rtpcaps")
+            .context("no rtpcaps")?
+            .static_pad("src")
+            .context("no rtpcaps src")?
+            .link(&sinkpad)?;
 
         // PC audio on the offer's (recvonly) Opus section.
         let mut audio_vol = None;
@@ -627,19 +734,31 @@ impl Stream {
             match audio::pick_opus(&offer_sdp) {
                 None => eprintln!("the offer has no Opus audio section; sending video only"),
                 Some(apt) => {
-                    let bin = gst::parse::bin_from_description(&audio::branch_description(src, apt, *on), true)
-                        .context("building the audio branch")?;
+                    let bin = gst::parse::bin_from_description(
+                        &audio::branch_description(src, apt, *on),
+                        true,
+                    )
+                    .context("building the audio branch")?;
                     pipeline.add(&bin)?;
-                    let acaps = gst::Caps::from_str(&audio::rtp_caps(apt)).map_err(|_| anyhow!("bad audio rtp caps"))?;
+                    let acaps = gst::Caps::from_str(&audio::rtp_caps(apt))
+                        .map_err(|_| anyhow!("bad audio rtp caps"))?;
                     let apad = sendonly_pad(&webrtc, &acaps)?;
-                    bin.static_pad("src").context("audio branch has no src pad")?.link(&apad)?;
+                    bin.static_pad("src")
+                        .context("audio branch has no src pad")?
+                        .link(&apad)?;
                     audio_vol = Some(bin.by_name("audiovol").context("no audiovol")?);
-                    println!("sending audio: {src} → Opus pt {apt} ({})", if *on { "on" } else { "muted" });
+                    println!(
+                        "sending audio: {src} → Opus pt {apt} ({})",
+                        if *on { "on" } else { "muted" }
+                    );
                 }
             }
         }
 
-        let sig = Arc::new(Mutex::new(SigState { mids, ..Default::default() }));
+        let sig = Arc::new(Mutex::new(SigState {
+            mids,
+            ..Default::default()
+        }));
         let filter = Arc::new(cfg.ice);
         println!("offering ICE candidates on {}", filter.why);
         {
@@ -649,7 +768,9 @@ impl Stream {
                 let mut st = sig.lock().unwrap();
                 if filter.allows(&cand) {
                     st.offer(&d, sid, mline, cand);
-                } else if ice::candidate_addr(&cand).is_some_and(|(p, _)| p.eq_ignore_ascii_case("udp")) {
+                } else if ice::candidate_addr(&cand)
+                    .is_some_and(|(p, _)| p.eq_ignore_ascii_case("udp"))
+                {
                     st.held.push((mline, cand));
                 }
                 None
@@ -669,8 +790,15 @@ impl Stream {
                     return;
                 }
                 let fallback = ice::Filter::private_ranges();
-                let held: Vec<(u32, String)> = std::mem::take(&mut st.held).into_iter().filter(|(_, c)| fallback.allows(c)).collect();
-                eprintln!("no ICE candidate matched {}; offering {} private-address candidate(s) instead", filter.why, held.len());
+                let held: Vec<(u32, String)> = std::mem::take(&mut st.held)
+                    .into_iter()
+                    .filter(|(_, c)| fallback.allows(c))
+                    .collect();
+                eprintln!(
+                    "no ICE candidate matched {}; offering {} private-address candidate(s) instead",
+                    filter.why,
+                    held.len()
+                );
                 for (m, c) in held {
                     st.offer(&d, sid, m, c);
                 }
@@ -693,7 +821,10 @@ impl Stream {
         webrtc.connect("on-data-channel", false, move |args| {
             let ch = args[1].get::<gst_webrtc::WebRTCDataChannel>().ok()?;
             let label: Option<String> = ch.property("label");
-            println!("data channel opened by the phone: {label:?} (raw SCTP tap: {})", tapped.load(Ordering::SeqCst));
+            println!(
+                "data channel opened by the phone: {label:?} (raw SCTP tap: {})",
+                tapped.load(Ordering::SeqCst)
+            );
             let (input, tapped) = (input.clone(), tapped.clone());
             ch.connect_on_message_data(move |_, bytes| {
                 if let Some(b) = bytes.filter(|_| !tapped.load(Ordering::SeqCst)) {
@@ -708,26 +839,48 @@ impl Stream {
             for msg in bus.iter_timed(gst::ClockTime::NONE) {
                 match msg.view() {
                     gst::MessageView::Error(e) => {
-                        eprintln!("pipeline error from {:?}: {} ({:?})", e.src().map(|s| s.path_string()), e.error(), e.debug())
+                        eprintln!(
+                            "pipeline error from {:?}: {} ({:?})",
+                            e.src().map(|s| s.path_string()),
+                            e.error(),
+                            e.debug()
+                        )
                     }
-                    gst::MessageView::Warning(e) => eprintln!("pipeline warning from {:?}: {}", e.src().map(|s| s.path_string()), e.error()),
+                    gst::MessageView::Warning(e) => eprintln!(
+                        "pipeline warning from {:?}: {}",
+                        e.src().map(|s| s.path_string()),
+                        e.error()
+                    ),
                     gst::MessageView::Eos(_) => break,
                     _ => {}
                 }
             }
         });
 
-        let mut st = Stream { pipeline, webrtc, head, srcbin: None, size, va, audio: audio_vol };
+        let mut st = Stream {
+            pipeline,
+            webrtc,
+            head,
+            srcbin: None,
+            size,
+            va,
+            audio: audio_vol,
+        };
         st.attach_source(cfg.src_desc)?;
         let (pipeline, webrtc) = (st.pipeline.clone(), st.webrtc.clone());
         pipeline.set_state(gst::State::Ready)?;
 
-        let sdp = gst_sdp::SDPMessage::parse_buffer(offer_sdp.as_bytes()).map_err(|_| anyhow!("bad offer SDP"))?;
-        let offer = gst_webrtc::WebRTCSessionDescription::new(gst_webrtc::WebRTCSDPType::Offer, sdp);
+        let sdp = gst_sdp::SDPMessage::parse_buffer(offer_sdp.as_bytes())
+            .map_err(|_| anyhow!("bad offer SDP"))?;
+        let offer =
+            gst_webrtc::WebRTCSessionDescription::new(gst_webrtc::WebRTCSDPType::Offer, sdp);
         let p = gst::Promise::new();
         webrtc.emit_by_name::<()>("set-remote-description", &[&offer, &p]);
         p.wait();
-        if let Some(e) = p.get_reply().and_then(|r| r.value("error").ok().map(|e| format!("{e:?}"))) {
+        if let Some(e) = p
+            .get_reply()
+            .and_then(|r| r.value("error").ok().map(|e| format!("{e:?}")))
+        {
             bail!("set-remote-description failed: {e}");
         }
         let p = gst::Promise::new();
@@ -737,7 +890,9 @@ impl Stream {
         if let Ok(err) = reply.value("error") {
             bail!("create-answer failed: {err:?}");
         }
-        let answer = reply.value("answer")?.get::<gst_webrtc::WebRTCSessionDescription>()?;
+        let answer = reply
+            .value("answer")?
+            .get::<gst_webrtc::WebRTCSessionDescription>()?;
         let text = answer.sdp().as_text()?;
         dump("offer", &offer_sdp);
         dump("answer", &text);
@@ -745,17 +900,25 @@ impl Stream {
         webrtc.emit_by_name::<()>("set-local-description", &[&answer, &p]);
         p.wait();
         let (vdir, adir) = (direction(&text, "video"), direction(&text, "audio"));
-        println!("answer: {} bytes, video {vdir}, audio {adir}, data channel {}", text.len(), text.contains("m=application"));
+        println!(
+            "answer: {} bytes, video {vdir}, audio {adir}, data channel {}",
+            text.len(),
+            text.contains("m=application")
+        );
         if vdir != "a=sendonly" && vdir != "a=sendrecv" {
             eprintln!("warning: the answer does not send video ({vdir})");
         }
         if st.audio.is_some() && adir != "a=sendonly" && adir != "a=sendrecv" {
             eprintln!("warning: the answer does not send audio ({adir})");
         }
-        d.send202(1, sid, json!({
-            "answer": json!({ "type": "answer", "sdp": text }).to_string(),
-            "messageType": "answer",
-        }));
+        d.send202(
+            1,
+            sid,
+            json!({
+                "answer": json!({ "type": "answer", "sdp": text }).to_string(),
+                "messageType": "answer",
+            }),
+        );
         let (pending, mids) = {
             let mut s = sig.lock().unwrap();
             s.answered = true;
@@ -772,7 +935,8 @@ impl Stream {
     fn attach_source(&mut self, desc: &str) -> Result<()> {
         // `identity` closes the fragment: a trailing caps filter ("… ! video/x-raw,…") is only
         // valid between two elements.
-        let bin = gst::parse::bin_from_description(&format!("{desc} ! identity"), true)?.upcast::<gst::Element>();
+        let bin = gst::parse::bin_from_description(&format!("{desc} ! identity"), true)?
+            .upcast::<gst::Element>();
         self.pipeline.add(&bin)?;
         bin.link(&self.head)?;
         bin.sync_state_with_parent()?;
@@ -798,7 +962,8 @@ impl Stream {
         if let Some(cand) = c.get("candidate").and_then(Value::as_str) {
             let label = c.get("label").and_then(Value::as_u64).unwrap_or(0) as u32;
             println!("phone candidate: {}", truncate(cand, 90));
-            self.webrtc.emit_by_name::<()>("add-ice-candidate", &[&label, &cand]);
+            self.webrtc
+                .emit_by_name::<()>("add-ice-candidate", &[&label, &cand]);
         }
     }
 
@@ -826,12 +991,19 @@ impl Stream {
 }
 
 fn send_candidate(d: &Daemon, sid: i32, mids: &[String], mline: u32, cand: &str) {
-    let mid = mids.get(mline as usize).cloned().unwrap_or_else(|| mline.to_string());
+    let mid = mids
+        .get(mline as usize)
+        .cloned()
+        .unwrap_or_else(|| mline.to_string());
     println!("local candidate: {}", truncate(cand, 90));
-    d.send202(2, sid, json!({
-        "candidate": json!({ "id": mid, "label": mline, "candidate": cand }).to_string(),
-        "messageType": "candidate",
-    }));
+    d.send202(
+        2,
+        sid,
+        json!({
+            "candidate": json!({ "id": mid, "label": mline, "candidate": cand }).to_string(),
+            "messageType": "candidate",
+        }),
+    );
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -850,7 +1022,10 @@ struct Osk {
     gnome_was: Option<String>,
 }
 
-const GNOME_OSK: [&str; 2] = ["org.gnome.desktop.a11y.applications", "screen-keyboard-enabled"];
+const GNOME_OSK: [&str; 2] = [
+    "org.gnome.desktop.a11y.applications",
+    "screen-keyboard-enabled",
+];
 
 impl Osk {
     const CANDIDATES: [&'static str; 2] = ["wvkbd-deskintl", "wvkbd-mobintl"];
@@ -859,19 +1034,38 @@ impl Osk {
     /// keyboard gets `pct` % of that output's (logical) height, a bigger font, and the layout
     /// with a number row (its ⌨ key cycles to symbols and emoji).
     fn wvkbd_args(logical_height: Option<u32>, pct: u32) -> Vec<String> {
-        let h = logical_height.map_or(300, |lh| lh * pct / 100).clamp(120, 900).to_string();
-        ["-L", &h, "-H", &h, "--fn", "Sans 20", "--landscape-layers", "full,special,emoji"]
-            .iter()
-            .map(|a| (*a).to_owned())
-            .collect()
+        let h = logical_height
+            .map_or(300, |lh| lh * pct / 100)
+            .clamp(120, 900)
+            .to_string();
+        [
+            "-L",
+            &h,
+            "-H",
+            &h,
+            "--fn",
+            "Sans 20",
+            "--landscape-layers",
+            "full,special,emoji",
+        ]
+        .iter()
+        .map(|a| (*a).to_owned())
+        .collect()
     }
 
     /// `target` = the shared screen (None for the test pattern).
     fn show(&mut self, target: Option<&input::Target>, pct: u32, desk: Desktop) {
-        if self.child.as_mut().is_some_and(|c| matches!(c.try_wait(), Ok(None))) || self.gnome_was.is_some() {
+        if self
+            .child
+            .as_mut()
+            .is_some_and(|c| matches!(c.try_wait(), Ok(None)))
+            || self.gnome_was.is_some()
+        {
             return;
         }
-        let custom = std::env::var("SMARTCONNECT_OSK").ok().filter(|s| !s.trim().is_empty());
+        let custom = std::env::var("SMARTCONNECT_OSK")
+            .ok()
+            .filter(|s| !s.trim().is_empty());
         if desk == Desktop::Gnome && custom.is_none() {
             self.show_gnome();
             return;
@@ -892,7 +1086,10 @@ impl Osk {
                 .collect(),
         };
         for argv in &commands {
-            match std::process::Command::new(&argv[0]).args(&argv[1..]).spawn() {
+            match std::process::Command::new(&argv[0])
+                .args(&argv[1..])
+                .spawn()
+            {
                 Ok(child) => {
                     println!("on-screen keyboard: started {}", argv[0]);
                     self.child = Some(child);
@@ -911,16 +1108,29 @@ impl Osk {
     }
 
     fn show_gnome(&mut self) {
-        let get = std::process::Command::new("gsettings").arg("get").args(GNOME_OSK).output();
+        let get = std::process::Command::new("gsettings")
+            .arg("get")
+            .args(GNOME_OSK)
+            .output();
         let was = match get {
             Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim().to_owned(),
             _ => {
-                eprintln!("on-screen keyboard: could not read GNOME's screen-keyboard setting (gsettings)");
+                eprintln!(
+                    "on-screen keyboard: could not read GNOME's screen-keyboard setting (gsettings)"
+                );
                 return;
             }
         };
-        if std::process::Command::new("gsettings").arg("set").args(GNOME_OSK).arg("true").status().is_ok_and(|s| s.success()) {
-            println!("on-screen keyboard: GNOME screen keyboard on (it opens when a text field is focused)");
+        if std::process::Command::new("gsettings")
+            .arg("set")
+            .args(GNOME_OSK)
+            .arg("true")
+            .status()
+            .is_ok_and(|s| s.success())
+        {
+            println!(
+                "on-screen keyboard: GNOME screen keyboard on (it opens when a text field is focused)"
+            );
             self.gnome_was = Some(was);
         }
     }
@@ -932,7 +1142,11 @@ impl Osk {
             println!("on-screen keyboard: hidden");
         }
         if let Some(was) = self.gnome_was.take() {
-            let _ = std::process::Command::new("gsettings").arg("set").args(GNOME_OSK).arg(&was).status();
+            let _ = std::process::Command::new("gsettings")
+                .arg("set")
+                .args(GNOME_OSK)
+                .arg(&was)
+                .status();
             println!("on-screen keyboard: GNOME screen keyboard back to {was}");
         }
     }
@@ -979,11 +1193,15 @@ struct App {
 impl App {
     fn connection_ready(&mut self) {
         let set_audio = self.audio_src.is_some() && self.audio_on;
-        self.d.send202(0, self.sid, json!({
-            "shareType": self.share.as_str(), "setAudio": set_audio, "setScale": self.o.scale,
-            "key_pc_ss_version": PC_SS_VERSION, "sessionId": self.sid,
-            "logLevel": 2, "collectStats": false,
-        }));
+        self.d.send202(
+            0,
+            self.sid,
+            json!({
+                "shareType": self.share.as_str(), "setAudio": set_audio, "setScale": self.o.scale,
+                "key_pc_ss_version": PC_SS_VERSION, "sessionId": self.sid,
+                "logLevel": 2, "collectStats": false,
+            }),
+        );
     }
 
     /// Whether the source has to be re-made for a new stream size (extend output / test pattern).
@@ -997,19 +1215,31 @@ impl App {
 
     /// The stream size for `self.base` and the phone's orientation.
     fn wanted_size(&self) -> (u32, u32) {
-        oriented_size(self.base, self.follows_rotation(), self.orient, portrait_max())
+        oriented_size(
+            self.base,
+            self.follows_rotation(),
+            self.orient,
+            portrait_max(),
+        )
     }
 
     /// Opens (or reopens, when the size matters and changed) the video source for `size`.
     fn ensure_source(&mut self, size: (u32, u32)) -> Result<()> {
         let size_matters = self.size_matters();
-        if self.src.as_ref().is_some_and(|s| !size_matters || s.size == size) {
+        if self
+            .src
+            .as_ref()
+            .is_some_and(|s| !size_matters || s.size == size)
+        {
             return Ok(());
         }
         self.src = None; // close the old cast (and turn the old extend output off) first
         let src = open_source(&self.o, size)?;
         // A new extend output is a new wl_output: the pinned pointer must be re-made.
-        self.input.lock().unwrap().retarget(&src.target, self.share == Share::Extend);
+        self.input
+            .lock()
+            .unwrap()
+            .retarget(&src.target, self.share == Share::Extend);
         self.src = Some(src);
         Ok(())
     }
@@ -1024,7 +1254,9 @@ impl App {
                     return Ok(());
                 }
                 Ok(false) => {}
-                Err(e) => eprintln!("resizing the output in place failed ({e:#}); switching it off and on again"),
+                Err(e) => eprintln!(
+                    "resizing the output in place failed ({e:#}); switching it off and on again"
+                ),
             }
         }
         self.ensure_source(size)
@@ -1032,7 +1264,10 @@ impl App {
 
     /// Hands the stream's new source bin to the capture (screencopy feeds an appsrc in it).
     fn bind_source(&self) {
-        if let (Some(cap), Some(bin)) = (self.src.as_ref().and_then(|s| s.cap.as_ref()), self.stream.as_ref().and_then(Stream::source_bin)) {
+        if let (Some(cap), Some(bin)) = (
+            self.src.as_ref().and_then(|s| s.cap.as_ref()),
+            self.stream.as_ref().and_then(Stream::source_bin),
+        ) {
             cap.bind(bin);
         }
     }
@@ -1059,9 +1294,20 @@ impl App {
             bail!("cmd 5 without an offer (errorCode {err:?})");
         }
         let res = json_field(body, "resolution");
-        let g = |k: &str| res.get(k).and_then(Value::as_u64).filter(|v| *v > 0).map(|v| v as u32);
-        let requested = (g("widthReq").unwrap_or(1920), g("heightReq").unwrap_or(1080));
-        let (pw, ph) = (g("width").unwrap_or(requested.0), g("height").unwrap_or(requested.1));
+        let g = |k: &str| {
+            res.get(k)
+                .and_then(Value::as_u64)
+                .filter(|v| *v > 0)
+                .map(|v| v as u32)
+        };
+        let requested = (
+            g("widthReq").unwrap_or(1920),
+            g("heightReq").unwrap_or(1080),
+        );
+        let (pw, ph) = (
+            g("width").unwrap_or(requested.0),
+            g("height").unwrap_or(requested.1),
+        );
         let native = (pw.max(ph), pw.min(ph)); // the panel in landscape
         self.base = even(match self.o.size {
             SizePref::Requested => requested,
@@ -1078,7 +1324,11 @@ impl App {
             g("maxHeight"),
             size.0,
             size.1,
-            if self.follows_rotation() { format!(" ({:?})", self.orient.unwrap_or(Orient::Landscape)) } else { String::new() }
+            if self.follows_rotation() {
+                format!(" ({:?})", self.orient.unwrap_or(Orient::Landscape))
+            } else {
+                String::new()
+            }
         );
         self.teardown();
         self.ensure_source(size)?;
@@ -1088,9 +1338,18 @@ impl App {
             src_desc: &desc,
             size,
             audio: self.audio_src.clone().map(|s| (s, self.audio_on)),
-            ice: self.fixed_ice.clone().unwrap_or_else(|| ice::Filter::resolve(pc_address)),
+            ice: self
+                .fixed_ice
+                .clone()
+                .unwrap_or_else(|| ice::Filter::resolve(pc_address)),
         };
-        self.stream = Some(Stream::start(&self.d, self.sid, cfg, self.input.clone(), sdp)?);
+        self.stream = Some(Stream::start(
+            &self.d,
+            self.sid,
+            cfg,
+            self.input.clone(),
+            sdp,
+        )?);
         self.bind_source();
         self.size = size;
         Ok(())
@@ -1107,7 +1366,10 @@ impl App {
             self.stream.as_mut().context("no stream")?.detach_source();
             self.swap_source(size)?;
             let desc = self.src.as_ref().context("no source")?.desc.clone();
-            self.stream.as_mut().context("no stream")?.attach_source(&desc)?;
+            self.stream
+                .as_mut()
+                .context("no stream")?
+                .attach_source(&desc)?;
             self.bind_source();
         }
         self.stream.as_ref().context("no stream")?.resize(size);
@@ -1128,7 +1390,9 @@ impl App {
         }
         if !self.follows_rotation() {
             if o == Orient::Portrait && self.share == Share::Extend {
-                println!("the phone is portrait; --follow-rotation would turn the extended display to match");
+                println!(
+                    "the phone is portrait; --follow-rotation would turn the extended display to match"
+                );
             }
             return;
         }
@@ -1143,7 +1407,11 @@ impl App {
         let sent = self.stream.as_ref().is_some_and(|s| s.set_audio(on));
         if on && !sent {
             // Nothing to unmute: this session's answer has no audio. Put the phone's switch back.
-            let hint = if self.o.audio { "the PC's audio could not be captured" } else { "start with --audio (or \"audio\": true)" };
+            let hint = if self.o.audio {
+                "the PC's audio could not be captured"
+            } else {
+                "start with --audio (or \"audio\": true)"
+            };
             println!("the phone turned audio on, but no audio is being sent ({hint})");
             self.audio_on = false;
             self.d.send202(27, self.sid, json!({ "setAudio": false }));
@@ -1164,7 +1432,9 @@ impl App {
         let Some(src) = self.src.as_mut() else { return };
         match src.reposition() {
             Ok(true) => self.input.lock().unwrap().retarget(&src.target, false),
-            Ok(false) => println!("the phone's place changed; this desktop can't move its screen while it runs"),
+            Ok(false) => println!(
+                "the phone's place changed; this desktop can't move its screen while it runs"
+            ),
             Err(e) => eprintln!("moving the phone's screen: {e:#}"),
         }
     }
@@ -1175,7 +1445,12 @@ impl App {
         if self.rotate_at.is_some_and(|t| Instant::now() >= t) {
             self.rotate_at = None;
             let size = self.wanted_size();
-            println!("phone rotated ({:?}): extended display → {}x{}", self.orient.unwrap_or(Orient::Landscape), size.0, size.1);
+            println!(
+                "phone rotated ({:?}): extended display → {}x{}",
+                self.orient.unwrap_or(Orient::Landscape),
+                size.0,
+                size.1
+            );
             if let Err(e) = self.on_resize(size) {
                 eprintln!("rotation: {e:#}");
             }
@@ -1185,17 +1460,25 @@ impl App {
     fn on_phone(&mut self, msg: &Value) -> Result<()> {
         let cmd = msg.get("cmd").and_then(Value::as_i64).unwrap_or(-1);
         // Every svc 202 frame reaches every watcher: ignore other sessions (e.g. a second instance).
-        if let Some(other) = msg.get("sessionId").and_then(Value::as_i64).filter(|s| *s != self.sid as i64 && *s != 0) {
-            if cmd != 50 {
-                println!("ignoring cmd {cmd} for session {other}");
-                return Ok(());
-            }
+        if let Some(other) = msg
+            .get("sessionId")
+            .and_then(Value::as_i64)
+            .filter(|s| *s != self.sid as i64 && *s != 0)
+            && cmd != 50
+        {
+            println!("ignoring cmd {cmd} for session {other}");
+            return Ok(());
         }
         let body = inner(msg);
         if cmd != 2 {
             println!("← phone cmd {cmd}: {}", truncate(&body.to_string(), 300));
         }
-        let share_of = |b: &Value, dflt: Share| b.get("shareType").and_then(Value::as_str).and_then(Share::parse).unwrap_or(dflt);
+        let share_of = |b: &Value, dflt: Share| {
+            b.get("shareType")
+                .and_then(Value::as_str)
+                .and_then(Share::parse)
+                .unwrap_or(dflt)
+        };
         match cmd {
             5 => {
                 if let Err(e) = self.on_offer(&body) {
@@ -1236,7 +1519,11 @@ impl App {
                 // between mirror and extend needs another source, so keep ours (log it).
                 let share = share_of(&body, self.share);
                 if share != self.share {
-                    println!("phone asks for {} but this process sends {}; keeping it", share.as_str(), self.share.as_str());
+                    println!(
+                        "phone asks for {} but this process sends {}; keeping it",
+                        share.as_str(),
+                        self.share.as_str()
+                    );
                 }
                 if let Some(on) = body.get("setAudio").and_then(Value::as_bool) {
                     self.audio_on = on;
@@ -1249,7 +1536,11 @@ impl App {
                 if self.stream.is_none() {
                     let share = share_of(&body, self.share);
                     if share != self.share {
-                        println!("phone asks for {} but this process sends {}", share.as_str(), self.share.as_str());
+                        println!(
+                            "phone asks for {} but this process sends {}",
+                            share.as_str(),
+                            self.share.as_str()
+                        );
                     }
                     self.connection_ready();
                 }
@@ -1257,7 +1548,8 @@ impl App {
             62 => {
                 if body.get("setOSK").and_then(Value::as_bool).unwrap_or(false) {
                     let target = self.src.as_ref().and_then(|s| s.target.clone());
-                    self.osk.show(target.as_ref(), self.o.osk_height, self.desktop);
+                    self.osk
+                        .show(target.as_ref(), self.o.osk_height, self.desktop);
                 } else {
                     self.osk.hide();
                 }
@@ -1276,7 +1568,9 @@ impl App {
 
 /// A desktop notification (best effort): a phone-started session has no terminal to read.
 fn notify(summary: &str, body: &str) {
-    let _ = std::process::Command::new("notify-send").args(["-a", "Smart Connect", summary, body]).spawn();
+    let _ = std::process::Command::new("notify-send")
+        .args(["-a", "Smart Connect", summary, body])
+        .spawn();
 }
 
 /// `--audio`: the PC-audio source if it delivers sound here, else `None` (with the reason).
@@ -1289,14 +1583,19 @@ fn prepare_audio() -> Option<String> {
         }
         Err(e) => {
             eprintln!("audio disabled: {src}: {e:#}");
-            notify("Phone screen: no PC audio", &format!("Sending video only: {e:#}"));
+            notify(
+                "Phone screen: no PC audio",
+                &format!("Sending video only: {e:#}"),
+            );
             None
         }
     }
 }
 
 pub fn run() -> Result<()> {
-    let Some(o) = opts::parse_args()? else { return Ok(()) };
+    let Some(o) = opts::parse_args()? else {
+        return Ok(());
+    };
     let _lock = single_instance(o.replace)?;
     if let Some(edge) = o.side {
         desktop::set_side(edge);
@@ -1366,10 +1665,13 @@ pub fn run() -> Result<()> {
     }
     // Debug aid: SMARTCONNECT_DISPLAY_DEBUG_RESIZE=WxH acts as if the phone sent cmd 70 after 15 s,
     // SMARTCONNECT_DISPLAY_DEBUG_ROTATE=1|2 as if it sent cmd 7 {setOrientation} after 15 s.
-    if let Some((w, h)) = std::env::var("SMARTCONNECT_DISPLAY_DEBUG_RESIZE").ok().and_then(|v| {
-        let (w, h) = v.split_once('x')?;
-        Some((w.parse::<u32>().ok()?, h.parse::<u32>().ok()?))
-    }) {
+    if let Some((w, h)) = std::env::var("SMARTCONNECT_DISPLAY_DEBUG_RESIZE")
+        .ok()
+        .and_then(|v| {
+            let (w, h) = v.split_once('x')?;
+            Some((w.parse::<u32>().ok()?, h.parse::<u32>().ok()?))
+        })
+    {
         let app = app.clone();
         glib::timeout_add_local_once(Duration::from_secs(15), move || {
             println!("debug: simulating cmd 70 {w}x{h}");
@@ -1379,7 +1681,10 @@ pub fn run() -> Result<()> {
             }
         });
     }
-    if let Some(n) = std::env::var("SMARTCONNECT_DISPLAY_DEBUG_ROTATE").ok().and_then(|v| v.trim().parse::<i64>().ok()) {
+    if let Some(n) = std::env::var("SMARTCONNECT_DISPLAY_DEBUG_ROTATE")
+        .ok()
+        .and_then(|v| v.trim().parse::<i64>().ok())
+    {
         let app = app.clone();
         glib::timeout_add_local_once(Duration::from_secs(15), move || {
             println!("debug: simulating cmd 7 setOrientation {n}");
@@ -1390,8 +1695,16 @@ pub fn run() -> Result<()> {
     println!(
         "asking the phone to start ({} mode, session {sid}{}{})",
         o.mode.as_str(),
-        if app.borrow().audio_src.is_some() { ", with audio" } else { "" },
-        if o.follow_rotation { ", following rotation" } else { "" }
+        if app.borrow().audio_src.is_some() {
+            ", with audio"
+        } else {
+            ""
+        },
+        if o.follow_rotation {
+            ", following rotation"
+        } else {
+            ""
+        }
     );
     app.borrow_mut().connection_ready();
     main_loop.run();
@@ -1424,7 +1737,11 @@ m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=mid:2\r\na=sctp-port:5000"
         let sdp = video_only_pt(OFFER, 108);
         assert!(sdp.contains("m=video 9 UDP/TLS/RTP/SAVPF 108\r\n"));
         assert!(sdp.contains("a=rtcp-fb:108 nack pli"));
-        assert!(!sdp.contains("VP8") && !sdp.contains("a=fmtp:102") && !sdp.contains("video-orientation"));
+        assert!(
+            !sdp.contains("VP8")
+                && !sdp.contains("a=fmtp:102")
+                && !sdp.contains("video-orientation")
+        );
         // Other m-sections are untouched.
         assert!(sdp.contains("a=rtpmap:111 opus/48000/2") && sdp.contains("a=sctp-port:5000"));
         assert_eq!(audio::pick_opus(&sdp), Some(111));
@@ -1434,8 +1751,14 @@ m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=mid:2\r\na=sctp-port:5000"
     fn reads_section_directions() {
         assert_eq!(direction(OFFER, "audio"), "a=recvonly");
         assert_eq!(direction(OFFER, "video"), "a=recvonly");
-        assert_eq!(direction("v=0\r\nm=video 9 X 96\r\na=mid:0\r\n", "video"), "?");
-        assert_eq!(direction("v=0\r\nm=video 9 X 96\r\na=sendonly\r\n", "audio"), "-");
+        assert_eq!(
+            direction("v=0\r\nm=video 9 X 96\r\na=mid:0\r\n", "video"),
+            "?"
+        );
+        assert_eq!(
+            direction("v=0\r\nm=video 9 X 96\r\na=sendonly\r\n", "audio"),
+            "-"
+        );
     }
 
     #[test]
@@ -1448,13 +1771,20 @@ m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=mid:2\r\na=sctp-port:5000"
 
     #[test]
     fn phone_strings_are_parsed() {
-        let msg = json!({ "cmd": 70, "data": "{\"setWidth\":1280,\"setHeight\":720,\"setAuto\":0}" });
+        let msg =
+            json!({ "cmd": 70, "data": "{\"setWidth\":1280,\"setHeight\":720,\"setAuto\":0}" });
         assert_eq!(inner(&msg)["setWidth"], 1280);
-        assert_eq!(inner(&json!({ "cmd": 12, "data": "iceFailure" })), json!("iceFailure"));
+        assert_eq!(
+            inner(&json!({ "cmd": 12, "data": "iceFailure" })),
+            json!("iceFailure")
+        );
         let body = json!({ "resolution": "{\"widthReq\":1920,\"heightReq\":1080}" });
         assert_eq!(json_field(&body, "resolution")["heightReq"], 1080);
         assert_eq!(even((2711, 1221)), (2710, 1220));
-        assert_eq!(inner(&json!({ "cmd": 7, "data": "{\"setOrientation\":2}" }))["setOrientation"], 2);
+        assert_eq!(
+            inner(&json!({ "cmd": 7, "data": "{\"setOrientation\":2}" }))["setOrientation"],
+            2
+        );
     }
 
     #[test]
@@ -1463,31 +1793,63 @@ m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=mid:2\r\na=sctp-port:5000"
         assert_eq!(Orient::from_phone(2), Some(Orient::Portrait));
         assert_eq!(Orient::from_phone(0), None);
         // Requested 1920x1080: portrait is the same size turned.
-        assert_eq!(oriented_size((1920, 1080), true, Some(Orient::Portrait), 1920), (1080, 1920));
-        assert_eq!(oriented_size((1920, 1080), true, Some(Orient::Landscape), 1920), (1920, 1080));
+        assert_eq!(
+            oriented_size((1920, 1080), true, Some(Orient::Portrait), 1920),
+            (1080, 1920)
+        );
+        assert_eq!(
+            oriented_size((1920, 1080), true, Some(Orient::Landscape), 1920),
+            (1920, 1080)
+        );
         assert_eq!(oriented_size((1920, 1080), true, None, 1920), (1920, 1080));
         // Native 2712x1220: portrait capped at 1920 tall, aspect kept, even sides.
-        assert_eq!(oriented_size((2712, 1220), true, Some(Orient::Portrait), 1920), (864, 1920));
-        assert_eq!(oriented_size((2712, 1220), true, Some(Orient::Portrait), 0), (1220, 2712));
-        assert_eq!(oriented_size((2560, 1440), true, Some(Orient::Portrait), 1920), (1080, 1920));
+        assert_eq!(
+            oriented_size((2712, 1220), true, Some(Orient::Portrait), 1920),
+            (864, 1920)
+        );
+        assert_eq!(
+            oriented_size((2712, 1220), true, Some(Orient::Portrait), 0),
+            (1220, 2712)
+        );
+        assert_eq!(
+            oriented_size((2560, 1440), true, Some(Orient::Portrait), 1920),
+            (1080, 1920)
+        );
         // Not following: the size as given (even a portrait --size).
-        assert_eq!(oriented_size((1080, 1920), false, Some(Orient::Landscape), 1920), (1080, 1920));
+        assert_eq!(
+            oriented_size((1080, 1920), false, Some(Orient::Landscape), 1920),
+            (1080, 1920)
+        );
         assert_eq!(oriented_size((2711, 1221), false, None, 1920), (2710, 1220));
     }
 
     #[test]
     fn lock_refuses_a_second_instance() {
         // A private path, so it never meets a real instance (and never signals one).
-        let path = std::env::temp_dir().join(format!("sc-display-lock-test-{}.lock", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("sc-display-lock-test-{}.lock", std::process::id()));
         let first = single_instance_at(&path, false).expect("first instance");
-        assert_eq!(std::fs::read_to_string(&path).unwrap().trim(), std::process::id().to_string());
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap().trim(),
+            std::process::id().to_string()
+        );
         let err = single_instance_at(&path, false).expect_err("second instance");
-        assert!(format!("{err:#}").contains(&format!("pid {}", std::process::id())), "{err:#}");
+        assert!(
+            format!("{err:#}").contains(&format!("pid {}", std::process::id())),
+            "{err:#}"
+        );
         // The daemon's probe (helpers::lock_held) sees it held: a shared lock fails.
         let probe = std::fs::File::open(&path).unwrap();
-        assert_ne!(unsafe { libc::flock(probe.as_raw_fd(), libc::LOCK_SH | libc::LOCK_NB) }, 0);
+        assert_ne!(
+            unsafe { libc::flock(probe.as_raw_fd(), libc::LOCK_SH | libc::LOCK_NB) },
+            0
+        );
         drop(first);
-        assert_eq!(unsafe { libc::flock(probe.as_raw_fd(), libc::LOCK_SH | libc::LOCK_NB) }, 0, "free after exit");
+        assert_eq!(
+            unsafe { libc::flock(probe.as_raw_fd(), libc::LOCK_SH | libc::LOCK_NB) },
+            0,
+            "free after exit"
+        );
         drop(probe);
         let again = single_instance_at(&path, false).expect("after the first one ended");
         drop(again);
@@ -1514,29 +1876,48 @@ m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=mid:2\r\na=sctp-port:5000"
             use std::sync::atomic::AtomicUsize;
             gst::init().unwrap();
             let pipeline = gst::Pipeline::new();
-            let wb = gst::ElementFactory::make("webrtcbin").property_from_str("bundle-policy", "max-bundle").build().unwrap();
+            let wb = gst::ElementFactory::make("webrtcbin")
+                .property_from_str("bundle-policy", "max-bundle")
+                .build()
+                .unwrap();
             pipeline.add(&wb).unwrap();
             for caps in [
                 "application/x-rtp,media=audio,encoding-name=OPUS,clock-rate=48000,payload=111,encoding-params=(string)2",
                 "application/x-rtp,media=video,encoding-name=H264,clock-rate=90000,payload=108,packetization-mode=(string)1,profile-level-id=(string)42e034",
             ] {
                 let caps = gst::Caps::from_str(caps).unwrap();
-                wb.emit_by_name::<gst_webrtc::WebRTCRTPTransceiver>("add-transceiver", &[&gst_webrtc::WebRTCRTPTransceiverDirection::Recvonly, &caps]);
+                wb.emit_by_name::<gst_webrtc::WebRTCRTPTransceiver>(
+                    "add-transceiver",
+                    &[&gst_webrtc::WebRTCRTPTransceiverDirection::Recvonly, &caps],
+                );
             }
-            let counts: Arc<[AtomicUsize; 3]> = Arc::new([AtomicUsize::new(0), AtomicUsize::new(0), AtomicUsize::new(0)]);
+            let counts: Arc<[AtomicUsize; 3]> = Arc::new([
+                AtomicUsize::new(0),
+                AtomicUsize::new(0),
+                AtomicUsize::new(0),
+            ]);
             let video_size = Arc::new(Mutex::new(None));
             {
-                let (pipeline, counts, video_size) = (pipeline.clone(), counts.clone(), video_size.clone());
+                let (pipeline, counts, video_size) =
+                    (pipeline.clone(), counts.clone(), video_size.clone());
                 wb.connect_pad_added(move |_, pad| {
                     let caps = pad.current_caps().unwrap_or_else(|| pad.query_caps(None));
-                    let media = caps.structure(0).and_then(|s| s.get::<String>("media").ok()).unwrap_or_default();
+                    let media = caps
+                        .structure(0)
+                        .and_then(|s| s.get::<String>("media").ok())
+                        .unwrap_or_default();
                     let i = match media.as_str() {
                         "audio" => 0,
                         "video" => 1,
                         _ => 2,
                     };
-                    let tail = if i == 1 { "rtph264depay ! h264parse name=parse ! fakesink sync=false" } else { "fakesink sync=false" };
-                    let bin = gst::parse::bin_from_description(&format!("queue ! {tail}"), true).unwrap();
+                    let tail = if i == 1 {
+                        "rtph264depay ! h264parse name=parse ! fakesink sync=false"
+                    } else {
+                        "fakesink sync=false"
+                    };
+                    let bin =
+                        gst::parse::bin_from_description(&format!("queue ! {tail}"), true).unwrap();
                     pipeline.add(&bin).unwrap();
                     bin.sync_state_with_parent().unwrap();
                     pad.link(&bin.static_pad("sink").unwrap()).unwrap();
@@ -1547,34 +1928,59 @@ m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=mid:2\r\na=sctp-port:5000"
                     });
                     if let Some(parse) = bin.by_name("parse") {
                         let video_size = video_size.clone();
-                        parse.static_pad("src").unwrap().connect_notify(Some("caps"), move |pad, _| {
-                            if let Some(s) = pad.current_caps().and_then(|c| c.structure(0).map(|s| s.to_owned())) {
-                                if let (Ok(w), Ok(h)) = (s.get::<i32>("width"), s.get::<i32>("height")) {
+                        parse.static_pad("src").unwrap().connect_notify(
+                            Some("caps"),
+                            move |pad, _| {
+                                if let Some(s) = pad
+                                    .current_caps()
+                                    .and_then(|c| c.structure(0).map(|s| s.to_owned()))
+                                    && let (Ok(w), Ok(h)) =
+                                        (s.get::<i32>("width"), s.get::<i32>("height"))
+                                {
                                     *video_size.lock().unwrap() = Some((w, h));
                                 }
-                            }
-                        });
+                            },
+                        );
                     }
                     println!("phone: receiving {media:?} on {}", pad.name());
                 });
             }
             let (ctx, cands) = mpsc::channel::<(u32, String)>();
             wb.connect("on-ice-candidate", false, move |args| {
-                let _ = ctx.send((args[1].get::<u32>().unwrap(), args[2].get::<String>().unwrap()));
+                let _ = ctx.send((
+                    args[1].get::<u32>().unwrap(),
+                    args[2].get::<String>().unwrap(),
+                ));
                 None
             });
             pipeline.set_state(gst::State::Playing).unwrap();
-            let _dc = wb.emit_by_name::<Option<gst_webrtc::WebRTCDataChannel>>("create-data-channel", &[&"touchDataChannel", &None::<gst::Structure>]);
+            let _dc = wb.emit_by_name::<Option<gst_webrtc::WebRTCDataChannel>>(
+                "create-data-channel",
+                &[&"touchDataChannel", &None::<gst::Structure>],
+            );
             let p = gst::Promise::new();
             wb.emit_by_name::<()>("create-offer", &[&None::<gst::Structure>, &p]);
             p.wait();
-            let offer = p.get_reply().unwrap().value("offer").unwrap().get::<gst_webrtc::WebRTCSessionDescription>().unwrap();
+            let offer = p
+                .get_reply()
+                .unwrap()
+                .value("offer")
+                .unwrap()
+                .get::<gst_webrtc::WebRTCSessionDescription>()
+                .unwrap();
             let p = gst::Promise::new();
             wb.emit_by_name::<()>("set-local-description", &[&offer, &p]);
             p.wait();
             let offer = offer.sdp().as_text().unwrap();
             assert_eq!(audio::pick_opus(&offer), Some(111), "phone offer:\n{offer}");
-            FakePhone { pipeline, wb, counts, video_size, cands, offer }
+            FakePhone {
+                pipeline,
+                wb,
+                counts,
+                video_size,
+                cands,
+                offer,
+            }
         }
 
         fn count(&self, i: usize) -> usize {
@@ -1591,18 +1997,29 @@ m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=mid:2\r\na=sctp-port:5000"
             let cmd = msg["cmd"].as_i64().unwrap();
             match cmd {
                 1 => {
-                    let a: Value = serde_json::from_str(msg["data"]["answer"].as_str().unwrap()).unwrap();
-                    let sdp = gst_sdp::SDPMessage::parse_buffer(a["sdp"].as_str().unwrap().as_bytes()).unwrap();
-                    let desc = gst_webrtc::WebRTCSessionDescription::new(gst_webrtc::WebRTCSDPType::Answer, sdp);
+                    let a: Value =
+                        serde_json::from_str(msg["data"]["answer"].as_str().unwrap()).unwrap();
+                    let sdp =
+                        gst_sdp::SDPMessage::parse_buffer(a["sdp"].as_str().unwrap().as_bytes())
+                            .unwrap();
+                    let desc = gst_webrtc::WebRTCSessionDescription::new(
+                        gst_webrtc::WebRTCSDPType::Answer,
+                        sdp,
+                    );
                     let p = gst::Promise::new();
-                    self.wb.emit_by_name::<()>("set-remote-description", &[&desc, &p]);
+                    self.wb
+                        .emit_by_name::<()>("set-remote-description", &[&desc, &p]);
                     p.wait();
                     Some((1, a["sdp"].clone()))
                 }
                 2 => {
-                    let c: Value = serde_json::from_str(msg["data"]["candidate"].as_str().unwrap()).unwrap();
+                    let c: Value =
+                        serde_json::from_str(msg["data"]["candidate"].as_str().unwrap()).unwrap();
                     let mline = c["label"].as_u64().unwrap() as u32;
-                    self.wb.emit_by_name::<()>("add-ice-candidate", &[&mline, &c["candidate"].as_str().unwrap()]);
+                    self.wb.emit_by_name::<()>(
+                        "add-ice-candidate",
+                        &[&mline, &c["candidate"].as_str().unwrap()],
+                    );
                     None
                 }
                 _ => Some((cmd, msg["data"].clone())),
@@ -1626,12 +2043,22 @@ m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=mid:2\r\na=sctp-port:5000"
                 }
             }
         });
-        (Arc::new(Daemon { cmd: Mutex::new(ours) }), rx)
+        (
+            Arc::new(Daemon {
+                cmd: Mutex::new(ours),
+            }),
+            rx,
+        )
     }
 
     /// Relays signalling between our side and the phone until `done` or 15 s; returns the answer
     /// and the other commands we sent.
-    fn pump(phone: &FakePhone, rx: &mpsc::Receiver<Value>, add_cand: &dyn Fn(u32, String), done: &dyn Fn() -> bool) -> (String, Vec<(i64, Value)>) {
+    fn pump(
+        phone: &FakePhone,
+        rx: &mpsc::Receiver<Value>,
+        add_cand: &dyn Fn(u32, String),
+        done: &dyn Fn() -> bool,
+    ) -> (String, Vec<(i64, Value)>) {
         let deadline = Instant::now() + Duration::from_secs(15);
         let (mut answer, mut other) = (String::new(), Vec::new());
         while Instant::now() < deadline && !done() {
@@ -1655,7 +2082,12 @@ m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=mid:2\r\na=sctp-port:5000"
     fn loopback(with_audio: bool) -> (String, usize, usize, usize) {
         let phone = FakePhone::new();
         let (d, rx) = fake_daemon();
-        let o = Opts { test_pattern: Some("ball".into()), force_x264: true, bitrate: 2000, ..Opts::default() };
+        let o = Opts {
+            test_pattern: Some("ball".into()),
+            force_x264: true,
+            bitrate: 2000,
+            ..Opts::default()
+        };
         let cfg = StreamCfg {
             opts: &o,
             src_desc: "videotestsrc is-live=true pattern=ball ! video/x-raw,width=640,height=360,framerate=30/1",
@@ -1664,11 +2096,15 @@ m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=mid:2\r\na=sctp-port:5000"
             ice: ice::Filter::any("test"),
         };
         let stream = Stream::start(&d, 7, cfg, Arc::default(), &phone.offer).expect("answer");
-        let add = |m: u32, c: String| stream.add_remote_candidate(&json!({ "label": m, "candidate": c }));
+        let add =
+            |m: u32, c: String| stream.add_remote_candidate(&json!({ "label": m, "candidate": c }));
         let done = || (!with_audio || phone.count(0) > 20) && phone.count(1) > 20;
         let (answer, _) = pump(&phone, &rx, &add, &done);
         let (a, v) = (phone.count(0), phone.count(1));
-        println!("answer:\n{answer}\nphone got {a} audio, {v} video, {} other RTP packets", phone.count(2));
+        println!(
+            "answer:\n{answer}\nphone got {a} audio, {v} video, {} other RTP packets",
+            phone.count(2)
+        );
         // Muting (the phone's audio switch) keeps the audio stream going: Opus encodes silence.
         let mut muted = 0;
         if stream.set_audio(false) {
@@ -1757,36 +2193,55 @@ m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=mid:2\r\na=sctp-port:5000"
         };
         step(&mut app, (640, 360));
         // The phone turns portrait (it sends cmd 7 twice); applied after the settle time.
-        app.on_phone(&phone_msg(7, json!({ "setOrientation": 2 }))).unwrap();
-        app.on_phone(&phone_msg(7, json!({ "setOrientation": 2 }))).unwrap();
+        app.on_phone(&phone_msg(7, json!({ "setOrientation": 2 })))
+            .unwrap();
+        app.on_phone(&phone_msg(7, json!({ "setOrientation": 2 })))
+            .unwrap();
         assert!(app.rotate_at.is_some());
         std::thread::sleep(ROTATION_SETTLE + Duration::from_millis(50));
         app.tick();
         assert_eq!(app.size, (360, 640));
         step(&mut app, (360, 640));
         // The user picks 1280x720 in the phone's menu while portrait: sent turned.
-        app.on_phone(&phone_msg(70, json!({ "setWidth": 1280, "setHeight": 720, "setAuto": 0 }))).unwrap();
+        app.on_phone(&phone_msg(
+            70,
+            json!({ "setWidth": 1280, "setHeight": 720, "setAuto": 0 }),
+        ))
+        .unwrap();
         assert_eq!(app.size, (720, 1280));
         step(&mut app, (720, 1280));
-        app.on_phone(&phone_msg(7, json!({ "setOrientation": 1 }))).unwrap();
+        app.on_phone(&phone_msg(7, json!({ "setOrientation": 1 })))
+            .unwrap();
         std::thread::sleep(ROTATION_SETTLE + Duration::from_millis(50));
         app.tick();
         assert_eq!(app.size, (1280, 720));
         step(&mut app, (1280, 720));
         // Audio switched on at the phone, but this session sends none: the phone is told it's off.
-        app.on_phone(&phone_msg(54, json!({ "shareType": "extend", "setAudio": true }))).unwrap();
+        app.on_phone(&phone_msg(
+            54,
+            json!({ "shareType": "extend", "setAudio": true }),
+        ))
+        .unwrap();
         let deadline = Instant::now() + Duration::from_secs(2);
         let mut reply = None;
         while reply.is_none() && Instant::now() < deadline {
-            if let Ok(msg) = rx.recv_timeout(Duration::from_millis(100)) {
-                if msg["cmd"] == 27 {
-                    reply = Some(msg["data"].clone());
-                }
+            if let Ok(msg) = rx.recv_timeout(Duration::from_millis(100))
+                && msg["cmd"] == 27
+            {
+                reply = Some(msg["data"].clone());
             }
         }
         app.teardown();
         phone.stop();
-        assert_eq!(sizes, vec![Some((640, 360)), Some((360, 640)), Some((720, 1280)), Some((1280, 720))]);
+        assert_eq!(
+            sizes,
+            vec![
+                Some((640, 360)),
+                Some((360, 640)),
+                Some((720, 1280)),
+                Some((1280, 720))
+            ]
+        );
         assert_eq!(reply, Some(json!({ "setAudio": false })));
         assert!(!app.audio_on);
     }

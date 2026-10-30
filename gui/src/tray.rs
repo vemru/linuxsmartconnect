@@ -81,15 +81,17 @@ impl ksni::Tray for Item {
             State::DaemonDown => "Daemon not running",
             State::Starting => "Starting…",
             State::Disconnected => "Phone disconnected",
-            State::Connected if !self.detail.is_empty() => return {
-                ksni::ToolTip {
-                    icon_name: self.icon_name(),
-                    icon_pixmap: Vec::new(),
-                    title: "Smart Connect".into(),
-                    // e.g. "Phone connected — Alex's Phone · 63%"
-                    description: format!("Phone connected — {}", self.detail),
-                }
-            },
+            State::Connected if !self.detail.is_empty() => {
+                return {
+                    ksni::ToolTip {
+                        icon_name: self.icon_name(),
+                        icon_pixmap: Vec::new(),
+                        title: "Smart Connect".into(),
+                        // e.g. "Phone connected — Alex's Phone · 63%"
+                        description: format!("Phone connected — {}", self.detail),
+                    }
+                };
+            }
             State::Connected => "Phone connected",
         };
         ksni::ToolTip {
@@ -110,12 +112,23 @@ impl ksni::Tray for Item {
         let mut items: Vec<ksni::MenuItem<Self>> = Vec::new();
         // GSConnect-style device line: name and battery, when there is one.
         if matches!(self.state, State::Connected) && !self.detail.is_empty() {
-            items.push(StandardItem { label: self.detail.clone(), enabled: false, ..Default::default() }.into());
+            items.push(
+                StandardItem {
+                    label: self.detail.clone(),
+                    enabled: false,
+                    ..Default::default()
+                }
+                .into(),
+            );
             items.push(MenuItem::Separator);
         }
         items.extend(vec![
             StandardItem {
-                label: if self.window_visible { "Hide Window".into() } else { "Show Window".into() },
+                label: if self.window_visible {
+                    "Hide Window".into()
+                } else {
+                    "Show Window".into()
+                },
                 activate: Box::new(|this: &mut Self| this.send(Command::ToggleWindow)),
                 ..Default::default()
             }
@@ -158,7 +171,12 @@ impl Tray {
     /// `None` when the desktop has no StatusNotifierHost (then the app just runs without a tray).
     pub fn spawn() -> Option<(Tray, async_channel::Receiver<Command>)> {
         let (tx, rx) = async_channel::unbounded();
-        let item = Item { state: State::Starting, window_visible: true, detail: String::new(), tx };
+        let item = Item {
+            state: State::Starting,
+            window_visible: true,
+            detail: String::new(),
+            tx,
+        };
         match item.spawn() {
             Ok(handle) => Some((Tray { handle }, rx)),
             Err(e) => {

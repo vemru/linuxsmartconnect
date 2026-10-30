@@ -163,7 +163,10 @@ impl DisplayPrefs {
         if !matches!(self.mode.as_str(), "extend" | "mirror") {
             self.mode = d.mode;
         }
-        for (res, dflt) in [(&mut self.extend_resolution, d.extend_resolution), (&mut self.mirror_resolution, d.mirror_resolution)] {
+        for (res, dflt) in [
+            (&mut self.extend_resolution, d.extend_resolution),
+            (&mut self.mirror_resolution, d.mirror_resolution),
+        ] {
             if !matches!(res.as_str(), "native" | "phone" | "custom") {
                 *res = dflt;
             }
@@ -189,11 +192,19 @@ impl DisplayPrefs {
 
     /// The resolution choice of the current mode.
     pub fn resolution(&self) -> &str {
-        if self.mode == "mirror" { &self.mirror_resolution } else { &self.extend_resolution }
+        if self.mode == "mirror" {
+            &self.mirror_resolution
+        } else {
+            &self.extend_resolution
+        }
     }
 
     fn resolution_mut(&mut self) -> &mut String {
-        if self.mode == "mirror" { &mut self.mirror_resolution } else { &mut self.extend_resolution }
+        if self.mode == "mirror" {
+            &mut self.mirror_resolution
+        } else {
+            &mut self.extend_resolution
+        }
     }
 
     /// The shared `display.json` form.
@@ -218,21 +229,32 @@ impl DisplayPrefs {
 
     /// Takes over every valid field of a `display.json` written by any front-end.
     fn apply_shared(&mut self, v: &Value) {
-        if let Some(mode) = v.get("mode").and_then(Value::as_str).filter(|m| matches!(*m, "extend" | "mirror")) {
+        if let Some(mode) = v
+            .get("mode")
+            .and_then(Value::as_str)
+            .filter(|m| matches!(*m, "extend" | "mirror"))
+        {
             self.mode = mode.to_owned();
         }
         match v.get("size").and_then(Value::as_str) {
             Some("native") => *self.resolution_mut() = "native".into(),
             Some("requested") => *self.resolution_mut() = "phone".into(),
             Some(wxh) => {
-                if let Some((w, h)) = wxh.split_once('x').and_then(|(w, h)| Some((w.trim().parse().ok()?, h.trim().parse().ok()?))) {
+                if let Some((w, h)) = wxh
+                    .split_once('x')
+                    .and_then(|(w, h)| Some((w.trim().parse().ok()?, h.trim().parse().ok()?)))
+                {
                     *self.resolution_mut() = "custom".into();
                     (self.custom_width, self.custom_height) = (w, h);
                 }
             }
             None => {}
         }
-        if let Some(s) = v.get("displayScale").and_then(Value::as_f64).filter(|s| s.is_finite()) {
+        if let Some(s) = v
+            .get("displayScale")
+            .and_then(Value::as_f64)
+            .filter(|s| s.is_finite())
+        {
             self.scale = (s * 100.0).round() as u32;
         }
         if let Some(h) = v.get("oskHeight").and_then(Value::as_u64) {
@@ -262,7 +284,9 @@ fn config_dir() -> PathBuf {
     std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
-        .unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".config"))
+        .unwrap_or_else(|| {
+            PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".config")
+        })
         .join("smartconnect-linux")
 }
 
@@ -275,7 +299,10 @@ pub fn display_path() -> PathBuf {
 }
 
 pub fn load() -> Prefs {
-    let mut prefs: Prefs = std::fs::read_to_string(path()).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+    let mut prefs: Prefs = std::fs::read_to_string(path())
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default();
     reload_shared(&mut prefs.display);
     prefs
 }
@@ -283,7 +310,10 @@ pub fn load() -> Prefs {
 /// Re-reads `display.json` (another front-end may have changed it). Returns whether anything changed.
 pub fn reload_shared(display: &mut DisplayPrefs) -> bool {
     let before = display.clone();
-    if let Some(v) = std::fs::read_to_string(display_path()).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()) {
+    if let Some(v) = std::fs::read_to_string(display_path())
+        .ok()
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+    {
         display.apply_shared(&v);
     }
     *display = std::mem::take(display).sanitized();
@@ -301,12 +331,18 @@ fn write_atomic(path: &Path, text: String) -> std::io::Result<()> {
 
 /// Writes `gui.json` and the shared `display.json`.
 pub fn save(prefs: &Prefs) -> std::io::Result<()> {
-    write_atomic(&path(), serde_json::to_string_pretty(prefs).map_err(std::io::Error::other)?)?;
+    write_atomic(
+        &path(),
+        serde_json::to_string_pretty(prefs).map_err(std::io::Error::other)?,
+    )?;
     save_shared(&prefs.display)
 }
 
 pub fn save_shared(display: &DisplayPrefs) -> std::io::Result<()> {
-    write_atomic(&display_path(), serde_json::to_string_pretty(&display.shared()).map_err(std::io::Error::other)?)
+    write_atomic(
+        &display_path(),
+        serde_json::to_string_pretty(&display.shared()).map_err(std::io::Error::other)?,
+    )
 }
 
 #[cfg(test)]
@@ -315,7 +351,10 @@ mod tests {
 
     #[test]
     fn missing_and_bad_fields_fall_back_to_defaults() {
-        let p: Prefs = serde_json::from_str(r#"{"display":{"mode":"sideways","scale":5000,"customWidth":12,"oskHeight":3}}"#).unwrap();
+        let p: Prefs = serde_json::from_str(
+            r#"{"display":{"mode":"sideways","scale":5000,"customWidth":12,"oskHeight":3}}"#,
+        )
+        .unwrap();
         let d = p.display.sanitized();
         assert_eq!(d.mode, "extend");
         assert_eq!(d.scale, 200);
@@ -331,10 +370,34 @@ mod tests {
         // Empty → ~/Phone.
         assert_eq!(FilesPrefs::default().mount_path(), home.join("Phone"));
         // A `~/…` path is expanded against $HOME; an absolute path is taken as-is.
-        assert_eq!(FilesPrefs { mount_dir: "~/Storage/Phone".into(), ..Default::default() }.mount_path(), home.join("Storage/Phone"));
-        assert_eq!(FilesPrefs { mount_dir: "/mnt/phone".into(), ..Default::default() }.mount_path(), PathBuf::from("/mnt/phone"));
-        assert_eq!(FilesPrefs::default().share_path(), home.join("SmartConnect"));
-        assert_eq!(FilesPrefs { share_dir: "~/Public".into(), ..Default::default() }.share_path(), home.join("Public"));
+        assert_eq!(
+            FilesPrefs {
+                mount_dir: "~/Storage/Phone".into(),
+                ..Default::default()
+            }
+            .mount_path(),
+            home.join("Storage/Phone")
+        );
+        assert_eq!(
+            FilesPrefs {
+                mount_dir: "/mnt/phone".into(),
+                ..Default::default()
+            }
+            .mount_path(),
+            PathBuf::from("/mnt/phone")
+        );
+        assert_eq!(
+            FilesPrefs::default().share_path(),
+            home.join("SmartConnect")
+        );
+        assert_eq!(
+            FilesPrefs {
+                share_dir: "~/Public".into(),
+                ..Default::default()
+            }
+            .share_path(),
+            home.join("Public")
+        );
     }
 
     #[test]
@@ -354,7 +417,12 @@ mod tests {
             d.shared(),
             json!({"mode":"extend","size":"native","displayScale":2.0,"oskHeight":45,"output":null,"audio":false,"followRotation":false,"bitrate":8000,"fps":60})
         );
-        let mut d = DisplayPrefs { mode: "mirror".into(), output: "HDMI-A-1".into(), scale: 150, ..DisplayPrefs::default() };
+        let mut d = DisplayPrefs {
+            mode: "mirror".into(),
+            output: "HDMI-A-1".into(),
+            scale: 150,
+            ..DisplayPrefs::default()
+        };
         assert_eq!(d.shared()["size"], "requested");
         assert_eq!(d.shared()["displayScale"], 1.5);
         assert_eq!(d.shared()["output"], "HDMI-A-1");
@@ -367,12 +435,36 @@ mod tests {
     fn shared_file_is_taken_over() {
         let mut d = DisplayPrefs::default();
         d.apply_shared(&json!({"mode":"mirror","size":"1280x720","displayScale":1.75,"oskHeight":60,"output":"HDMI-A-1","audio":true,"followRotation":true}));
-        assert_eq!((d.mode.as_str(), d.mirror_resolution.as_str(), d.custom_width, d.custom_height), ("mirror", "custom", 1280, 720));
-        assert_eq!((d.scale, d.osk_height, d.output.as_str(), d.audio, d.follow_rotation), (175, 60, "HDMI-A-1", true, true));
+        assert_eq!(
+            (
+                d.mode.as_str(),
+                d.mirror_resolution.as_str(),
+                d.custom_width,
+                d.custom_height
+            ),
+            ("mirror", "custom", 1280, 720)
+        );
+        assert_eq!(
+            (
+                d.scale,
+                d.osk_height,
+                d.output.as_str(),
+                d.audio,
+                d.follow_rotation
+            ),
+            (175, 60, "HDMI-A-1", true, true)
+        );
         // The extend choice is kept for when the mode switches back.
         assert_eq!(d.extend_resolution, "native");
         // Partial or odd files only change what they validly hold.
         d.apply_shared(&json!({"mode":"sideways","size":"requested","output":null}));
-        assert_eq!((d.mode.as_str(), d.mirror_resolution.as_str(), d.output.as_str()), ("mirror", "phone", ""));
+        assert_eq!(
+            (
+                d.mode.as_str(),
+                d.mirror_resolution.as_str(),
+                d.output.as_str()
+            ),
+            ("mirror", "phone", "")
+        );
     }
 }

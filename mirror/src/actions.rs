@@ -54,7 +54,11 @@ pub fn parse_click(ev: &Value) -> Option<Click> {
     if ev.get("event").and_then(Value::as_str) != Some("notification_action") {
         return None;
     }
-    let pkg = ev.get("pkg").and_then(Value::as_str).filter(|p| !p.is_empty())?.to_owned();
+    let pkg = ev
+        .get("pkg")
+        .and_then(Value::as_str)
+        .filter(|p| !p.is_empty())?
+        .to_owned();
     let kind = match ev.get("kind").and_then(Value::as_str)? {
         "action" => ClickKind::Action,
         "open" => ClickKind::Open,
@@ -100,7 +104,10 @@ pub struct HeadlessTimer {
 impl HeadlessTimer {
     /// Starts when our cmd 4 answer went out (that is what makes the phone launch the app).
     pub fn new(answered_at: Instant) -> Self {
-        Self { answered_at, fired_at: None }
+        Self {
+            answered_at,
+            fired_at: None,
+        }
     }
 
     /// The phone reported the app focused/merged/raised on this session's display.
@@ -136,11 +143,27 @@ mod tests {
 
     #[test]
     fn parses_daemon_events() {
-        assert_eq!(click("action", "com.a"), Click { kind: ClickKind::Action, pkg: "com.a".into() });
+        assert_eq!(
+            click("action", "com.a"),
+            Click {
+                kind: ClickKind::Action,
+                pkg: "com.a".into()
+            }
+        );
         assert_eq!(click("open", "com.a").kind, ClickKind::Open);
-        assert!(parse_click(&json!({ "event": "other", "kind": "action", "pkg": "com.a" })).is_none());
-        assert!(parse_click(&json!({ "event": "notification_action", "kind": "reply", "pkg": "com.a" })).is_none());
-        assert!(parse_click(&json!({ "event": "notification_action", "kind": "action", "pkg": "" })).is_none());
+        assert!(
+            parse_click(&json!({ "event": "other", "kind": "action", "pkg": "com.a" })).is_none()
+        );
+        assert!(
+            parse_click(
+                &json!({ "event": "notification_action", "kind": "reply", "pkg": "com.a" })
+            )
+            .is_none()
+        );
+        assert!(
+            parse_click(&json!({ "event": "notification_action", "kind": "action", "pkg": "" }))
+                .is_none()
+        );
     }
 
     #[test]
@@ -148,7 +171,10 @@ mod tests {
         let t0 = Instant::now();
         let mut p = PendingActions::default();
         p.note(&click("action", "com.a"), t0);
-        assert!(!p.take("com.b", t0 + Duration::from_secs(1)), "other package");
+        assert!(
+            !p.take("com.b", t0 + Duration::from_secs(1)),
+            "other package"
+        );
         assert!(p.take("com.a", t0 + Duration::from_secs(1)));
         assert!(!p.take("com.a", t0 + Duration::from_secs(2)), "only once");
     }
@@ -158,10 +184,16 @@ mod tests {
         let t0 = Instant::now();
         let mut p = PendingActions::default();
         p.note(&click("action", "com.a"), t0);
-        assert!(!p.take("com.a", t0 + ACTION_WINDOW + Duration::from_millis(1)), "too late");
+        assert!(
+            !p.take("com.a", t0 + ACTION_WINDOW + Duration::from_millis(1)),
+            "too late"
+        );
         p.note(&click("action", "com.a"), t0);
         p.note(&click("open", "com.a"), t0 + Duration::from_millis(500));
-        assert!(!p.take("com.a", t0 + Duration::from_secs(1)), "the user then clicked Open");
+        assert!(
+            !p.take("com.a", t0 + Duration::from_secs(1)),
+            "the user then clicked Open"
+        );
     }
 
     #[test]

@@ -108,13 +108,13 @@ fn evdev_to_scancode(code: u32) -> Option<(i64, i64)> {
         126 => (0x5C, E0), // Right Super
         127 => (0x5D, E0), // Menu
         // Media keys → Android keycodes.
-        113 => (164, FLAG_NATIVE), // KEY_MUTE → VOLUME_MUTE
-        114 => (25, FLAG_NATIVE),  // VOLUMEDOWN
-        115 => (24, FLAG_NATIVE),  // VOLUMEUP
-        163 => (87, FLAG_NATIVE),  // NEXTSONG → MEDIA_NEXT
-        164 => (85, FLAG_NATIVE),  // PLAYPAUSE
-        165 => (88, FLAG_NATIVE),  // PREVIOUSSONG
-        166 => (86, FLAG_NATIVE),  // STOPCD → MEDIA_STOP
+        113 => (164, FLAG_NATIVE),          // KEY_MUTE → VOLUME_MUTE
+        114 => (25, FLAG_NATIVE),           // VOLUMEDOWN
+        115 => (24, FLAG_NATIVE),           // VOLUMEUP
+        163 => (87, FLAG_NATIVE),           // NEXTSONG → MEDIA_NEXT
+        164 => (85, FLAG_NATIVE),           // PLAYPAUSE
+        165 => (88, FLAG_NATIVE),           // PREVIOUSSONG
+        166 => (86, FLAG_NATIVE),           // STOPCD → MEDIA_STOP
         158 => (KEYCODE_BACK, FLAG_NATIVE), // KEY_BACK
         _ => return None,
     })
@@ -214,17 +214,24 @@ impl Core {
                     let (w, h) = (int("width"), int("height"));
                     self.phone = (w.max(1) as f64, h.max(1) as f64);
                     self.session = Session::Connected;
-                    println!("cross control accepted: phone {w}x{h}, supportTouch={}", data.get("supportTouch").unwrap_or(&Value::Null));
+                    println!(
+                        "cross control accepted: phone {w}x{h}, supportTouch={}",
+                        data.get("supportTouch").unwrap_or(&Value::Null)
+                    );
                     if self.opts.in_use_cap {
                         // Liveness check after WS reconnect wants PC svc 25 cap["26"] & 8 (INFERRED value).
-                        self.daemon.send(25, json!({ "ver": "1", "cmd": 1, "cap": { "26": 9 } }));
+                        self.daemon
+                            .send(25, json!({ "ver": "1", "cmd": 1, "cap": { "26": 9 } }));
                     }
                     if self.pending_enter {
                         self.pending_enter = false;
                         return Action::Enter;
                     }
                 } else {
-                    eprintln!("cross control DENIED by phone (code {}): allow it on the phone / VDM permission?", int("code"));
+                    eprintln!(
+                        "cross control DENIED by phone (code {}): allow it on the phone / VDM permission?",
+                        int("code")
+                    );
                     self.session = Session::Idle;
                     self.pending_enter = false;
                     self.cooldown_until = Instant::now() + Duration::from_secs(3);
@@ -232,7 +239,8 @@ impl Core {
             }
             5 => {
                 println!("phone ended cross control");
-                self.daemon.send(26, json!({ "ver": "1", "cmd": 6, "cid": int("cid") }));
+                self.daemon
+                    .send(26, json!({ "ver": "1", "cmd": 6, "cid": int("cid") }));
                 self.session = Session::Idle;
                 self.pending_enter = false;
                 return Action::Leave("phone disconnect");
@@ -257,7 +265,9 @@ impl Core {
 
     pub fn request_control(&mut self) {
         self.cid += 1;
-        self.session = Session::Requesting { since: Instant::now() };
+        self.session = Session::Requesting {
+            since: Instant::now(),
+        };
         println!("svc26 -> cmd 1 cid {}", self.cid);
         self.daemon.send(26, json!({ "ver": "1", "cmd": 1, "cid": self.cid, "code": 0, "trigger": 1, "controller": true }));
     }
@@ -301,7 +311,8 @@ impl Core {
         self.overshoot = 0.0;
         self.captured = true;
         println!("→ phone at ({:.0},{:.0})", self.vx, self.vy);
-        self.daemon.send(26, json!({ "ver": "1", "cmd": 4, "show": true }));
+        self.daemon
+            .send(26, json!({ "ver": "1", "cmd": 4, "show": true }));
         self.move_dirty = true;
         self.flush_move(true);
     }
@@ -315,7 +326,8 @@ impl Core {
         self.captured = false;
         self.flush_move(true);
         self.release_all();
-        self.daemon.send(26, json!({ "ver": "1", "cmd": 4, "show": false }));
+        self.daemon
+            .send(26, json!({ "ver": "1", "cmd": 4, "show": false }));
         self.cooldown_until = Instant::now() + Duration::from_millis(350);
         println!("← PC ({why})");
         true
@@ -328,7 +340,10 @@ impl Core {
         }
         self.held_evdev.clear();
         for b in std::mem::take(&mut self.held_buttons) {
-            self.daemon.input(5, json!({ "displayId": 0, "key": b, "x": x, "y": y, "down": false }));
+            self.daemon.input(
+                5,
+                json!({ "displayId": 0, "key": b, "x": x, "y": y, "down": false }),
+            );
         }
     }
 
@@ -372,7 +387,10 @@ impl Core {
         }
         self.move_dirty = false;
         self.last_move = Instant::now();
-        self.daemon.input(4, json!({ "displayId": 0, "x": self.vx as i64, "y": self.vy as i64 }));
+        self.daemon.input(
+            4,
+            json!({ "displayId": 0, "x": self.vx as i64, "y": self.vy as i64 }),
+        );
     }
 
     /// `button` is a Linux `BTN_*` code.
@@ -402,7 +420,10 @@ impl Core {
         } else {
             self.held_buttons.remove(&key);
         }
-        self.daemon.input(5, json!({ "displayId": 0, "key": key, "x": x, "y": y, "down": pressed }));
+        self.daemon.input(
+            5,
+            json!({ "displayId": 0, "key": key, "x": x, "y": y, "down": pressed }),
+        );
     }
 
     /// `notches` > 0 = wheel down (content scrolls down).
@@ -415,7 +436,10 @@ impl Core {
         self.scroll_acc -= n;
         let (x, y) = (self.vx as i64, self.vy as i64);
         for _ in 0..(n.abs() as i64) {
-            self.daemon.input(5, json!({ "displayId": 0, "key": 4, "x": x, "y": y, "down": n > 0.0 }));
+            self.daemon.input(
+                5,
+                json!({ "displayId": 0, "key": 4, "x": x, "y": y, "down": n > 0.0 }),
+            );
         }
     }
 
@@ -431,7 +455,11 @@ impl Core {
         }
         // Emergency escape: Ctrl+Alt+Esc.
         let h = &self.held_evdev;
-        if pressed && code == 1 && (h.contains(&29) || h.contains(&97)) && (h.contains(&56) || h.contains(&100)) {
+        if pressed
+            && code == 1
+            && (h.contains(&29) || h.contains(&97))
+            && (h.contains(&56) || h.contains(&100))
+        {
             return Action::Leave("Ctrl+Alt+Esc");
         }
         let Some((key, flags)) = evdev_to_scancode(code) else {
@@ -443,7 +471,10 @@ impl Core {
         } else if !self.held_keys.remove(&(key, flags)) {
             return Action::None; // never sent the press (held before capture)
         }
-        self.daemon.input(3, json!({ "displayId": 0, "flags": flags, "key": key, "down": pressed, "metaState": 0 }));
+        self.daemon.input(
+            3,
+            json!({ "displayId": 0, "flags": flags, "key": key, "down": pressed, "metaState": 0 }),
+        );
         Action::None
     }
 
@@ -452,7 +483,9 @@ impl Core {
         if let Session::Requesting { since } = self.session
             && since.elapsed() > Duration::from_secs(4)
         {
-            eprintln!("no svc26 cmd 2 reply from the phone within 4 s (is \"26\" advertised in the verify reply? phone connected?)");
+            eprintln!(
+                "no svc26 cmd 2 reply from the phone within 4 s (is \"26\" advertised in the verify reply? phone connected?)"
+            );
             self.session = Session::Idle;
             self.pending_enter = false;
             self.cooldown_until = Instant::now() + Duration::from_secs(2);
@@ -464,9 +497,11 @@ impl Core {
     pub fn shutdown(&mut self) {
         if self.session != Session::Idle {
             println!("svc26 -> cmd 5 stop");
-            self.daemon.send(26, json!({ "ver": "1", "cmd": 5, "cid": self.cid }));
+            self.daemon
+                .send(26, json!({ "ver": "1", "cmd": 5, "cid": self.cid }));
             if self.opts.in_use_cap {
-                self.daemon.send(25, json!({ "ver": "1", "cmd": 1, "cap": { "26": 1 } }));
+                self.daemon
+                    .send(25, json!({ "ver": "1", "cmd": 1, "cap": { "26": 1 } }));
             }
         }
     }

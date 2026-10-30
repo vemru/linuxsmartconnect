@@ -21,7 +21,11 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 
 #[derive(Parser)]
-#[command(name = "smartconnect-fex", version, about = "Pull files the phone offers over Smart Connect's fex transfer server")]
+#[command(
+    name = "smartconnect-fex",
+    version,
+    about = "Pull files the phone offers over Smart Connect's fex transfer server"
+)]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
@@ -61,20 +65,46 @@ enum Cmd {
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "smartconnect_fex=info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "smartconnect_fex=info".into()),
         )
         .with_writer(std::io::stderr)
         .init();
     match Cli::parse().cmd {
-        Cmd::FetchAppIcons { out, phone, timeout } => {
-            fetch_app_icons(out.unwrap_or_else(icons::default_cache_dir), phone, Duration::from_secs(timeout)).await
+        Cmd::FetchAppIcons {
+            out,
+            phone,
+            timeout,
+        } => {
+            fetch_app_icons(
+                out.unwrap_or_else(icons::default_cache_dir),
+                phone,
+                Duration::from_secs(timeout),
+            )
+            .await
         }
-        Cmd::Pull { host, port, fingerprint, token, out } => {
-            let offer = client::Offer { host, port, fingerprint, token };
+        Cmd::Pull {
+            host,
+            port,
+            fingerprint,
+            token,
+            out,
+        } => {
+            let offer = client::Offer {
+                host,
+                port,
+                fingerprint,
+                token,
+            };
             let pulled = client::pull(&offer, client::DEFAULT_MAX_BYTES).await?;
             let entries = zip::read_all(&pulled.archive)?;
             let n = unpack(&entries, &out)?;
-            println!("pulled task with {} file(s), {} bytes; wrote {n} file(s) to {}", entries.len(), pulled.archive.len(), out.display());
+            println!(
+                "pulled task with {} file(s), {} bytes; wrote {n} file(s) to {}",
+                entries.len(),
+                pulled.archive.len(),
+                out.display()
+            );
             Ok(())
         }
     }
@@ -98,10 +128,15 @@ fn runtime_dir() -> PathBuf {
 }
 
 async fn control_request(line: &str) -> Result<Value> {
-    let mut s = UnixStream::connect(control_socket()).await.context("connecting to smartconnectd's control socket (is the daemon running?)")?;
+    let mut s = UnixStream::connect(control_socket())
+        .await
+        .context("connecting to smartconnectd's control socket (is the daemon running?)")?;
     s.write_all(format!("{line}\n").as_bytes()).await?;
     let mut lines = BufReader::new(s).lines();
-    let reply = lines.next_line().await?.context("smartconnectd closed the control socket")?;
+    let reply = lines
+        .next_line()
+        .await?
+        .context("smartconnectd closed the control socket")?;
     Ok(serde_json::from_str(&reply)?)
 }
 
@@ -126,14 +161,23 @@ async fn fetch_app_icons(out: PathBuf, phone: Option<IpAddr>, timeout: Duration)
             break l;
         }
         if Instant::now() > deadline {
-            bail!("another icon fetch is still running (lock {})", FetchLock::path().display());
+            bail!(
+                "another icon fetch is still running (lock {})",
+                FetchLock::path().display()
+            );
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
     };
 
     let mut watch = UnixStream::connect(control_socket()).await?;
     watch
-        .write_all(format!("{}\n", json!({"cmd":"watch","services":[icons::SERVICE_APP_LIST]})).as_bytes())
+        .write_all(
+            format!(
+                "{}\n",
+                json!({"cmd":"watch","services":[icons::SERVICE_APP_LIST]})
+            )
+            .as_bytes(),
+        )
         .await?;
     let mut lines = BufReader::new(watch).lines();
     lines.next_line().await?; // {"ok":true,"message":"watching"}
@@ -147,7 +191,9 @@ async fn fetch_app_icons(out: PathBuf, phone: Option<IpAddr>, timeout: Duration)
     eprintln!("asked the phone for its app list; waiting for the icon offer…");
     let advert = tokio::time::timeout(deadline.saturating_duration_since(Instant::now()), async {
         while let Some(line) = lines.next_line().await? {
-            let Ok(v) = serde_json::from_str::<Value>(&line) else { continue };
+            let Ok(v) = serde_json::from_str::<Value>(&line) else {
+                continue;
+            };
             if v.get("service").and_then(Value::as_i64) != Some(icons::SERVICE_APP_LIST) {
                 continue;
             }
@@ -159,7 +205,12 @@ async fn fetch_app_icons(out: PathBuf, phone: Option<IpAddr>, timeout: Duration)
     })
     .await
     .context("the phone did not send its app list in time")??;
-    eprintln!("app list: {} apps (+{} work profile); pulling icons from {host}:{}", advert.apps.len(), advert.wp_apps.len(), advert.port);
+    eprintln!(
+        "app list: {} apps (+{} work profile); pulling icons from {host}:{}",
+        advert.apps.len(),
+        advert.wp_apps.len(),
+        advert.port
+    );
 
     let report = icons::fetch(host, &advert, &out).await?;
     println!(
@@ -172,7 +223,10 @@ async fn fetch_app_icons(out: PathBuf, phone: Option<IpAddr>, timeout: Duration)
     );
     if !report.missing.is_empty() {
         let missing: BTreeSet<_> = report.missing.iter().take(5).collect();
-        println!("{} listed icon(s) were not in the transfer, e.g. {missing:?}", report.missing.len());
+        println!(
+            "{} listed icon(s) were not in the transfer, e.g. {missing:?}",
+            report.missing.len()
+        );
     }
     Ok(())
 }

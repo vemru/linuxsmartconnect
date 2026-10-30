@@ -8,6 +8,21 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). The READM
 
 ## [Unreleased]
 
+### Added
+
+- **Security & Community Standards:**
+  - Added repository `SECURITY.md` detailing private vulnerability reporting, supported versions, and the `/readyfor/` reconnect protocol threat model with existing mitigations.
+  - Added GitHub Actions CI workflow (`.github/workflows/ci.yml`) running code formatting, strict clippy checks, and workspace tests in an Arch Linux container.
+  - Added GitHub issue templates (`bug_report.yml`, `feature_request.yml`) with strict redaction guidelines for personal data, device IDs, and local network details.
+  - Added GitHub pull request template (`.github/pull_request_template.md`) enforcing security, redaction, documentation, and test checklists.
+
+### Changed
+
+- Pointed all repository URLs, homepages, and AppImage update feeds to `vemru/linuxsmartconnect`.
+- Sanitized sample phone names and network test addresses to use documented placeholders.
+- Updated `LICENSE` copyright attribution.
+- Resolved all workspace compiler and Clippy lints cleanly under strict `-D warnings`.
+
 ## [0.2.0] - 2026-10-30
 
 ### Added

@@ -8,6 +8,8 @@
 //!   trigger; we answer on the same socket with the `cmd:1` invite.
 //! - Daemon start / post-pair: we find the phone's own advert, dial its `/readyfor/mdns` and send
 //!   the invite. The phone sends nothing back there; it dials `wss://pc:wsPort/readyfor/`.
+//!
+//!
 //! Type 2 (plaintext) makes the phone UNPAIR — never send it.
 
 use std::net::{IpAddr, SocketAddr};
@@ -28,7 +30,9 @@ use tokio::net::TcpStream;
 use tokio::process::{Child, Command};
 use tokio::time::timeout;
 use tokio_rustls::TlsConnector;
-use tokio_rustls::rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
+use tokio_rustls::rustls::client::danger::{
+    HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier,
+};
 use tokio_rustls::rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use tokio_rustls::rustls::{self, ClientConfig, DigitallySignedStruct, SignatureScheme};
 use tokio_tungstenite::WebSocketStream;
@@ -54,12 +58,23 @@ pub fn seal(key_b64: &str, sender_nonce: &[u8], plaintext: &[u8]) -> Result<Vec<
     seal_with_iv(key_b64, sender_nonce, &iv, plaintext)
 }
 
-fn seal_with_iv(key_b64: &str, sender_nonce: &[u8], iv: &[u8; IV_LEN], plaintext: &[u8]) -> Result<Vec<u8>> {
+fn seal_with_iv(
+    key_b64: &str,
+    sender_nonce: &[u8],
+    iv: &[u8; IV_LEN],
+    plaintext: &[u8],
+) -> Result<Vec<u8>> {
     let mut frame = Vec::with_capacity(HEADER_LEN + IV_LEN + plaintext.len() + TAG_LEN);
     frame.extend_from_slice(sender_nonce);
     frame.push(TYPE_ENCRYPTED);
     let ct = cipher(key_b64)?
-        .encrypt(Nonce::from_slice(iv), Payload { msg: plaintext, aad: &frame[..HEADER_LEN] })
+        .encrypt(
+            Nonce::from_slice(iv),
+            Payload {
+                msg: plaintext,
+                aad: &frame[..HEADER_LEN],
+            },
+        )
         .map_err(|_| anyhow!("AES-GCM encrypt failed"))?;
     frame.extend_from_slice(iv);
     frame.extend_from_slice(&ct);
@@ -68,19 +83,33 @@ fn seal_with_iv(key_b64: &str, sender_nonce: &[u8], iv: &[u8; IV_LEN], plaintext
 
 /// Splits a discovery frame into (sender nonce, type, plaintext), decrypting type 1 with `key_b64`.
 pub fn open(key_b64: &str, frame: &[u8]) -> Result<(Vec<u8>, u8, Vec<u8>)> {
-    ensure!(frame.len() >= HEADER_LEN + IV_LEN + TAG_LEN, "discovery frame too short ({} B)", frame.len());
+    ensure!(
+        frame.len() >= HEADER_LEN + IV_LEN + TAG_LEN,
+        "discovery frame too short ({} B)",
+        frame.len()
+    );
     let (nonce, kind) = (frame[..16].to_vec(), frame[16]);
-    ensure!(kind == TYPE_ENCRYPTED, "unexpected discovery frame type {kind}");
+    ensure!(
+        kind == TYPE_ENCRYPTED,
+        "unexpected discovery frame type {kind}"
+    );
     let iv = &frame[HEADER_LEN..HEADER_LEN + IV_LEN];
     let pt = cipher(key_b64)?
-        .decrypt(Nonce::from_slice(iv), Payload { msg: &frame[HEADER_LEN + IV_LEN..], aad: &frame[..HEADER_LEN] })
+        .decrypt(
+            Nonce::from_slice(iv),
+            Payload {
+                msg: &frame[HEADER_LEN + IV_LEN..],
+                aad: &frame[..HEADER_LEN],
+            },
+        )
         .map_err(|_| anyhow!("AES-GCM decrypt failed (wrong key?)"))?;
     Ok((nonce, kind, pt))
 }
 
 fn cipher(key_b64: &str) -> Result<Aes256Gcm> {
     let key = B64.decode(key_b64).context("per-pair key is not base64")?;
-    Aes256Gcm::new_from_slice(&key).map_err(|_| anyhow!("per-pair key is {} bytes, need 32", key.len()))
+    Aes256Gcm::new_from_slice(&key)
+        .map_err(|_| anyhow!("per-pair key is {} bytes, need 32", key.len()))
 }
 
 /// The `cmd:1` invite: where and how to dial us. The phone checks token, fp, policies and wsPort,
@@ -109,20 +138,31 @@ fn phone_for_nonce(daemon: &Daemon, nonce: &[u8]) -> Option<(String, Vec<String>
     let pairing = daemon.pairing.lock().unwrap();
     pairing.iter().find_map(|(real_id, p)| {
         identity::is_nonce_of(nonce, real_id).then(|| {
-            let keys = std::iter::once(p.key.clone()).chain(p.phone_key.clone()).collect();
+            let keys = std::iter::once(p.key.clone())
+                .chain(p.phone_key.clone())
+                .collect();
             (real_id.clone(), keys)
         })
     })
 }
 
 pub fn sealed_invite(daemon: &Daemon, key: &str) -> Result<Vec<u8>> {
-    let invite = invite_json(&daemon.identity, &daemon.current_token(), &daemon.ips(), daemon.ws_port);
+    let invite = invite_json(
+        &daemon.identity,
+        &daemon.current_token(),
+        &daemon.ips(),
+        daemon.ws_port,
+    );
     let nonce = B64.decode(&daemon.identity.device_id)?;
     seal(key, &nonce, invite.to_string().as_bytes())
 }
 
 /// The phone dialed our `/readyfor/mdns` (Connect button): answer its `cmd:0` trigger with the invite.
-pub async fn serve<S>(daemon: Arc<Daemon>, mut ws: WebSocketStream<S>, peer: SocketAddr) -> Result<()>
+pub async fn serve<S>(
+    daemon: Arc<Daemon>,
+    mut ws: WebSocketStream<S>,
+    peer: SocketAddr,
+) -> Result<()>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
@@ -140,14 +180,18 @@ where
             warn!(%peer, "mdns: frame from an unknown device; ignoring");
             continue;
         };
-        let Some((key, pt)) = keys.iter().find_map(|k| open(k, &frame).ok().map(|(_, _, pt)| (k.clone(), pt))) else {
+        let Some((key, pt)) = keys
+            .iter()
+            .find_map(|k| open(k, &frame).ok().map(|(_, _, pt)| (k.clone(), pt)))
+        else {
             warn!(%peer, %phone, "mdns: could not decrypt the phone's frame with any pair key");
             continue;
         };
         let msg: Value = serde_json::from_slice(&pt).unwrap_or(Value::Null);
         info!(%peer, %phone, cmd = ?msg.get("cmd"), "mdns: phone trigger");
         if msg.get("cmd").and_then(Value::as_i64) == Some(0) {
-            ws.send(Message::binary(sealed_invite(&daemon, &key)?)).await?;
+            ws.send(Message::binary(sealed_invite(&daemon, &key)?))
+                .await?;
             info!(%peer, %phone, "mdns: sent invite; the phone should dial /readyfor/ now");
         }
     }
@@ -156,25 +200,49 @@ where
 
 /// Dials a phone's `/readyfor/mdns` and pushes our invite (reconnect without a QR).
 pub async fn dial_phone(daemon: &Daemon, phone_real_id: &str, addr: SocketAddr) -> Result<()> {
-    let key = daemon.pairing.lock().unwrap().get(phone_real_id).map(|p| p.key.clone()).context("phone not paired")?;
-    let invite = invite_json(&daemon.identity, &daemon.current_token(), &daemon.ips(), daemon.ws_port).to_string();
+    let key = daemon
+        .pairing
+        .lock()
+        .unwrap()
+        .get(phone_real_id)
+        .map(|p| p.key.clone())
+        .context("phone not paired")?;
+    let invite = invite_json(
+        &daemon.identity,
+        &daemon.current_token(),
+        &daemon.ips(),
+        daemon.ws_port,
+    )
+    .to_string();
     push_invite(addr, &daemon.identity.device_id, &key, &invite).await
 }
 
 /// Opens `wss://addr/readyfor/mdns`, sends the sealed invite as one binary frame, then lingers
 /// briefly: the phone answers by dialing our control port, not on this socket.
-pub async fn push_invite(addr: SocketAddr, our_nonce_b64: &str, key: &str, invite: &str) -> Result<()> {
+pub async fn push_invite(
+    addr: SocketAddr,
+    our_nonce_b64: &str,
+    key: &str,
+    invite: &str,
+) -> Result<()> {
     let frame = seal(key, &B64.decode(our_nonce_b64)?, invite.as_bytes())?;
     let tcp = timeout(Duration::from_secs(5), TcpStream::connect(addr)).await??;
-    let config = ClientConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
-        .with_safe_default_protocol_versions()?
-        .dangerous()
-        // The phone presents a throwaway self-signed cert; the payload itself is AES-GCM sealed.
-        .with_custom_certificate_verifier(Arc::new(AcceptAny))
-        .with_no_client_auth();
-    let tls = TlsConnector::from(Arc::new(config)).connect(ServerName::IpAddress(addr.ip().into()), tcp).await?;
+    let config =
+        ClientConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+            .with_safe_default_protocol_versions()?
+            .dangerous()
+            // The phone presents a throwaway self-signed cert; the payload itself is AES-GCM sealed.
+            .with_custom_certificate_verifier(Arc::new(AcceptAny))
+            .with_no_client_auth();
+    let tls = TlsConnector::from(Arc::new(config))
+        .connect(ServerName::IpAddress(addr.ip().into()), tcp)
+        .await?;
     let url = format!("wss://{addr}{MDNS_PATH}");
-    let (mut ws, _) = timeout(Duration::from_secs(5), tokio_tungstenite::client_async(url, tls)).await??;
+    let (mut ws, _) = timeout(
+        Duration::from_secs(5),
+        tokio_tungstenite::client_async(url, tls),
+    )
+    .await??;
     ws.send(Message::binary(frame)).await?;
     info!(%addr, "mdns: invite pushed to the phone");
     tokio::time::sleep(Duration::from_secs(5)).await;
@@ -200,7 +268,12 @@ pub async fn connect_now(daemon: &Daemon) -> (bool, String) {
     let mut wifi_err = None;
     for (phone, addr) in daemon.known_phone_endpoints() {
         match dial_phone(daemon, &phone, addr).await {
-            Ok(()) => return (true, "invite sent over Wi-Fi; the phone should connect in a moment".into()),
+            Ok(()) => {
+                return (
+                    true,
+                    "invite sent over Wi-Fi; the phone should connect in a moment".into(),
+                );
+            }
             Err(e) => {
                 info!(%addr, "connect: Wi-Fi dial failed ({e:#}); trying Bluetooth");
                 wifi_err = Some(e);
@@ -212,13 +285,23 @@ pub async fn connect_now(daemon: &Daemon) -> (bool, String) {
         _ => "the phone isn't reachable over Wi-Fi",
     };
     if !daemon.ble_wake() {
-        return (false, format!("{wifi_hint} and Bluetooth wake is off (--no-ble-wake): open Smart Connect on the phone"));
+        return (
+            false,
+            format!(
+                "{wifi_hint} and Bluetooth wake is off (--no-ble-wake): open Smart Connect on the phone"
+            ),
+        );
     }
     match crate::ble_connect::connect(daemon).await {
         Ok(msg) => (true, msg),
         Err(e) => {
             warn!("connect: Bluetooth failed: {e:#}");
-            (false, format!("{wifi_hint}, and Bluetooth didn't reach it ({e:#}): open Smart Connect on the phone"))
+            (
+                false,
+                format!(
+                    "{wifi_hint}, and Bluetooth didn't reach it ({e:#}): open Smart Connect on the phone"
+                ),
+            )
         }
     }
 }
@@ -271,9 +354,15 @@ pub async fn watch_phones(daemon: Arc<Daemon>) -> Result<()> {
         .context("starting avahi-browse")?;
     let mut lines = BufReader::new(child.stdout.take().context("avahi-browse stdout")?).lines();
     while let Some(line) = lines.next_line().await? {
-        let Some((addr, txt_device_id)) = parse_resolved(&line) else { continue };
-        let Ok(nonce) = B64.decode(&txt_device_id) else { continue };
-        let Some((phone, _)) = phone_for_nonce(&daemon, &nonce) else { continue };
+        let Some((addr, txt_device_id)) = parse_resolved(&line) else {
+            continue;
+        };
+        let Ok(nonce) = B64.decode(&txt_device_id) else {
+            continue;
+        };
+        let Some((phone, _)) = phone_for_nonce(&daemon, &nonce) else {
+            continue;
+        };
         daemon.remember_phone_mdns(&phone, addr);
         if !daemon.should_dial_back() {
             info!(%addr, %phone, "mdns: phone is advertising but just disconnected or is connected; not dialing");
@@ -335,7 +424,9 @@ impl ServerCertVerifier for AcceptAny {
         Ok(HandshakeSignatureValid::assertion())
     }
     fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
-        rustls::crypto::ring::default_provider().signature_verification_algorithms.supported_schemes()
+        rustls::crypto::ring::default_provider()
+            .signature_verification_algorithms
+            .supported_schemes()
     }
 }
 
@@ -363,7 +454,9 @@ mod tests {
 
     #[test]
     fn refused_dials_mean_the_app_is_in_the_background() {
-        let refused = anyhow::Error::from(std::io::Error::from(std::io::ErrorKind::ConnectionRefused)).context("dialing");
+        let refused =
+            anyhow::Error::from(std::io::Error::from(std::io::ErrorKind::ConnectionRefused))
+                .context("dialing");
         assert!(is_refused(&refused));
         let timed_out = anyhow::Error::from(std::io::Error::from(std::io::ErrorKind::TimedOut));
         assert!(!is_refused(&timed_out));

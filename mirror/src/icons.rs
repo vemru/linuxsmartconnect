@@ -17,7 +17,9 @@ pub fn icon_cache_dir() -> PathBuf {
     std::env::var_os("XDG_CACHE_HOME")
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
-        .unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".cache"))
+        .unwrap_or_else(|| {
+            PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".cache")
+        })
         .join("smartconnect-linux/app-icons")
 }
 
@@ -26,7 +28,9 @@ fn safe_pkg(pkg: &str) -> bool {
     !pkg.is_empty()
         && !pkg.starts_with('.')
         && pkg.len() <= 255
-        && pkg.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+        && pkg
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
 }
 
 /// Saves `icon` (base64 PNG, optionally a `data:` URL) as `<dir>/<pkg>.png` unless that file exists.
@@ -77,10 +81,24 @@ mod tests {
         assert_eq!(path, dir.join("com.example.notes.png"));
         assert_eq!(std::fs::read(&path).unwrap(), png);
         // Present already: left alone.
-        assert!(harvest_into(&dir, "com.example.notes", &B64.encode([PNG_MAGIC, b"other"].concat())).is_none());
+        assert!(
+            harvest_into(
+                &dir,
+                "com.example.notes",
+                &B64.encode([PNG_MAGIC, b"other"].concat())
+            )
+            .is_none()
+        );
         assert_eq!(std::fs::read(&path).unwrap(), png);
         // data: URL prefix is accepted.
-        assert!(harvest_into(&dir, "com.example.b", &format!("data:image/png;base64,{b64}")).is_some());
+        assert!(
+            harvest_into(
+                &dir,
+                "com.example.b",
+                &format!("data:image/png;base64,{b64}")
+            )
+            .is_some()
+        );
         // Not a PNG, not base64, or an unsafe package name: nothing written.
         assert!(harvest_into(&dir, "com.example.c", &B64.encode(b"GIF89a")).is_none());
         assert!(harvest_into(&dir, "com.example.d", "!!!").is_none());

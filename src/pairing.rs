@@ -32,7 +32,11 @@ pub struct PairingStore {
 impl PairingStore {
     pub fn load(dir: &std::path::Path) -> Result<Self> {
         let path = dir.join(PAIRED_FILE);
-        let phones = if path.exists() { serde_json::from_slice(&fs::read(&path)?)? } else { BTreeMap::new() };
+        let phones = if path.exists() {
+            serde_json::from_slice(&fs::read(&path)?)?
+        } else {
+            BTreeMap::new()
+        };
         Ok(Self { path, phones })
     }
 
@@ -57,12 +61,15 @@ impl PairingStore {
         device_name: Option<&str>,
         real_device_id: Option<&str>,
     ) -> Result<PairedPhone> {
-        let entry = self.phones.entry(key.to_owned()).or_insert_with(|| PairedPhone {
-            device_name: None,
-            real_device_id: None,
-            key: gen_key(),
-            phone_key: None,
-        });
+        let entry = self
+            .phones
+            .entry(key.to_owned())
+            .or_insert_with(|| PairedPhone {
+                device_name: None,
+                real_device_id: None,
+                key: gen_key(),
+                phone_key: None,
+            });
         if device_name.is_some() {
             entry.device_name = device_name.map(str::to_owned);
         }

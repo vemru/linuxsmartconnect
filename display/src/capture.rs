@@ -67,7 +67,12 @@ const DMABUF_CONVERT: &str = "vapostproc ! video/x-raw ! videoconvert";
 #[derive(Debug, Clone, PartialEq)]
 pub enum Mode {
     Mirror,
-    Extend { width: u32, height: u32, output: Option<String>, scale: Option<f64> },
+    Extend {
+        width: u32,
+        height: u32,
+        output: Option<String>,
+        scale: Option<f64>,
+    },
 }
 
 /// One desktop's capture session. Dropping it stops the cast and undoes any screen it added.
@@ -101,7 +106,12 @@ pub struct Capture {
 impl Capture {
     fn new(desktop: Desktop, inner: Box<dyn Backend>) -> Capture {
         let (width, height) = inner.size();
-        Capture { width, height, desktop, inner }
+        Capture {
+            width,
+            height,
+            desktop,
+            inner,
+        }
     }
 
     pub fn source_description(&self) -> String {
@@ -125,7 +135,11 @@ impl Capture {
     }
 
     pub fn input_target(&self) -> Target {
-        Target { rect: self.geometry(), output: self.output_name(), route: self.inner.route() }
+        Target {
+            rect: self.geometry(),
+            output: self.output_name(),
+            route: self.inner.route(),
+        }
     }
 
     /// Extend only: whether `reconfigure_extend` can resize this capture's screen in place.
@@ -174,7 +188,10 @@ fn mirror_via_portal(desk: Desktop, mode: &Mode, err: anyhow::Error) -> Result<C
     if *mode != Mode::Mirror {
         return Err(err);
     }
-    eprintln!("capture: {} capture failed ({err:#}); falling back to the screen-sharing portal", desk.name());
+    eprintln!(
+        "capture: {} capture failed ({err:#}); falling back to the screen-sharing portal",
+        desk.name()
+    );
     let cast = pollster::block_on(portal::start_mirror(desk))?;
     Ok(Capture::new(desk, Box::new(cast)))
 }
@@ -184,7 +201,12 @@ fn other(mode: &Mode) -> Result<Box<dyn Backend>> {
     let outs = desktop::wl_outputs()?;
     let out = match mode {
         Mode::Mirror => desktop::primary(&outs, None).cloned(),
-        Mode::Extend { output: Some(name), .. } => outs.iter().find(|o| &o.name == name && o.logical.is_some()).cloned(),
+        Mode::Extend {
+            output: Some(name), ..
+        } => outs
+            .iter()
+            .find(|o| &o.name == name && o.logical.is_some())
+            .cloned(),
         Mode::Extend { output: None, .. } => bail!(
             "{} has no known way to add a screen for the phone (supported: GNOME, KDE Plasma, Hyprland, \
              sway, niri). Use Duplicate, or connect a spare monitor or HDMI dummy plug, switch it on, \
@@ -192,13 +214,19 @@ fn other(mode: &Mode) -> Result<Box<dyn Backend>> {
             std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_else(|_| "this desktop".into())
         ),
     };
-    let Some(out) = out else { bail!("no enabled output to capture") };
+    let Some(out) = out else {
+        bail!("no enabled output to capture")
+    };
     Ok(Box::new(screencopy::Plain::start(&out)?))
 }
 
 /// Nearest value in `choices` to `want` (`want` itself when there are none).
 fn nearest(choices: &[f64], want: f64) -> f64 {
-    choices.iter().copied().min_by(|a, b| (a - want).abs().total_cmp(&(b - want).abs())).unwrap_or(want)
+    choices
+        .iter()
+        .copied()
+        .min_by(|a, b| (a - want).abs().total_cmp(&(b - want).abs()))
+        .unwrap_or(want)
 }
 
 #[cfg(test)]
@@ -222,7 +250,9 @@ pub(crate) mod tests {
         use std::os::unix::process::CommandExt;
         let desc = format!("{desc} ! fakesink silent=false");
         let mut cmd = std::process::Command::new("gst-launch-1.0");
-        cmd.arg("-v").args(desc.split_whitespace()).stdout(std::process::Stdio::piped());
+        cmd.arg("-v")
+            .args(desc.split_whitespace())
+            .stdout(std::process::Stdio::piped());
         if let Some(fd) = fd {
             // The portal fd is CLOEXEC; let the child inherit it under the same number.
             unsafe {
@@ -238,25 +268,44 @@ pub(crate) mod tests {
         let _ = child.kill();
         let out = child.wait_with_output().unwrap();
         let text = String::from_utf8_lossy(&out.stdout);
-        let caps = text.lines().find(|l| l.contains("GstPipeWireSrc") && l.contains("caps = ")).unwrap_or_default().to_owned();
+        let caps = text
+            .lines()
+            .find(|l| l.contains("GstPipeWireSrc") && l.contains("caps = "))
+            .unwrap_or_default()
+            .to_owned();
         (text.lines().filter(|l| l.contains("chain")).count(), caps)
     }
 
     /// Runs a source in-process for 3 s (an appsrc has to be bound): buffer count and sink caps.
     pub(crate) fn run_bound(cap: &dyn Backend) -> (usize, String) {
         gst::init().unwrap();
-        let pipeline = gst::parse::launch(&format!("{} ! fakesink name=sink", cap.source_description())).unwrap();
+        let pipeline = gst::parse::launch(&format!(
+            "{} ! fakesink name=sink",
+            cap.source_description()
+        ))
+        .unwrap();
         cap.bind(&pipeline);
         let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let sink = pipeline.downcast_ref::<gst::Bin>().unwrap().by_name("sink").unwrap();
+        let sink = pipeline
+            .downcast_ref::<gst::Bin>()
+            .unwrap()
+            .by_name("sink")
+            .unwrap();
         let c = count.clone();
-        sink.static_pad("sink").unwrap().add_probe(gst::PadProbeType::BUFFER, move |_, _| {
-            c.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            gst::PadProbeReturn::Ok
-        });
+        sink.static_pad("sink")
+            .unwrap()
+            .add_probe(gst::PadProbeType::BUFFER, move |_, _| {
+                c.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                gst::PadProbeReturn::Ok
+            });
         pipeline.set_state(gst::State::Playing).unwrap();
         std::thread::sleep(Duration::from_secs(3));
-        let caps = sink.static_pad("sink").unwrap().current_caps().map(|c| c.to_string()).unwrap_or_default();
+        let caps = sink
+            .static_pad("sink")
+            .unwrap()
+            .current_caps()
+            .map(|c| c.to_string())
+            .unwrap_or_default();
         pipeline.set_state(gst::State::Null).unwrap();
         (count.load(std::sync::atomic::Ordering::Relaxed), caps)
     }
@@ -266,7 +315,14 @@ pub(crate) mod tests {
     #[ignore]
     fn capture_smoke_mirror() {
         let cap = start(Mode::Mirror).expect("start mirror capture");
-        eprintln!("{}: {} {}x{} {:?}", cap.desktop().name(), cap.output_name(), cap.width, cap.height, cap.geometry());
+        eprintln!(
+            "{}: {} {}x{} {:?}",
+            cap.desktop().name(),
+            cap.output_name(),
+            cap.width,
+            cap.height,
+            cap.geometry()
+        );
         let (n, caps) = run_bound(cap.inner.as_ref());
         eprintln!("mirror: {n} buffers in 3 s; {caps}");
         assert!(n > 0);
@@ -276,9 +332,22 @@ pub(crate) mod tests {
     #[test]
     #[ignore]
     fn capture_smoke_extend() {
-        let cap = start(Mode::Extend { width: 2712, height: 1220, output: None, scale: Some(2.0) }).expect("start extend capture");
+        let cap = start(Mode::Extend {
+            width: 2712,
+            height: 1220,
+            output: None,
+            scale: Some(2.0),
+        })
+        .expect("start extend capture");
         let (n, caps) = run_bound(cap.inner.as_ref());
-        eprintln!("{}: {} {}x{} {:?}; {n} buffers; {caps}", cap.desktop().name(), cap.output_name(), cap.width, cap.height, cap.geometry());
+        eprintln!(
+            "{}: {} {}x{} {:?}; {n} buffers; {caps}",
+            cap.desktop().name(),
+            cap.output_name(),
+            cap.width,
+            cap.height,
+            cap.geometry()
+        );
         assert!(n > 0);
     }
 
@@ -286,7 +355,8 @@ pub(crate) mod tests {
     #[test]
     #[ignore]
     fn capture_smoke_portal() {
-        let cap = pollster::block_on(portal::start_mirror(Desktop::detect())).expect("portal capture");
+        let cap =
+            pollster::block_on(portal::start_mirror(Desktop::detect())).expect("portal capture");
         let (n, _) = run_pipeline(&cap.source_description(), Some(cap.fd()));
         eprintln!("portal frames in 3 s: {n}");
         assert!(n > 0);

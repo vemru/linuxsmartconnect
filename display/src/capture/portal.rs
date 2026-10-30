@@ -84,7 +84,9 @@ fn token_path() -> PathBuf {
     let base = std::env::var_os("XDG_DATA_HOME")
         .filter(|v| !v.is_empty())
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".local/share"));
+        .unwrap_or_else(|| {
+            PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".local/share")
+        });
     base.join("smartconnect-linux/screencast-token")
 }
 
@@ -106,14 +108,22 @@ fn write_token(path: &Path, tok: &str) {
             f.set_permissions(std::fs::Permissions::from_mode(0o600))
         });
     if let Err(e) = saved {
-        eprintln!("capture: could not save restore token to {}: {e}", path.display());
+        eprintln!(
+            "capture: could not save restore token to {}: {e}",
+            path.display()
+        );
     }
 }
 
 pub async fn start_mirror(desk: Desktop) -> Result<PortalCast> {
-    let proxy = Screencast::new().await.context("connecting to xdg-desktop-portal ScreenCast")?;
+    let proxy = Screencast::new()
+        .await
+        .context("connecting to xdg-desktop-portal ScreenCast")?;
     let tpath = token_path();
-    let saved = std::fs::read_to_string(&tpath).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    let saved = std::fs::read_to_string(&tpath)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
     match try_start(&proxy, saved.as_deref(), desk).await {
         Ok(c) => Ok(c),
         // A stale/revoked token can make the portal fail; retry once with the picker.
@@ -127,7 +137,10 @@ pub async fn start_mirror(desk: Desktop) -> Result<PortalCast> {
 }
 
 async fn try_start(proxy: &Screencast, token: Option<&str>, desk: Desktop) -> Result<PortalCast> {
-    let session = proxy.create_session(Default::default()).await.context("ScreenCast.CreateSession")?;
+    let session = proxy
+        .create_session(Default::default())
+        .await
+        .context("ScreenCast.CreateSession")?;
     proxy
         .select_sources(
             &session,
@@ -153,7 +166,10 @@ async fn try_start(proxy: &Screencast, token: Option<&str>, desk: Desktop) -> Re
         write_token(&token_path(), tok);
     }
 
-    let stream = streams.streams().first().ok_or_else(|| anyhow!("portal returned no streams"))?;
+    let stream = streams
+        .streams()
+        .first()
+        .ok_or_else(|| anyhow!("portal returned no streams"))?;
     let node_id = stream.pipe_wire_node_id();
     let fd = proxy
         .open_pipe_wire_remote(&session, Default::default())
@@ -165,7 +181,9 @@ async fn try_start(proxy: &Screencast, token: Option<&str>, desk: Desktop) -> Re
     let (output, geometry) = match out {
         Some(o) => (o.name.clone(), o.logical.unwrap_or_default()),
         None => {
-            let (w, h) = stream.size().ok_or_else(|| anyhow!("unknown stream geometry"))?;
+            let (w, h) = stream
+                .size()
+                .ok_or_else(|| anyhow!("unknown stream geometry"))?;
             let (x, y) = stream.position().unwrap_or((0, 0));
             (String::new(), (x, y, w as u32, h as u32))
         }
@@ -180,7 +198,11 @@ async fn try_start(proxy: &Screencast, token: Option<&str>, desk: Desktop) -> Re
         geometry,
         output,
         // niri's portal backend relays niri's cast, which offers only DMA-BUF.
-        convert: if desk == Desktop::Niri { DMABUF_CONVERT } else { SHM_CONVERT },
+        convert: if desk == Desktop::Niri {
+            DMABUF_CONVERT
+        } else {
+            SHM_CONVERT
+        },
         route: match desk {
             Desktop::Kde => Route::Kwin,
             _ => Route::Wayland,
@@ -191,18 +213,26 @@ async fn try_start(proxy: &Screencast, token: Option<&str>, desk: Desktop) -> Re
 }
 
 /// Output matching a portal stream's position/size (the portal reports the logical size).
-pub fn match_output<'a>(outs: &'a [Output], pos: Option<(i32, i32)>, size: Option<(i32, i32)>) -> Option<&'a Output> {
+pub fn match_output(
+    outs: &[Output],
+    pos: Option<(i32, i32)>,
+    size: Option<(i32, i32)>,
+) -> Option<&Output> {
     let on: Vec<&Output> = outs.iter().filter(|o| o.logical.is_some()).collect();
-    let size_ok = |o: &Output, (w, h): (i32, i32)| o.logical.map(|l| (l.2, l.3)) == Some((w as u32, h as u32));
-    if let Some(p) = pos {
-        if let Some(o) = on.iter().find(|o| o.logical.map(|l| (l.0, l.1)) == Some(p) && size.is_none_or(|s| size_ok(o, s))) {
-            return Some(o);
-        }
+    let size_ok = |o: &Output, (w, h): (i32, i32)| {
+        o.logical.map(|l| (l.2, l.3)) == Some((w as u32, h as u32))
+    };
+    if let Some(p) = pos
+        && let Some(o) = on.iter().find(|o| {
+            o.logical.map(|l| (l.0, l.1)) == Some(p) && size.is_none_or(|s| size_ok(o, s))
+        })
+    {
+        return Some(o);
     }
-    if let Some(s) = size {
-        if let Some(o) = on.iter().find(|o| size_ok(o, s)) {
-            return Some(o);
-        }
+    if let Some(s) = size
+        && let Some(o) = on.iter().find(|o| size_ok(o, s))
+    {
+        return Some(o);
     }
     (on.len() == 1).then(|| on[0])
 }
@@ -224,7 +254,8 @@ mod tests {
         // A token (and folder) left by an older version: world-readable.
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
         std::fs::write(&p, "old").unwrap();
-        std::fs::set_permissions(p.parent().unwrap(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(p.parent().unwrap(), std::fs::Permissions::from_mode(0o755))
+            .unwrap();
         std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o644)).unwrap();
 
         write_token(&p, "fresh");
@@ -236,10 +267,26 @@ mod tests {
 
     #[test]
     fn matches_portal_streams_to_outputs() {
-        let o = |name: &str, logical| Output { name: name.into(), description: String::new(), logical, focused: false, is_virtual: false };
-        let outs = [o("eDP-1", Some((0, 0, 1920, 1080))), o("HDMI-A-1", Some((1920, 0, 1280, 720))), o("DP-1", None)];
-        assert_eq!(match_output(&outs, None, Some((1920, 1080))).unwrap().name, "eDP-1");
-        assert_eq!(match_output(&outs, Some((1920, 0)), None).unwrap().name, "HDMI-A-1");
+        let o = |name: &str, logical| Output {
+            name: name.into(),
+            description: String::new(),
+            logical,
+            focused: false,
+            is_virtual: false,
+        };
+        let outs = [
+            o("eDP-1", Some((0, 0, 1920, 1080))),
+            o("HDMI-A-1", Some((1920, 0, 1280, 720))),
+            o("DP-1", None),
+        ];
+        assert_eq!(
+            match_output(&outs, None, Some((1920, 1080))).unwrap().name,
+            "eDP-1"
+        );
+        assert_eq!(
+            match_output(&outs, Some((1920, 0)), None).unwrap().name,
+            "HDMI-A-1"
+        );
         assert!(match_output(&outs, None, Some((800, 600))).is_none());
     }
 }

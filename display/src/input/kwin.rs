@@ -36,15 +36,25 @@ impl KwinSink {
         let fake: OrgKdeKwinFakeInput = globals
             .bind(&qh, 1..=5, ())
             .with_context(|| format!("KWin did not offer org_kde_kwin_fake_input. {TRUST_HINT}"))?;
-        fake.authenticate("Smart Connect".into(), "Touch, mouse and keyboard from the phone showing this screen".into());
+        fake.authenticate(
+            "Smart Connect".into(),
+            "Touch, mouse and keyboard from the phone showing this screen".into(),
+        );
         conn.flush()?;
-        Ok(Self { conn, _queue: queue, fake })
+        Ok(Self {
+            conn,
+            _queue: queue,
+            fake,
+        })
     }
 }
 
 impl Sink for KwinSink {
     fn describe(&self) -> String {
-        format!("KWin fake input v{}", wayland_client::Proxy::version(&self.fake))
+        format!(
+            "KWin fake input v{}",
+            wayland_client::Proxy::version(&self.fake)
+        )
     }
 
     fn flush(&mut self) {
@@ -99,9 +109,25 @@ impl Sink for KwinSink {
 }
 
 impl Dispatch<WlRegistry, GlobalListContents> for State {
-    fn event(_: &mut Self, _: &WlRegistry, _: wayland_client::protocol::wl_registry::Event, _: &GlobalListContents, _: &Connection, _: &QueueHandle<Self>) {}
+    fn event(
+        _: &mut Self,
+        _: &WlRegistry,
+        _: wayland_client::protocol::wl_registry::Event,
+        _: &GlobalListContents,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+    }
 }
 
 impl Dispatch<OrgKdeKwinFakeInput, ()> for State {
-    fn event(_: &mut Self, _: &OrgKdeKwinFakeInput, _: <OrgKdeKwinFakeInput as wayland_client::Proxy>::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {}
+    fn event(
+        _: &mut Self,
+        _: &OrgKdeKwinFakeInput,
+        _: <OrgKdeKwinFakeInput as wayland_client::Proxy>::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+    }
 }

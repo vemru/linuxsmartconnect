@@ -19,7 +19,12 @@ pub const ERR_NO_DRIVER: i64 = 12;
 /// The phone asking the PC to start the webcam (its tile was tapped): `cmd 0` with `isReply:0`.
 /// `isReply:1` is the phone accepting a PC-initiated request, which the running helper handles.
 pub fn is_phone_request(data: &Value) -> bool {
-    let int = |v: Option<&Value>| v.and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse().ok())));
+    let int = |v: Option<&Value>| {
+        v.and_then(|v| {
+            v.as_i64()
+                .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+        })
+    };
     int(data.get("cmd")) == Some(0) && int(data.pointer("/data/isReply")) == Some(0)
 }
 
@@ -38,12 +43,17 @@ mod tests {
         assert!(is_phone_request(&req));
         let accept = json!({"ver":"1","cmd":0,"data":{"minL":1,"maxL":1,"heartbeat":1,"isReply":1,"lite":1}});
         assert!(!is_phone_request(&accept));
-        assert!(!is_phone_request(&json!({"ver":"1","cmd":1,"data":{"isReply":0}})));
+        assert!(!is_phone_request(
+            &json!({"ver":"1","cmd":1,"data":{"isReply":0}})
+        ));
         assert!(!is_phone_request(&json!({"ver":"1","cmd":0})));
     }
 
     #[test]
     fn error_shape() {
-        assert_eq!(error_msg(ERR_NO_DRIVER), json!({"ver":"1","cmd":65535,"data":{"code":12,"cmd":0}}));
+        assert_eq!(
+            error_msg(ERR_NO_DRIVER),
+            json!({"ver":"1","cmd":65535,"data":{"code":12,"cmd":0}})
+        );
     }
 }

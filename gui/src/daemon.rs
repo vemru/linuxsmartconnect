@@ -71,7 +71,10 @@ pub struct Notification {
 impl Status {
     /// Wallpaper path without the `?md5` cache-buster the daemon appends for QML.
     pub fn wallpaper_path(&self) -> Option<&str> {
-        self.wallpaper.as_deref().map(|w| w.split('?').next().unwrap_or(w)).filter(|p| !p.is_empty())
+        self.wallpaper
+            .as_deref()
+            .map(|w| w.split('?').next().unwrap_or(w))
+            .filter(|p| !p.is_empty())
     }
 }
 
@@ -126,11 +129,14 @@ fn watch_cross_requests(tx: &async_channel::Sender<Event>) -> std::io::Result<()
     let mut stream = UnixStream::connect(socket_path())?;
     stream.write_all(b"{\"cmd\":\"watch\",\"services\":[26]}\n")?;
     for line in BufReader::new(stream).lines() {
-        let Ok(v) = serde_json::from_str::<Value>(&line?) else { continue };
-        if v.get("service").and_then(Value::as_i64) == Some(26) && v.pointer("/data/cmd").and_then(Value::as_i64) == Some(0) {
-            if tx.send_blocking(Event::CrossControlRequested).is_err() {
-                return Ok(());
-            }
+        let Ok(v) = serde_json::from_str::<Value>(&line?) else {
+            continue;
+        };
+        if v.get("service").and_then(Value::as_i64) == Some(26)
+            && v.pointer("/data/cmd").and_then(Value::as_i64) == Some(0)
+            && tx.send_blocking(Event::CrossControlRequested).is_err()
+        {
+            return Ok(());
         }
     }
     Ok(())
@@ -173,10 +179,15 @@ pub fn command(line: &str) -> Result<Reply, String> {
         Ok(reply)
     };
     let text = run().map_err(|e| format!("smartconnectd: {e}"))?;
-    let raw: Value = serde_json::from_str(text.trim()).map_err(|_| "smartconnectd closed the connection".to_owned())?;
+    let raw: Value = serde_json::from_str(text.trim())
+        .map_err(|_| "smartconnectd closed the connection".to_owned())?;
     Ok(Reply {
         ok: raw.get("ok").and_then(Value::as_bool).unwrap_or(false),
-        message: raw.get("message").and_then(Value::as_str).unwrap_or_default().to_owned(),
+        message: raw
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned(),
         raw,
     })
 }
@@ -212,6 +223,11 @@ impl Reply {
     /// The muted packages in a `notif_mute` reply.
     pub fn muted(&self) -> Option<Vec<String>> {
         let list = self.raw.get("muted")?.as_array()?;
-        Some(list.iter().filter_map(Value::as_str).map(str::to_owned).collect())
+        Some(
+            list.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect(),
+        )
     }
 }

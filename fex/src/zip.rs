@@ -44,7 +44,11 @@ pub fn crc32(data: &[u8]) -> u32 {
             let mut c = i as u32;
             let mut k = 0;
             while k < 8 {
-                c = if c & 1 != 0 { 0xEDB8_8320 ^ (c >> 1) } else { c >> 1 };
+                c = if c & 1 != 0 {
+                    0xEDB8_8320 ^ (c >> 1)
+                } else {
+                    c >> 1
+                };
                 k += 1;
             }
             t[i] = c;
@@ -52,7 +56,9 @@ pub fn crc32(data: &[u8]) -> u32 {
         }
         t
     };
-    !data.iter().fold(!0u32, |c, &b| TABLE[((c ^ b as u32) & 0xFF) as usize] ^ (c >> 8))
+    !data.iter().fold(!0u32, |c, &b| {
+        TABLE[((c ^ b as u32) & 0xFF) as usize] ^ (c >> 8)
+    })
 }
 
 /// Every file entry (directories skipped), in central-directory order.
@@ -91,7 +97,9 @@ pub fn read_all(archive: &[u8]) -> Result<Vec<Entry>> {
         let extra_len = u16_at(archive, at + 30)? as usize;
         let comment_len = u16_at(archive, at + 32)? as usize;
         let local = u32_at(archive, at + 42)? as usize;
-        let name_bytes = archive.get(at + 46..at + 46 + name_len).context("zip: truncated name")?;
+        let name_bytes = archive
+            .get(at + 46..at + 46 + name_len)
+            .context("zip: truncated name")?;
         let name = String::from_utf8_lossy(name_bytes).into_owned();
         at += 46 + name_len + extra_len + comment_len;
 
@@ -116,8 +124,13 @@ pub fn read_all(archive: &[u8]) -> Result<Vec<Entry>> {
         if u32_at(archive, local)? != LFH_SIG {
             bail!("zip: bad local header for {name}");
         }
-        let start = local + 30 + u16_at(archive, local + 26)? as usize + u16_at(archive, local + 28)? as usize;
-        let raw = archive.get(start..start + csize).with_context(|| format!("zip: {name} runs past the end"))?;
+        let start = local
+            + 30
+            + u16_at(archive, local + 26)? as usize
+            + u16_at(archive, local + 28)? as usize;
+        let raw = archive
+            .get(start..start + csize)
+            .with_context(|| format!("zip: {name} runs past the end"))?;
         let data = match method {
             METHOD_STORE => {
                 if csize != usize_ {
@@ -202,7 +215,10 @@ pub(crate) mod tests {
         let zip = write_stored(&[("Screenshot 1.png", b"\x89PNG fake"), ("b.txt", b"")]);
         let back = read_all(&zip).unwrap();
         assert_eq!(back.len(), 2);
-        assert_eq!((back[0].name.as_str(), back[0].data.as_slice()), ("Screenshot 1.png", &b"\x89PNG fake"[..]));
+        assert_eq!(
+            (back[0].name.as_str(), back[0].data.as_slice()),
+            ("Screenshot 1.png", &b"\x89PNG fake"[..])
+        );
         assert_eq!(back[1].data, b"");
     }
 
@@ -213,7 +229,11 @@ pub(crate) mod tests {
         let mut central = Vec::new();
         for (name, data) in entries {
             let crc = crc32(data);
-            let body = if deflate { miniz_oxide::deflate::compress_to_vec(data, 6) } else { data.to_vec() };
+            let body = if deflate {
+                miniz_oxide::deflate::compress_to_vec(data, 6)
+            } else {
+                data.to_vec()
+            };
             let method: u16 = if deflate { 8 } else { 0 };
             let offset = out.len() as u32;
             out.extend_from_slice(&LFH_SIG.to_le_bytes());
@@ -261,17 +281,33 @@ pub(crate) mod tests {
     fn crc32_known_answers() {
         assert_eq!(crc32(b""), 0);
         assert_eq!(crc32(b"123456789"), 0xCBF4_3926);
-        assert_eq!(crc32(b"The quick brown fox jumps over the lazy dog"), 0x414F_A339);
+        assert_eq!(
+            crc32(b"The quick brown fox jumps over the lazy dog"),
+            0x414F_A339
+        );
     }
 
     #[test]
     fn reads_streaming_store_and_deflate_archives() {
         let png = b"\x89PNG\r\n\x1a\nnot really an image";
         for deflate in [false, true] {
-            let zip = build_zip(&[("a.b_a.b.Main.png", png), ("dir/", b""), ("10_c.d_c.d.Main.png", b"x")], deflate);
+            let zip = build_zip(
+                &[
+                    ("a.b_a.b.Main.png", png),
+                    ("dir/", b""),
+                    ("10_c.d_c.d.Main.png", b"x"),
+                ],
+                deflate,
+            );
             let entries = read_all(&zip).unwrap();
             assert_eq!(entries.len(), 2);
-            assert_eq!(entries[0], Entry { name: "a.b_a.b.Main.png".into(), data: png.to_vec() });
+            assert_eq!(
+                entries[0],
+                Entry {
+                    name: "a.b_a.b.Main.png".into(),
+                    data: png.to_vec()
+                }
+            );
             assert_eq!(entries[1].name, "10_c.d_c.d.Main.png");
         }
     }

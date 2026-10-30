@@ -100,13 +100,22 @@ impl Identity {
     /// `realDeviceId` so it is stable without extra state.
     pub fn serial_number(&self) -> String {
         let h = hex::encode(&Sha256::digest(self.real_device_id.as_bytes())[..16]);
-        format!("{}-{}-{}-{}-{}", &h[..8], &h[8..12], &h[12..16], &h[16..20], &h[20..])
+        format!(
+            "{}-{}-{}-{}-{}",
+            &h[..8],
+            &h[8..12],
+            &h[12..16],
+            &h[16..20],
+            &h[20..]
+        )
     }
 }
 
 /// Hardware model for `device.Sku` (Windows sends the DMI product name, e.g. "HP Laptop 15s-eq2xxx").
 pub fn product_name() -> String {
-    fs::read_to_string("/sys/class/dmi/id/product_name").map(|s| s.trim().to_owned()).unwrap_or_default()
+    fs::read_to_string("/sys/class/dmi/id/product_name")
+        .map(|s| s.trim().to_owned())
+        .unwrap_or_default()
 }
 
 /// `salt8 || SHA256(realId || salt8)[..8]`, base64 — the phone's `gy3.s` per-session id.
@@ -122,7 +131,9 @@ pub fn is_nonce_of(nonce: &[u8], real_id_b64: &str) -> bool {
 }
 
 fn salted(real_id_b64: &str, salt: &[u8]) -> Vec<u8> {
-    let real = B64.decode(real_id_b64).unwrap_or_else(|_| real_id_b64.as_bytes().to_vec());
+    let real = B64
+        .decode(real_id_b64)
+        .unwrap_or_else(|_| real_id_b64.as_bytes().to_vec());
     let mut h = Sha256::new();
     h.update(&real);
     h.update(salt);
@@ -144,7 +155,8 @@ fn default_device_name() -> String {
 fn generate_cert(device_name: &str) -> Result<(String, String)> {
     let rsa_key = rsa::RsaPrivateKey::new(&mut rand::rngs::OsRng, 2048)?;
     let pkcs8 = rsa_key.to_pkcs8_der()?;
-    let pkcs8 = tokio_rustls::rustls::pki_types::PrivatePkcs8KeyDer::from(pkcs8.as_bytes().to_vec());
+    let pkcs8 =
+        tokio_rustls::rustls::pki_types::PrivatePkcs8KeyDer::from(pkcs8.as_bytes().to_vec());
     let key_pair = rcgen::KeyPair::from_pkcs8_der_and_sign_algo(&pkcs8, &rcgen::PKCS_RSA_SHA256)?;
 
     let mut params = rcgen::CertificateParams::new(Vec::<String>::new())?;

@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+    branches: [ "master" ]
+  pull_request:
+    branches: [ "master" ]
+
+jobs:
+  check-and-test:
+    name: Check, Lint & Test
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:latest
+    steps:
+      - name: Install system dependencies
+        run: |
+          pacman -Syu --noconfirm --needed \
+            git \
+            base-devel \
+            rust \
+            cargo \
+            clippy \
+            rustfmt \
+            pkgconf \
+            dbus \
+            glib2 \
+            gtk4 \
+            libadwaita \
+            gstreamer \
+            gst-plugins-base \
+            gst-plugins-base-libs \
+            gst-plugins-good \
+            gst-plugins-bad \
+            gst-plugins-bad-libs \
+            libnice \
+            wayland \
+            fuse3
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Cargo Cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Check code formatting
+        run: cargo fmt --check
+
+      - name: Run clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Run tests
+        run: cargo test --workspace

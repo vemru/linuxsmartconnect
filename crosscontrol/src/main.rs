@@ -57,7 +57,9 @@ pub fn config_path() -> PathBuf {
     std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
-        .unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".config"))
+        .unwrap_or_else(|| {
+            PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".config")
+        })
         .join("smartconnect-linux/crosscontrol.json")
 }
 
@@ -83,12 +85,19 @@ fn apply_config(o: &mut Opts, v: &Value) {
     if let Some(edge) = v.get("edge").and_then(Value::as_str).and_then(parse_edge) {
         o.edge = edge;
     }
-    if let (Some(a), Some(b)) = (v.get("start").and_then(Value::as_f64), v.get("end").and_then(Value::as_f64))
-        && let Some(span) = parse_span(&format!("{a}:{b}"))
+    if let (Some(a), Some(b)) = (
+        v.get("start").and_then(Value::as_f64),
+        v.get("end").and_then(Value::as_f64),
+    ) && let Some(span) = parse_span(&format!("{a}:{b}"))
     {
         o.span = span;
     }
-    if let Some(output) = v.get("output").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty()) {
+    if let Some(output) = v
+        .get("output")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         o.output = Some(output.to_owned());
     }
     if let Some(rect) = v.get("rect").and_then(parse_rect) {
@@ -118,7 +127,10 @@ fn parse_args() -> Result<Opts> {
         accept: false,
         backend: Backend::Auto,
     };
-    if let Some(v) = std::fs::read_to_string(config_path()).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()) {
+    if let Some(v) = std::fs::read_to_string(config_path())
+        .ok()
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+    {
         apply_config(&mut o, &v);
     }
     let mut args = std::env::args().skip(1);
@@ -126,11 +138,17 @@ fn parse_args() -> Result<Opts> {
         match a.as_str() {
             "--edge" => {
                 let v = args.next();
-                o.edge = v.as_deref().and_then(parse_edge).with_context(|| format!("--edge left|right|top|bottom (got {v:?})"))?;
+                o.edge = v
+                    .as_deref()
+                    .and_then(parse_edge)
+                    .with_context(|| format!("--edge left|right|top|bottom (got {v:?})"))?;
             }
             "--span" => {
                 let v = args.next();
-                o.span = v.as_deref().and_then(parse_span).with_context(|| format!("--span START:END, fractions 0..1 (got {v:?})"))?;
+                o.span = v
+                    .as_deref()
+                    .and_then(parse_span)
+                    .with_context(|| format!("--span START:END, fractions 0..1 (got {v:?})"))?;
             }
             "--backend" => {
                 o.backend = match args.next().as_deref() {
@@ -186,7 +204,11 @@ impl Daemon {
                 }
             }
         });
-        Ok(Self { cmd, watch, buf: Vec::new() })
+        Ok(Self {
+            cmd,
+            watch,
+            buf: Vec::new(),
+        })
     }
 
     pub fn send(&mut self, service: i64, data: Value) {
@@ -197,7 +219,10 @@ impl Daemon {
     }
 
     pub fn input(&mut self, cmd: i64, data: Value) {
-        self.send(16, json!({ "cmd": cmd, "data": data, "messageId": 0, "instanceId": 0 }));
+        self.send(
+            16,
+            json!({ "cmd": cmd, "data": data, "messageId": 0, "instanceId": 0 }),
+        );
     }
 
     /// Reads whatever is available; returns complete JSON lines. `Err` = daemon gone.
@@ -230,7 +255,12 @@ fn single_instance() -> Result<std::fs::File> {
         .map(PathBuf::from)
         .unwrap_or_else(std::env::temp_dir)
         .join("smartconnect-crosscontrol.lock");
-    let mut f = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(&path)?;
+    let mut f = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&path)?;
     let try_lock = |f: &std::fs::File| unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0;
     if !try_lock(&f) {
         let mut pid = String::new();
@@ -242,7 +272,10 @@ fn single_instance() -> Result<std::fs::File> {
         let deadline = Instant::now() + Duration::from_secs(3);
         while !try_lock(&f) {
             if Instant::now() > deadline {
-                bail!("another smartconnect-crosscontrol is running and didn't stop ({})", path.display());
+                bail!(
+                    "another smartconnect-crosscontrol is running and didn't stop ({})",
+                    path.display()
+                );
             }
             std::thread::sleep(Duration::from_millis(50));
         }
@@ -264,8 +297,18 @@ fn main() -> Result<()> {
         Backend::Auto => Backend::Portal,
         b => b,
     };
-    println!("backend: {}", if backend == Backend::Portal { "InputCapture portal" } else { "layer-shell" });
-    println!("phone on the {:?} edge, span {:.2}..{:.2}", opts.edge, opts.span.0, opts.span.1);
+    println!(
+        "backend: {}",
+        if backend == Backend::Portal {
+            "InputCapture portal"
+        } else {
+            "layer-shell"
+        }
+    );
+    println!(
+        "phone on the {:?} edge, span {:.2}..{:.2}",
+        opts.edge, opts.span.0, opts.span.1
+    );
     let core = Core::new(opts, Daemon::connect()?);
     match backend {
         Backend::Portal => portal::run(core),
@@ -288,18 +331,41 @@ mod tests {
 
     #[test]
     fn config_overrides_defaults() {
-        let mut o =
-            Opts { edge: Edge::Right, span: (0.0, 1.0), output: None, anchor: None, gain: 1.6, exit_px: 12.0, in_use_cap: true, accept: false, backend: Backend::Auto };
+        let mut o = Opts {
+            edge: Edge::Right,
+            span: (0.0, 1.0),
+            output: None,
+            anchor: None,
+            gain: 1.6,
+            exit_px: 12.0,
+            in_use_cap: true,
+            accept: false,
+            backend: Backend::Auto,
+        };
         apply_config(&mut o, &json!({"edge": "left", "start": 0.1, "end": 0.6}));
         assert_eq!(o.edge, Edge::Left);
         assert_eq!(o.span, (0.1, 0.6));
-        apply_config(&mut o, &json!({"edge": "sideways", "start": 0.9, "end": 0.2}));
-        assert_eq!((o.edge, o.span), (Edge::Left, (0.1, 0.6)), "bad values are ignored");
+        apply_config(
+            &mut o,
+            &json!({"edge": "sideways", "start": 0.9, "end": 0.2}),
+        );
+        assert_eq!(
+            (o.edge, o.span),
+            (Edge::Left, (0.1, 0.6)),
+            "bad values are ignored"
+        );
         // The GTK page's monitor: name for layer-shell, rect for the portal.
-        apply_config(&mut o, &json!({"output": "HDMI-1", "rect": [0, 0, 2560, 1440]}));
+        apply_config(
+            &mut o,
+            &json!({"output": "HDMI-1", "rect": [0, 0, 2560, 1440]}),
+        );
         assert_eq!(o.output.as_deref(), Some("HDMI-1"));
         assert_eq!(o.anchor, Some((0, 0, 2560, 1440)));
         apply_config(&mut o, &json!({"rect": [0, 0, 0, 1440]}));
-        assert_eq!(o.anchor, Some((0, 0, 2560, 1440)), "a zero-sized rect is ignored");
+        assert_eq!(
+            o.anchor,
+            Some((0, 0, 2560, 1440)),
+            "a zero-sized rect is ignored"
+        );
     }
 }

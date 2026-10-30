@@ -89,9 +89,16 @@ impl Helpers {
     fn spawn(&self, name: &str, args: &[&str]) -> std::io::Result<Child> {
         let bin = binary(name);
         let log_path = runtime_dir().join(format!("{name}.log"));
-        let log = std::fs::OpenOptions::new().create(true).append(true).open(&log_path)?;
+        let log = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)?;
         let mut cmd = Command::new(&bin);
-        cmd.args(args).stdin(Stdio::null()).stdout(log.try_clone()?).stderr(log).kill_on_drop(true);
+        cmd.args(args)
+            .stdin(Stdio::null())
+            .stdout(log.try_clone()?)
+            .stderr(log)
+            .kill_on_drop(true);
         // SAFETY: prctl is async-signal-safe; the child gets SIGTERM if the daemon dies uncleanly.
         unsafe {
             cmd.pre_exec(|| {
@@ -101,7 +108,10 @@ impl Helpers {
         }
         let child = cmd.spawn().map_err(|e| {
             let hint = if e.kind() == std::io::ErrorKind::NotFound {
-                format!(" (not next to smartconnectd or on PATH; set {})", env_var(name))
+                format!(
+                    " (not next to smartconnectd or on PATH; set {})",
+                    env_var(name)
+                )
             } else {
                 String::new()
             };
@@ -136,7 +146,9 @@ impl Helpers {
             let mut child = match self.spawn(MIRROR, &["--host"]) {
                 Ok(c) => c,
                 Err(e) => {
-                    warn!("helpers: can't start the stream host ({e}); phone app-stream invites won't be answered");
+                    warn!(
+                        "helpers: can't start the stream host ({e}); phone app-stream invites won't be answered"
+                    );
                     tokio::time::sleep(Duration::from_secs(60)).await;
                     continue;
                 }
@@ -180,7 +192,9 @@ impl Helpers {
             }
             // Where the phone sits comes from the shared crosscontrol.json (the GTK app's Cross
             // Control page); $SMARTCONNECT_CROSS_EDGE still overrides the edge.
-            let edge = std::env::var("SMARTCONNECT_CROSS_EDGE").ok().filter(|e| !e.is_empty());
+            let edge = std::env::var("SMARTCONNECT_CROSS_EDGE")
+                .ok()
+                .filter(|e| !e.is_empty());
             let mut args = vec!["--accept"];
             if let Some(edge) = edge.as_deref() {
                 args.extend(["--edge", edge]);
@@ -220,7 +234,10 @@ impl Helpers {
                 Err(e) => {
                     warn!("helpers: can't start the webcam helper for the phone's request: {e}");
                     // The phone then explains that the PC needs its webcam driver.
-                    let _ = daemon.to_phone.send((webcam::SERVICE_WEBCAM, webcam::error_msg(webcam::ERR_NO_DRIVER)));
+                    let _ = daemon.to_phone.send((
+                        webcam::SERVICE_WEBCAM,
+                        webcam::error_msg(webcam::ERR_NO_DRIVER),
+                    ));
                 }
             }
         }
@@ -240,12 +257,16 @@ impl Helpers {
                 Ok(_) | Err(RecvError::Lagged(_)) => continue,
                 Err(RecvError::Closed) => return,
             };
-            let Some(share) = display_request(&data) else { continue };
+            let Some(share) = display_request(&data) else {
+                continue;
+            };
             if ours.lock().unwrap().is_some_and(alive) {
                 continue; // ours is up (maybe still connecting); it answers the phone itself
             }
             if lock_held(&display_lock_path()) {
-                info!("helpers: the phone asks for this PC's screen; the running display session answers");
+                info!(
+                    "helpers: the phone asks for this PC's screen; the running display session answers"
+                );
                 continue;
             }
             let args: Vec<&str> = share.map_or_else(Vec::new, |s| vec!["--mode", s]);
@@ -265,9 +286,17 @@ impl Helpers {
                         drop(slot);
                         let failed = status.as_ref().map_or(true, |s| !s.success());
                         // (Not if another instance holds the lock now: that one answers the phone.)
-                        if failed && started.elapsed() < DISPLAY_EARLY_EXIT && !lock_held(&display_lock_path()) {
-                            warn!(?status, "helpers: {DISPLAY} failed to start (see its log); telling the phone to stop waiting");
-                            let _ = daemon.to_phone.send((SERVICE_DISPLAY, display_stop_msg(&data)));
+                        if failed
+                            && started.elapsed() < DISPLAY_EARLY_EXIT
+                            && !lock_held(&display_lock_path())
+                        {
+                            warn!(
+                                ?status,
+                                "helpers: {DISPLAY} failed to start (see its log); telling the phone to stop waiting"
+                            );
+                            let _ = daemon
+                                .to_phone
+                                .send((SERVICE_DISPLAY, display_stop_msg(&data)));
                         } else {
                             info!(?status, "helpers: display session ended");
                         }
@@ -276,7 +305,9 @@ impl Helpers {
                 Err(e) => {
                     warn!("helpers: can't start {DISPLAY} for the phone's request: {e}");
                     // Otherwise the phone stays in "connecting" and ignores its next start request.
-                    let _ = daemon.to_phone.send((SERVICE_DISPLAY, display_stop_msg(&data)));
+                    let _ = daemon
+                        .to_phone
+                        .send((SERVICE_DISPLAY, display_stop_msg(&data)));
                 }
             }
         }
@@ -287,7 +318,12 @@ impl Helpers {
 /// names neither, which leaves the mode to display.json); `None` for any other message. The inner
 /// `data` is a JSON string (`{"shareType":"extend","setAudio":false,"setScale":200}`) or an object.
 pub fn display_request(data: &Value) -> Option<Option<&'static str>> {
-    let int = |v: Option<&Value>| v.and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse().ok())));
+    let int = |v: Option<&Value>| {
+        v.and_then(|v| {
+            v.as_i64()
+                .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+        })
+    };
     if int(data.get("cmd")) != Some(50) {
         return None;
     }
@@ -306,18 +342,27 @@ pub fn display_request(data: &Value) -> Option<Option<&'static str>> {
 /// Svc 202 cmd 26 (stop from the PC) for the session in `request`. The phone resets a pending
 /// start with it and answers cmd 52.
 fn display_stop_msg(request: &Value) -> Value {
-    let sid = request.get("sessionId").and_then(Value::as_i64).unwrap_or(0);
+    let sid = request
+        .get("sessionId")
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
     serde_json::json!({ "ver": "1", "cmd": 26, "data": {}, "sessionId": sid })
 }
 
 /// `smartconnect-display` holds an exclusive flock on this file (with its pid) while it runs.
 pub fn display_lock_path() -> PathBuf {
-    std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).unwrap_or_else(std::env::temp_dir).join("smartconnect-display.lock")
+    std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+        .join("smartconnect-display.lock")
 }
 
 /// The webcam helper holds an exclusive flock on this file (with its pid) while a session runs.
 pub fn webcam_lock_path() -> PathBuf {
-    std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).unwrap_or_else(std::env::temp_dir).join("smartconnect-webcam.lock")
+    std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+        .join("smartconnect-webcam.lock")
 }
 
 /// Where the helper `name` is: `$SMARTCONNECT_<NAME>_BIN` (see [`env_var`]), else a file of that
@@ -336,7 +381,12 @@ pub fn binary(name: &str) -> PathBuf {
 
 /// The override variable for a helper: `smartconnect-mirror` → `SMARTCONNECT_MIRROR_BIN`.
 pub fn env_var(name: &str) -> String {
-    format!("SMARTCONNECT_{}_BIN", name.trim_start_matches("smartconnect-").to_uppercase().replace('-', "_"))
+    format!(
+        "SMARTCONNECT_{}_BIN",
+        name.trim_start_matches("smartconnect-")
+            .to_uppercase()
+            .replace('-', "_")
+    )
 }
 
 pub fn host_socket_path() -> PathBuf {
@@ -365,7 +415,9 @@ pub fn crosscontrol_lock_path() -> PathBuf {
 }
 
 async fn host_running() -> bool {
-    tokio::net::UnixStream::connect(host_socket_path()).await.is_ok()
+    tokio::net::UnixStream::connect(host_socket_path())
+        .await
+        .is_ok()
 }
 
 fn crosscontrol_running() -> bool {
@@ -373,7 +425,9 @@ fn crosscontrol_running() -> bool {
 }
 
 fn lock_held(path: &std::path::Path) -> bool {
-    let Ok(f) = std::fs::File::open(path) else { return false };
+    let Ok(f) = std::fs::File::open(path) else {
+        return false;
+    };
     // SAFETY: flock on an fd we own; a shared lock fails while the client holds its exclusive one.
     let free = unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_SH | libc::LOCK_NB) } == 0;
     !free
@@ -431,11 +485,20 @@ mod tests {
         let req = json!({"ver":"1","cmd":"50","data":{"shareType":"mirror"}});
         assert_eq!(display_request(&req), Some(Some("mirror")));
         // A start request with no usable mode leaves it to display.json.
-        assert_eq!(display_request(&json!({"cmd":50,"data":"{\"shareType\":\"tablet\"}"})), Some(None));
+        assert_eq!(
+            display_request(&json!({"cmd":50,"data":"{\"shareType\":\"tablet\"}"})),
+            Some(None)
+        );
         assert_eq!(display_request(&json!({"cmd":50})), Some(None));
         // Anything else is not a start request.
-        assert_eq!(display_request(&json!({"cmd":52,"data":"{\"stopFrom\":0}"})), None);
-        assert_eq!(display_request(&json!({"cmd":5,"data":"{\"shareType\":\"extend\"}"})), None);
+        assert_eq!(
+            display_request(&json!({"cmd":52,"data":"{\"stopFrom\":0}"})),
+            None
+        );
+        assert_eq!(
+            display_request(&json!({"cmd":5,"data":"{\"shareType\":\"extend\"}"})),
+            None
+        );
         // The stop that releases a waiting phone.
         let stop = display_stop_msg(&json!({"cmd":50,"sessionId":12}));
         assert_eq!(stop, json!({"ver":"1","cmd":26,"data":{},"sessionId":12}));
@@ -444,12 +507,16 @@ mod tests {
 
     #[test]
     fn unlocked_file_means_not_running() {
-        let path = std::env::temp_dir().join(format!("sc-helpers-test-{}.lock", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("sc-helpers-test-{}.lock", std::process::id()));
         assert!(!lock_held(&path), "missing file");
         std::fs::write(&path, b"").unwrap();
         assert!(!lock_held(&path));
         let f = std::fs::File::open(&path).unwrap();
-        assert_eq!(unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) }, 0);
+        assert_eq!(
+            unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+            0
+        );
         assert!(lock_held(&path));
         drop(f);
         assert!(!lock_held(&path));

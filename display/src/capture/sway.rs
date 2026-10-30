@@ -22,17 +22,38 @@ pub fn outputs() -> Result<Vec<Output>> {
 
 fn parse_outputs(json: &str) -> Result<Vec<Output>> {
     let v: Value = serde_json::from_str(json).context("parsing `swaymsg -t get_outputs`")?;
-    let list = v.as_array().ok_or_else(|| anyhow!("swaymsg outputs: not a list"))?;
+    let list = v
+        .as_array()
+        .ok_or_else(|| anyhow!("swaymsg outputs: not a list"))?;
     Ok(list
         .iter()
         .map(|o| {
-            let s = |k: &str| o.get(k).and_then(Value::as_str).filter(|s| !s.is_empty() && *s != "Unknown");
+            let s = |k: &str| {
+                o.get(k)
+                    .and_then(Value::as_str)
+                    .filter(|s| !s.is_empty() && *s != "Unknown")
+            };
             let active = o.get("active").and_then(Value::as_bool).unwrap_or(false);
-            let r = |k: &str| o.pointer(&format!("/rect/{k}")).and_then(Value::as_i64).unwrap_or(0);
+            let r = |k: &str| {
+                o.pointer(&format!("/rect/{k}"))
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0)
+            };
             let name = s("name").unwrap_or_default().to_owned();
             Output {
-                description: [s("make"), s("model")].into_iter().flatten().collect::<Vec<_>>().join(" "),
-                logical: (active && r("width") > 0).then(|| (r("x") as i32, r("y") as i32, r("width") as u32, r("height") as u32)),
+                description: [s("make"), s("model")]
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<_>>()
+                    .join(" "),
+                logical: (active && r("width") > 0).then(|| {
+                    (
+                        r("x") as i32,
+                        r("y") as i32,
+                        r("width") as u32,
+                        r("height") as u32,
+                    )
+                }),
                 focused: o.get("focused").and_then(Value::as_bool).unwrap_or(false),
                 is_virtual: name.starts_with("HEADLESS-"),
                 name,
@@ -63,7 +84,9 @@ impl Backend for SwayCapture {
     }
 
     fn size(&self) -> (u32, u32) {
-        self.feeder.size().unwrap_or((self.geometry.2, self.geometry.3))
+        self.feeder
+            .size()
+            .unwrap_or((self.geometry.2, self.geometry.3))
     }
 
     fn geometry(&self) -> (i32, i32, u32, u32) {
@@ -79,7 +102,11 @@ impl Backend for SwayCapture {
     }
 
     fn reconfigure_extend(&mut self, width: u32, height: u32) -> Result<()> {
-        self.pos = desktop::spot(&outputs()?, Some(&self.output), desktop::logical_size((width, height), self.scale));
+        self.pos = desktop::spot(
+            &outputs()?,
+            Some(&self.output),
+            desktop::logical_size((width, height), self.scale),
+        );
         configure(&self.output, (width, height), self.pos, self.scale)?;
         self.geometry = wait_for(&self.feeder, &self.output, (width, height))?;
         Ok(())
@@ -98,7 +125,11 @@ impl Backend for SwayCapture {
 
 impl Drop for SwayCapture {
     fn drop(&mut self) {
-        let r = swaymsg(&["output", &self.output, if self.created { "unplug" } else { "disable" }]);
+        let r = swaymsg(&[
+            "output",
+            &self.output,
+            if self.created { "unplug" } else { "disable" },
+        ]);
         if let Err(e) = r {
             eprintln!("capture: could not remove {}: {e:#}", self.output);
         }
@@ -107,8 +138,17 @@ impl Drop for SwayCapture {
 
 fn configure(name: &str, (w, h): (u32, u32), (x, y): (i32, i32), scale: f64) -> Result<()> {
     swaymsg(&[
-        "output", name, "enable", "mode", "--custom", &format!("{w}x{h}@60Hz"), "position", &x.to_string(), &y.to_string(),
-        "scale", &scale.to_string(),
+        "output",
+        name,
+        "enable",
+        "mode",
+        "--custom",
+        &format!("{w}x{h}@60Hz"),
+        "position",
+        &x.to_string(),
+        &y.to_string(),
+        "scale",
+        &scale.to_string(),
     ])
 }
 
@@ -117,50 +157,79 @@ fn wait_for(feeder: &Feeder, name: &str, size: (u32, u32)) -> Result<(i32, i32, 
     if !feeder.wait_for_size(size, Duration::from_secs(3)) {
         bail!("{name} did not change to {}x{}", size.0, size.1);
     }
-    outputs()?.into_iter().find(|o| o.name == name).and_then(|o| o.logical).ok_or_else(|| anyhow!("{name} is off"))
+    outputs()?
+        .into_iter()
+        .find(|o| o.name == name)
+        .and_then(|o| o.logical)
+        .ok_or_else(|| anyhow!("{name} is off"))
 }
 
 pub fn start(mode: &Mode) -> Result<Box<dyn Backend>> {
     let outs = outputs()?;
     let (width, height, wanted, scale) = match mode {
         Mode::Mirror => {
-            let out = desktop::primary(&outs, None).ok_or_else(|| anyhow!("no enabled output to mirror"))?;
+            let out = desktop::primary(&outs, None)
+                .ok_or_else(|| anyhow!("no enabled output to mirror"))?;
             return Ok(Box::new(Plain::start(out)?));
         }
-        Mode::Extend { width, height, output, scale } => (*width, *height, output.clone(), scale.unwrap_or(1.0)),
+        Mode::Extend {
+            width,
+            height,
+            output,
+            scale,
+        } => (*width, *height, output.clone(), scale.unwrap_or(1.0)),
     };
     let (name, created) = match wanted {
         Some(n) if outs.iter().any(|o| o.name == n) => (n, false),
         Some(n) => {
             let names: Vec<_> = outs.iter().map(|o| o.name.as_str()).collect();
-            bail!("output {n:?} is not connected (sway sees: {})", names.join(", "))
+            bail!(
+                "output {n:?} is not connected (sway sees: {})",
+                names.join(", ")
+            )
         }
         None => {
             swaymsg(&["create_output"]).context("creating a headless output")?;
             let deadline = Instant::now() + Duration::from_secs(2);
             loop {
-                let new = outputs()?.into_iter().find(|o| o.is_virtual && !outs.iter().any(|b| b.name == o.name));
+                let new = outputs()?
+                    .into_iter()
+                    .find(|o| o.is_virtual && !outs.iter().any(|b| b.name == o.name));
                 match new {
                     Some(o) => break (o.name, true),
-                    None if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(100)),
+                    None if Instant::now() < deadline => {
+                        std::thread::sleep(Duration::from_millis(100))
+                    }
                     None => bail!("`swaymsg create_output` made no new HEADLESS output"),
                 }
             }
         }
     };
-    let pos = desktop::spot(&outs, Some(&name), desktop::logical_size((width, height), scale));
+    let pos = desktop::spot(
+        &outs,
+        Some(&name),
+        desktop::logical_size((width, height), scale),
+    );
     let undo = |name: &str| {
         let _ = swaymsg(&["output", name, if created { "unplug" } else { "disable" }]);
     };
-    let feeder = match configure(&name, (width, height), pos, scale).and_then(|_| Feeder::start(&name)) {
-        Ok(f) => f,
-        Err(e) => {
-            undo(&name);
-            return Err(e);
-        }
-    };
+    let feeder =
+        match configure(&name, (width, height), pos, scale).and_then(|_| Feeder::start(&name)) {
+            Ok(f) => f,
+            Err(e) => {
+                undo(&name);
+                return Err(e);
+            }
+        };
     // From here on, dropping `cap` removes the output again.
-    let mut cap = SwayCapture { feeder, output: name, geometry: (pos.0, pos.1, width, height), pos, scale, created };
+    let mut cap = SwayCapture {
+        feeder,
+        output: name,
+        geometry: (pos.0, pos.1, width, height),
+        pos,
+        scale,
+        created,
+    };
     cap.geometry = wait_for(&cap.feeder, &cap.output, (width, height))?;
     Ok(Box::new(cap))
 }

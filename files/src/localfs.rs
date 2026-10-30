@@ -146,7 +146,11 @@ impl LocalFs {
         by_path.insert(root.clone(), ROOT_ID);
         Ok(Self {
             root,
-            inner: Arc::new(RwLock::new(Inner { by_id, by_path, next: ROOT_ID + 1 })),
+            inner: Arc::new(RwLock::new(Inner {
+                by_id,
+                by_path,
+                next: ROOT_ID + 1,
+            })),
             show_hidden: false,
             walks: Arc::default(),
             thumbs: Arc::default(),
@@ -165,7 +169,13 @@ impl LocalFs {
     }
 
     fn path_of(&self, id: u64) -> Result<PathBuf, nfsstat3> {
-        self.inner.read().unwrap().by_id.get(&id).cloned().ok_or(nfsstat3::NFS3ERR_STALE)
+        self.inner
+            .read()
+            .unwrap()
+            .by_id
+            .get(&id)
+            .cloned()
+            .ok_or(nfsstat3::NFS3ERR_STALE)
     }
 
     fn intern(&self, path: PathBuf) -> u64 {
@@ -240,7 +250,8 @@ impl NfsReadFileSystem for LocalFs {
         if offset >= len {
             return Ok((Vec::new(), true));
         }
-        f.seek(SeekFrom::Start(offset)).map_err(|_| nfsstat3::NFS3ERR_IO)?;
+        f.seek(SeekFrom::Start(offset))
+            .map_err(|_| nfsstat3::NFS3ERR_IO)?;
         let want = u64::from(count).min(len - offset) as usize;
         let mut buf = vec![0u8; want];
         let mut filled = 0;
@@ -275,7 +286,11 @@ impl NfsReadFileSystem for LocalFs {
                 continue;
             }
             // Symlinks are not entries the phone may see (see `lookup`).
-            if ent.file_type().map_err(|_| nfsstat3::NFS3ERR_IO)?.is_symlink() {
+            if ent
+                .file_type()
+                .map_err(|_| nfsstat3::NFS3ERR_IO)?
+                .is_symlink()
+            {
                 continue;
             }
             let path = ent.path();
@@ -300,7 +315,9 @@ impl NfsReadFileSystem for LocalFs {
     async fn readlink(&self, id: &PhoneHandle) -> Result<nfspath3<'_>, nfsstat3> {
         let path = self.path_of(id.as_u64())?;
         let target = std::fs::read_link(&path).map_err(|_| nfsstat3::NFS3ERR_INVAL)?;
-        Ok(nfspath3(Opaque::owned(target.as_os_str().as_bytes().to_vec())))
+        Ok(nfspath3(Opaque::owned(
+            target.as_os_str().as_bytes().to_vec(),
+        )))
     }
 }
 
@@ -386,19 +403,26 @@ pub struct CategoryEntry {
 
 /// The kind of a file from its extension.
 fn kind_of(name: &str) -> u32 {
-    let ext = name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).unwrap_or_default();
+    let ext = name
+        .rsplit_once('.')
+        .map(|(_, e)| e.to_ascii_lowercase())
+        .unwrap_or_default();
     match ext.as_str() {
-        "jpg" | "jpeg" | "png" | "gif" | "webp" | "heic" | "heif" | "bmp" | "svg" | "tif" | "tiff" | "avif" => kind::IMAGE,
+        "jpg" | "jpeg" | "png" | "gif" | "webp" | "heic" | "heif" | "bmp" | "svg" | "tif"
+        | "tiff" | "avif" => kind::IMAGE,
         "mp4" | "mkv" | "webm" | "mov" | "avi" | "m4v" | "3gp" | "wmv" | "flv" => kind::VIDEO,
         "mp3" | "flac" | "ogg" | "oga" | "opus" | "m4a" | "wav" | "aac" | "wma" => kind::AUDIO,
-        "pdf" | "doc" | "docx" | "odt" | "rtf" | "txt" | "md" | "xls" | "xlsx" | "ods" | "csv" | "ppt" | "pptx"
-        | "odp" | "epub" => kind::DOCUMENT,
+        "pdf" | "doc" | "docx" | "odt" | "rtf" | "txt" | "md" | "xls" | "xlsx" | "ods" | "csv"
+        | "ppt" | "pptx" | "odp" | "epub" => kind::DOCUMENT,
         _ => kind::OTHER,
     }
 }
 
 fn mtime_secs(meta: &std::fs::Metadata) -> u64 {
-    meta.modified().ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs())
+    meta.modified()
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map_or(0, |d| d.as_secs())
 }
 
 impl LocalFs {
@@ -409,9 +433,18 @@ impl LocalFs {
     }
 
     fn entry(&self, path: PathBuf, meta: &std::fs::Metadata) -> CategoryEntry {
-        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        let parent = path.parent().map_or_else(|| "/".to_owned(), |p| self.relative(p));
-        let kind = if meta.is_dir() { kind::FOLDER } else { kind_of(&name) };
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let parent = path
+            .parent()
+            .map_or_else(|| "/".to_owned(), |p| self.relative(p));
+        let kind = if meta.is_dir() {
+            kind::FOLDER
+        } else {
+            kind_of(&name)
+        };
         CategoryEntry {
             path: self.relative(&path),
             parent,
@@ -426,13 +459,24 @@ impl LocalFs {
     /// Answers `READCATEGORYDIR`: entries `offset..offset+limit` of `category`. Category
     /// [`category::FOLDER`] lists the folder `dir_id` (folders first, then by name); the others
     /// search the whole share, newest first. Unknown categories are empty.
-    pub fn category(&self, dir_id: u64, cat: u32, offset: u32, limit: u32) -> Result<Vec<CategoryEntry>, nfsstat3> {
+    pub fn category(
+        &self,
+        dir_id: u64,
+        cat: u32,
+        offset: u32,
+        limit: u32,
+    ) -> Result<Vec<CategoryEntry>, nfsstat3> {
         let all = if cat == category::FOLDER {
             Arc::new(self.folder(&self.path_of(dir_id)?)?)
         } else {
             self.walk_cached(cat)
         };
-        Ok(all.iter().skip(offset as usize).take(limit as usize).cloned().collect())
+        Ok(all
+            .iter()
+            .skip(offset as usize)
+            .take(limit as usize)
+            .cloned()
+            .collect())
     }
 
     fn folder(&self, dir: &Path) -> Result<Vec<CategoryEntry>, nfsstat3> {
@@ -461,7 +505,10 @@ impl LocalFs {
             return list.clone();
         }
         let list = Arc::new(self.walk(cat));
-        self.walks.lock().unwrap().insert(cat, (Instant::now(), list.clone()));
+        self.walks
+            .lock()
+            .unwrap()
+            .insert(cat, (Instant::now(), list.clone()));
         list
     }
 
@@ -471,7 +518,9 @@ impl LocalFs {
         let wanted = |kind: u32, modified: u64| -> bool {
             match cat {
                 category::RECENTS => {
-                    let cutoff = SystemTime::now().checked_sub(RECENT_WINDOW).unwrap_or(UNIX_EPOCH);
+                    let cutoff = SystemTime::now()
+                        .checked_sub(RECENT_WINDOW)
+                        .unwrap_or(UNIX_EPOCH);
                     modified >= cutoff.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs())
                 }
                 category::IMAGES => kind == kind::IMAGE,
@@ -484,7 +533,11 @@ impl LocalFs {
             }
         };
         let start = if cat == category::DOWNLOADS {
-            match ["Downloads", "Download"].iter().map(|d| self.root.join(d)).find(|p| p.is_dir()) {
+            match ["Downloads", "Download"]
+                .iter()
+                .map(|d| self.root.join(d))
+                .find(|p| p.is_dir())
+            {
                 Some(dir) => dir,
                 None => return Vec::new(),
             }
@@ -495,7 +548,9 @@ impl LocalFs {
         let mut stack = vec![(start, 0usize)];
         let mut visited = 0usize;
         while let Some((dir, depth)) = stack.pop() {
-            let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+            let Ok(rd) = std::fs::read_dir(&dir) else {
+                continue;
+            };
             for ent in rd.filter_map(Result::ok) {
                 visited += 1;
                 if visited > WALK_MAX_ENTRIES {
@@ -506,7 +561,9 @@ impl LocalFs {
                     continue;
                 }
                 let path = ent.path();
-                let Ok(meta) = std::fs::symlink_metadata(&path) else { continue };
+                let Ok(meta) = std::fs::symlink_metadata(&path) else {
+                    continue;
+                };
                 if meta.is_dir() {
                     if depth + 1 < WALK_MAX_DEPTH {
                         stack.push((path, depth + 1));
@@ -519,7 +576,11 @@ impl LocalFs {
                 }
             }
         }
-        out.sort_by(|a, b| b.modified.cmp(&a.modified).then_with(|| a.path.cmp(&b.path)));
+        out.sort_by(|a, b| {
+            b.modified
+                .cmp(&a.modified)
+                .then_with(|| a.path.cmp(&b.path))
+        });
         out
     }
 }
@@ -543,7 +604,19 @@ fn video_thumbnail(video: &Path) -> Option<Vec<u8>> {
         let mut child = std::process::Command::new("ffmpeg")
             .args(["-nostdin", "-v", "error", "-ss", at, "-i"])
             .arg(video)
-            .args(["-frames:v", "1", "-vf", &scale, "-q:v", "5", "-f", "image2pipe", "-c:v", "mjpeg", "-"])
+            .args([
+                "-frames:v",
+                "1",
+                "-vf",
+                &scale,
+                "-q:v",
+                "5",
+                "-f",
+                "image2pipe",
+                "-c:v",
+                "mjpeg",
+                "-",
+            ])
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
@@ -558,7 +631,9 @@ fn video_thumbnail(video: &Path) -> Option<Vec<u8>> {
         let status = loop {
             match child.try_wait() {
                 Ok(Some(status)) => break Some(status),
-                Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
+                Ok(None) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(20))
+                }
                 _ => {
                     let _ = child.kill();
                     let _ = child.wait();
@@ -613,7 +688,9 @@ impl LocalFs {
         let results = paths
             .iter()
             .map(|p| {
-                let Some(target) = self.resolve_phone_path(p, label) else { return 0 };
+                let Some(target) = self.resolve_phone_path(p, label) else {
+                    return 0;
+                };
                 let ok = std::process::Command::new("gio")
                     .arg("trash")
                     .arg("--")
@@ -622,7 +699,10 @@ impl LocalFs {
                     .output()
                     .is_ok_and(|o| o.status.success());
                 if ok {
-                    tracing::info!("moved {} to the Trash at the phone's request", target.display());
+                    tracing::info!(
+                        "moved {} to the Trash at the phone's request",
+                        target.display()
+                    );
                 } else {
                     tracing::warn!("could not move {} to the Trash", target.display());
                 }
@@ -663,7 +743,12 @@ impl LocalFs {
 
 /// A JPEG of `file` scaled to fit [`THUMB_SIZE`].
 fn image_thumbnail(file: &Path) -> Option<Vec<u8>> {
-    let img = image::ImageReader::open(file).ok()?.with_guessed_format().ok()?.decode().ok()?;
+    let img = image::ImageReader::open(file)
+        .ok()?
+        .with_guessed_format()
+        .ok()?
+        .decode()
+        .ok()?;
     let thumb = img.thumbnail(THUMB_SIZE, THUMB_SIZE).into_rgb8();
     let mut out = Vec::new();
     let enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 80);
@@ -697,9 +782,7 @@ mod tests {
         filename3(Opaque::owned(s.as_bytes().to_vec()))
     }
 
-    async fn drain(
-        mut it: impl ReadDirPlusIterator<PhoneHandle>,
-    ) -> Vec<(u64, Vec<u8>)> {
+    async fn drain(mut it: impl ReadDirPlusIterator<PhoneHandle>) -> Vec<(u64, Vec<u8>)> {
         let mut out = Vec::new();
         loop {
             match it.next().await {
@@ -726,11 +809,28 @@ mod tests {
         std::fs::write(dir.join(".ssh").join("id_ed25519"), b"secret").unwrap();
 
         let fs = LocalFs::new(dir.clone()).unwrap();
-        let names: Vec<_> = drain(fs.readdirplus(&fs.root_dir(), 0).await.unwrap()).await.into_iter().map(|e| e.1).collect();
+        let names: Vec<_> = drain(fs.readdirplus(&fs.root_dir(), 0).await.unwrap())
+            .await
+            .into_iter()
+            .map(|e| e.1)
+            .collect();
         assert_eq!(names, vec![b"visible.txt".to_vec()]);
-        assert!(matches!(fs.lookup(&fs.root_dir(), &fname(".ssh")).await, Err(nfsstat3::NFS3ERR_NOENT)));
-        assert!(fs.category(ROOT_ID, category::FOLDER, 0, 100).unwrap().iter().all(|e| !e.name.starts_with('.')));
-        assert!(fs.category(ROOT_ID, category::RECENTS, 0, 100).unwrap().iter().all(|e| !e.path.contains("/.")));
+        assert!(matches!(
+            fs.lookup(&fs.root_dir(), &fname(".ssh")).await,
+            Err(nfsstat3::NFS3ERR_NOENT)
+        ));
+        assert!(
+            fs.category(ROOT_ID, category::FOLDER, 0, 100)
+                .unwrap()
+                .iter()
+                .all(|e| !e.name.starts_with('.'))
+        );
+        assert!(
+            fs.category(ROOT_ID, category::RECENTS, 0, 100)
+                .unwrap()
+                .iter()
+                .all(|e| !e.path.contains("/."))
+        );
 
         let fs = LocalFs::new(dir.clone()).unwrap().show_hidden(true);
         assert!(fs.lookup(&fs.root_dir(), &fname(".ssh")).await.is_ok());
@@ -747,25 +847,41 @@ mod tests {
         let want = Some(fs.root.join("notes").join("a.txt"));
         assert_eq!(fs.resolve_phone_path("/notes/a.txt", "/share"), want);
         assert_eq!(fs.resolve_phone_path("/share/notes/a.txt", "/share"), want);
-        assert_eq!(fs.resolve_phone_path("192.168.1.20:/share/notes/a.txt", "/share"), want);
-        assert_eq!(fs.resolve_phone_path("/notes/../notes/a.txt", "/share"), None, "no ..");
+        assert_eq!(
+            fs.resolve_phone_path("192.168.1.20:/share/notes/a.txt", "/share"),
+            want
+        );
+        assert_eq!(
+            fs.resolve_phone_path("/notes/../notes/a.txt", "/share"),
+            None,
+            "no .."
+        );
         assert_eq!(fs.resolve_phone_path("/.secret", "/share"), None, "hidden");
         assert_eq!(fs.resolve_phone_path("/", "/share"), None, "not the root");
-        assert_eq!(fs.resolve_phone_path("/share", "/share"), None, "not the root");
+        assert_eq!(
+            fs.resolve_phone_path("/share", "/share"),
+            None,
+            "not the root"
+        );
         assert_eq!(fs.resolve_phone_path("/missing.txt", "/share"), None);
         std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
     fn default_share_is_a_smartconnect_folder_under_home() {
-        assert_eq!(share_dir_under(Path::new("/home/alice")), PathBuf::from("/home/alice/SmartConnect"));
+        assert_eq!(
+            share_dir_under(Path::new("/home/alice")),
+            PathBuf::from("/home/alice/SmartConnect")
+        );
     }
 
     #[tokio::test]
     async fn symlinks_are_not_exposed_or_followed() {
         let outside = tempdir();
         std::fs::write(outside.join("secret.txt"), b"secret").unwrap();
-        image::RgbImage::from_pixel(20, 10, image::Rgb([0, 200, 0])).save(outside.join("pic.png")).unwrap();
+        image::RgbImage::from_pixel(20, 10, image::Rgb([0, 200, 0]))
+            .save(outside.join("pic.png"))
+            .unwrap();
         let dir = tempdir();
         std::fs::write(dir.join("innocent.txt"), b"ok").unwrap();
         std::os::unix::fs::symlink(&outside, dir.join("escape")).unwrap();
@@ -775,21 +891,39 @@ mod tests {
         let fs = LocalFs::new(dir.clone()).unwrap();
         let root = fs.root_dir();
         // LOOKUP refuses a symlink, whether it points at a file or a directory.
-        assert_eq!(fs.lookup(&root, &fname("secret.txt")).await.unwrap_err(), nfsstat3::NFS3ERR_NOENT);
-        assert_eq!(fs.lookup(&root, &fname("escape")).await.unwrap_err(), nfsstat3::NFS3ERR_NOENT);
+        assert_eq!(
+            fs.lookup(&root, &fname("secret.txt")).await.unwrap_err(),
+            nfsstat3::NFS3ERR_NOENT
+        );
+        assert_eq!(
+            fs.lookup(&root, &fname("escape")).await.unwrap_err(),
+            nfsstat3::NFS3ERR_NOENT
+        );
         // READDIRPLUS doesn't list it.
-        let names: Vec<_> = drain(fs.readdirplus(&root, 0).await.unwrap()).await.into_iter().map(|e| e.1).collect();
+        let names: Vec<_> = drain(fs.readdirplus(&root, 0).await.unwrap())
+            .await
+            .into_iter()
+            .map(|e| e.1)
+            .collect();
         assert_eq!(names, vec![b"innocent.txt".to_vec()]);
         // A handle that already points at one can't be read through.
         let id = fs.inner.write().unwrap().intern(dir.join("secret.txt"));
-        assert_eq!(fs.read(&PhoneHandle::new(id), 0, 100).await.err(), Some(nfsstat3::NFS3ERR_IO));
+        assert_eq!(
+            fs.read(&PhoneHandle::new(id), 0, 100).await.err(),
+            Some(nfsstat3::NFS3ERR_IO)
+        );
         // Batch paths and thumbnails refuse symlinks, including in a parent component.
         assert_eq!(fs.resolve_phone_path("/secret.txt", "/share"), None);
         assert_eq!(fs.resolve_phone_path("/escape/secret.txt", "/share"), None);
         assert_eq!(fs.resolve_phone_path("/pic.png", "/share"), None);
         assert!(fs.thumbnail("/pic.png", "/share").is_none());
         // Category listings skip it too.
-        let listed: Vec<_> = fs.category(ROOT_ID, category::FOLDER, 0, 100).unwrap().into_iter().map(|e| e.name).collect();
+        let listed: Vec<_> = fs
+            .category(ROOT_ID, category::FOLDER, 0, 100)
+            .unwrap()
+            .into_iter()
+            .map(|e| e.name)
+            .collect();
         assert_eq!(listed, ["innocent.txt"]);
         std::fs::remove_dir_all(&dir).ok();
         std::fs::remove_dir_all(&outside).ok();
@@ -798,7 +932,9 @@ mod tests {
     #[test]
     fn thumbnails_are_small_jpegs_of_images_only() {
         let dir = tempdir();
-        image::RgbImage::from_pixel(1000, 500, image::Rgb([200, 30, 30])).save(dir.join("big.png")).unwrap();
+        image::RgbImage::from_pixel(1000, 500, image::Rgb([200, 30, 30]))
+            .save(dir.join("big.png"))
+            .unwrap();
         std::fs::write(dir.join("notes.txt"), b"not an image").unwrap();
         let fs = LocalFs::new(dir.clone()).unwrap();
         let jpeg = fs.thumbnail("/big.png", "/share").expect("a thumbnail");
@@ -806,19 +942,35 @@ mod tests {
         assert_eq!((back.width(), back.height()), (THUMB_SIZE, THUMB_SIZE / 2));
         assert!(fs.thumbnail("/notes.txt", "/share").is_none());
         // Cached: the same bytes come back.
-        assert!(Arc::ptr_eq(&fs.thumbnail("/big.png", "/share").unwrap(), &fs.thumbnail("/big.png", "/share").unwrap()));
+        assert!(Arc::ptr_eq(
+            &fs.thumbnail("/big.png", "/share").unwrap(),
+            &fs.thumbnail("/big.png", "/share").unwrap()
+        ));
         std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
     fn video_thumbnails_come_from_ffmpeg() {
-        if std::process::Command::new("ffmpeg").arg("-version").output().is_err() {
+        if std::process::Command::new("ffmpeg")
+            .arg("-version")
+            .output()
+            .is_err()
+        {
             eprintln!("ffmpeg not installed; skipping");
             return;
         }
         let dir = tempdir();
         let made = std::process::Command::new("ffmpeg")
-            .args(["-v", "error", "-f", "lavfi", "-i", "testsrc=size=640x360:rate=10:duration=2", "-pix_fmt", "yuv420p"])
+            .args([
+                "-v",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc=size=640x360:rate=10:duration=2",
+                "-pix_fmt",
+                "yuv420p",
+            ])
             .arg(dir.join("clip.mp4"))
             .status()
             .is_ok_and(|s| s.success());
@@ -827,7 +979,9 @@ mod tests {
             return;
         }
         let fs = LocalFs::new(dir.clone()).unwrap();
-        let jpeg = fs.thumbnail("/clip.mp4", "/share").expect("a video thumbnail");
+        let jpeg = fs
+            .thumbnail("/clip.mp4", "/share")
+            .expect("a video thumbnail");
         let back = image::load_from_memory_with_format(&jpeg, image::ImageFormat::Jpeg).unwrap();
         assert_eq!((back.width(), back.height()), (THUMB_SIZE, 180));
         std::fs::remove_dir_all(&dir).ok();
@@ -849,21 +1003,51 @@ mod tests {
         let names: Vec<_> = top.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, ["Downloads", "Pictures", "A.txt", "b.pdf"]);
         assert_eq!(top[0].kind, kind::FOLDER);
-        assert_eq!((top[2].path.as_str(), top[2].parent.as_str(), top[2].size), ("/A.txt", "/", 4));
+        assert_eq!(
+            (top[2].path.as_str(), top[2].parent.as_str(), top[2].size),
+            ("/A.txt", "/", 4)
+        );
         assert_eq!(top[3].kind, kind::DOCUMENT);
         // Paging.
-        let page: Vec<_> = fs.category(ROOT_ID, category::FOLDER, 1, 2).unwrap().into_iter().map(|e| e.name).collect();
+        let page: Vec<_> = fs
+            .category(ROOT_ID, category::FOLDER, 1, 2)
+            .unwrap()
+            .into_iter()
+            .map(|e| e.name)
+            .collect();
         assert_eq!(page, ["Pictures", "A.txt"]);
         // A subfolder by its id.
         let pics = top.iter().find(|e| e.name == "Pictures").unwrap().id;
-        assert_eq!(fs.category(pics, category::FOLDER, 0, 10).unwrap()[0].path, "/Pictures/2026");
+        assert_eq!(
+            fs.category(pics, category::FOLDER, 0, 10).unwrap()[0].path,
+            "/Pictures/2026"
+        );
         // Searches across the tree.
         let images = fs.category(ROOT_ID, category::IMAGES, 0, 10).unwrap();
-        assert_eq!((images.len(), images[0].path.as_str(), images[0].parent.as_str()), (1, "/Pictures/2026/cat.JPG", "/Pictures/2026"));
-        assert_eq!(fs.category(ROOT_ID, category::DOWNLOADS, 0, 10).unwrap()[0].name, "song.mp3");
-        assert_eq!(fs.category(ROOT_ID, category::RECENTS, 0, 10).unwrap().len(), 4, "all four files are new");
+        assert_eq!(
+            (
+                images.len(),
+                images[0].path.as_str(),
+                images[0].parent.as_str()
+            ),
+            (1, "/Pictures/2026/cat.JPG", "/Pictures/2026")
+        );
+        assert_eq!(
+            fs.category(ROOT_ID, category::DOWNLOADS, 0, 10).unwrap()[0].name,
+            "song.mp3"
+        );
+        assert_eq!(
+            fs.category(ROOT_ID, category::RECENTS, 0, 10)
+                .unwrap()
+                .len(),
+            4,
+            "all four files are new"
+        );
         assert!(fs.category(ROOT_ID, 99, 0, 10).unwrap().is_empty());
-        assert!(matches!(fs.category(12345, category::FOLDER, 0, 10), Err(nfsstat3::NFS3ERR_STALE)));
+        assert!(matches!(
+            fs.category(12345, category::FOLDER, 0, 10),
+            Err(nfsstat3::NFS3ERR_STALE)
+        ));
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -881,7 +1065,10 @@ mod tests {
 
         // readdirplus lists all three top-level names, sorted.
         let listing = drain(fs.readdirplus(&root, 0).await.unwrap()).await;
-        let names: Vec<_> = listing.iter().map(|(_, n)| String::from_utf8_lossy(n).into_owned()).collect();
+        let names: Vec<_> = listing
+            .iter()
+            .map(|(_, n)| String::from_utf8_lossy(n).into_owned())
+            .collect();
         assert_eq!(names, vec!["a.txt", "b.txt", "sub"]);
 
         // lookup + getattr on a file.
@@ -911,7 +1098,10 @@ mod tests {
         assert_eq!(clamp.as_u64(), ROOT_ID);
 
         // a missing name is ENOENT.
-        assert_eq!(fs.lookup(&root, &fname("nope")).await.unwrap_err(), nfsstat3::NFS3ERR_NOENT);
+        assert_eq!(
+            fs.lookup(&root, &fname("nope")).await.unwrap_err(),
+            nfsstat3::NFS3ERR_NOENT
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -13,10 +13,10 @@ use gtk::{gdk, gio, glib};
 
 use crate::apps::{self, AppsPage};
 use crate::crosscontrol::CrossControlPage;
-use crate::icons::{IconSlot, Query};
 use crate::daemon::{self, Event, Notification, Reply, Status};
 use crate::display::DisplayPage;
 use crate::files::FilesPage;
+use crate::icons::{IconSlot, Query};
 use crate::lastdevice::{self, LastDevice};
 use crate::lifecycle::{self, Daemon};
 use crate::mirror::{Exit, Mirror};
@@ -226,11 +226,20 @@ fn wallpaper_thumb(w: i32, h: i32) -> (gtk::Widget, gtk::Picture, gtk::Stack) {
         .css_classes(["wallpaper"])
         .overflow(gtk::Overflow::Hidden)
         .build();
-    let placeholder = gtk::Image::builder().icon_name("phone-symbolic").pixel_size(40).css_classes(["dim-label"]).build();
+    let placeholder = gtk::Image::builder()
+        .icon_name("phone-symbolic")
+        .pixel_size(40)
+        .css_classes(["dim-label"])
+        .build();
     let stack = gtk::Stack::new();
     stack.add_named(&placeholder, Some("placeholder"));
     stack.add_named(&picture, Some("picture"));
-    let tall = adw::Clamp::builder().orientation(gtk::Orientation::Vertical).maximum_size(h).tightening_threshold(h).child(&stack).build();
+    let tall = adw::Clamp::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .maximum_size(h)
+        .tightening_threshold(h)
+        .child(&stack)
+        .build();
     let thumb = adw::Clamp::builder()
         .orientation(gtk::Orientation::Horizontal)
         .maximum_size(w)
@@ -244,7 +253,10 @@ fn wallpaper_thumb(w: i32, h: i32) -> (gtk::Widget, gtk::Picture, gtk::Stack) {
 /// Shows the image at `path` (a `?md5` suffix is ignored) or the placeholder. A fresh texture each
 /// time: the daemon rewrites the same file for a new wallpaper.
 fn show_wallpaper(picture: &gtk::Picture, stack: &gtk::Stack, path: Option<&str>) {
-    match path.map(|p| p.split('?').next().unwrap_or(p)).map(gdk::Texture::from_filename) {
+    match path
+        .map(|p| p.split('?').next().unwrap_or(p))
+        .map(gdk::Texture::from_filename)
+    {
         Some(Ok(texture)) => {
             picture.set_paintable(Some(&texture));
             stack.set_visible_child_name("picture");
@@ -259,7 +271,8 @@ fn show_wallpaper(picture: &gtk::Picture, stack: &gtk::Stack, path: Option<&str>
 /// "last connected 5 min ago" → "Last connected 5 min ago".
 fn capitalize(s: &str) -> String {
     let mut c = s.chars();
-    c.next().map_or_else(String::new, |f| f.to_uppercase().chain(c).collect())
+    c.next()
+        .map_or_else(String::new, |f| f.to_uppercase().chain(c).collect())
 }
 
 fn set_dimmed(w: &impl IsA<gtk::Widget>, dimmed: bool) {
@@ -272,14 +285,29 @@ fn set_dimmed(w: &impl IsA<gtk::Widget>, dimmed: bool) {
 
 /// A flat, full-width, left-aligned button for a popover menu.
 fn menu_item(label: &str) -> gtk::Button {
-    let l = gtk::Label::builder().label(label).xalign(0.0).hexpand(true).build();
-    gtk::Button::builder().css_classes(["flat"]).child(&l).build()
+    let l = gtk::Label::builder()
+        .label(label)
+        .xalign(0.0)
+        .hexpand(true)
+        .build();
+    gtk::Button::builder()
+        .css_classes(["flat"])
+        .child(&l)
+        .build()
 }
 
 impl DeviceMenu {
     fn build() -> Self {
-        let dot = gtk::Image::builder().icon_name("media-record-symbolic").pixel_size(10).css_classes(["dim-label"]).build();
-        let label = gtk::Label::builder().label("Smart Connect").ellipsize(gtk::pango::EllipsizeMode::End).max_width_chars(18).build();
+        let dot = gtk::Image::builder()
+            .icon_name("media-record-symbolic")
+            .pixel_size(10)
+            .css_classes(["dim-label"])
+            .build();
+        let label = gtk::Label::builder()
+            .label("Smart Connect")
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .max_width_chars(18)
+            .build();
         let arrow = gtk::Image::from_icon_name("pan-down-symbolic");
         let content = gtk::Box::builder().spacing(6).build();
         content.append(&dot);
@@ -287,13 +315,33 @@ impl DeviceMenu {
         content.append(&arrow);
 
         // Popover: the current device (name + "Wi-Fi · N%" + a check), then the actions.
-        let menu_name = gtk::Label::builder().xalign(0.0).hexpand(true).css_classes(["heading"]).ellipsize(gtk::pango::EllipsizeMode::End).build();
-        let menu_sub = gtk::Label::builder().xalign(0.0).css_classes(["caption", "dim-label"]).build();
-        let names = gtk::Box::builder().orientation(gtk::Orientation::Vertical).hexpand(true).build();
+        let menu_name = gtk::Label::builder()
+            .xalign(0.0)
+            .hexpand(true)
+            .css_classes(["heading"])
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .build();
+        let menu_sub = gtk::Label::builder()
+            .xalign(0.0)
+            .css_classes(["caption", "dim-label"])
+            .build();
+        let names = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .hexpand(true)
+            .build();
         names.append(&menu_name);
         names.append(&menu_sub);
-        let check = gtk::Image::builder().icon_name("object-select-symbolic").valign(gtk::Align::Center).build();
-        let device_row = gtk::Box::builder().spacing(8).margin_start(6).margin_end(6).margin_top(4).margin_bottom(4).build();
+        let check = gtk::Image::builder()
+            .icon_name("object-select-symbolic")
+            .valign(gtk::Align::Center)
+            .build();
+        let device_row = gtk::Box::builder()
+            .spacing(8)
+            .margin_start(6)
+            .margin_end(6)
+            .margin_top(4)
+            .margin_bottom(4)
+            .build();
         device_row.append(&names);
         device_row.append(&check);
 
@@ -301,16 +349,36 @@ impl DeviceMenu {
         let prefs = menu_item("Preferences");
         let connect = menu_item("Disconnect");
 
-        let pop_box = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(2).build();
+        let pop_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(2)
+            .build();
         pop_box.append(&device_row);
         pop_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
         pop_box.append(&pair);
         pop_box.append(&prefs);
         pop_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
         pop_box.append(&connect);
-        let popover = gtk::Popover::builder().child(&pop_box).width_request(240).build();
-        let button = gtk::MenuButton::builder().child(&content).popover(&popover).build();
-        Self { button, popover, dot, label, menu_name, menu_sub, check, pair, prefs, connect }
+        let popover = gtk::Popover::builder()
+            .child(&pop_box)
+            .width_request(240)
+            .build();
+        let button = gtk::MenuButton::builder()
+            .child(&content)
+            .popover(&popover)
+            .build();
+        Self {
+            button,
+            popover,
+            dot,
+            label,
+            menu_name,
+            menu_sub,
+            check,
+            pair,
+            prefs,
+            connect,
+        }
     }
 }
 
@@ -318,12 +386,29 @@ impl DownPage {
     fn build() -> (Self, gtk::Widget) {
         let (thumb, wallpaper, wallpaper_stack) = wallpaper_thumb(48, 100);
         thumb.add_css_class("sc-dimmed");
-        let name = gtk::Label::builder().xalign(0.0).css_classes(["heading"]).wrap(true).build();
-        let sub = gtk::Label::builder().xalign(0.0).css_classes(["dim-label"]).wrap(true).build();
-        let text = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(2).valign(gtk::Align::Center).build();
+        let name = gtk::Label::builder()
+            .xalign(0.0)
+            .css_classes(["heading"])
+            .wrap(true)
+            .build();
+        let sub = gtk::Label::builder()
+            .xalign(0.0)
+            .css_classes(["dim-label"])
+            .wrap(true)
+            .build();
+        let text = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(2)
+            .valign(gtk::Align::Center)
+            .build();
         text.append(&name);
         text.append(&sub);
-        let card = gtk::Box::builder().spacing(12).halign(gtk::Align::Center).css_classes(["card", "sc-card"]).visible(false).build();
+        let card = gtk::Box::builder()
+            .spacing(12)
+            .halign(gtk::Align::Center)
+            .css_classes(["card", "sc-card"])
+            .visible(false)
+            .build();
         card.append(&thumb);
         card.append(&text);
         let start = gtk::Button::builder()
@@ -331,16 +416,31 @@ impl DownPage {
             .css_classes(["pill", "suggested-action"])
             .halign(gtk::Align::Center)
             .build();
-        let column = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(24).build();
+        let column = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(24)
+            .build();
         column.append(&card);
         column.append(&start);
         let page = adw::StatusPage::builder()
             .icon_name("network-offline-symbolic")
             .title("Smart Connect service isn't running")
-            .description("Start it to reach your phone. This window reconnects on its own once it is up.")
+            .description(
+                "Start it to reach your phone. This window reconnects on its own once it is up.",
+            )
             .child(&column)
             .build();
-        (Self { card, wallpaper, wallpaper_stack, name, sub, start }, page.upcast())
+        (
+            Self {
+                card,
+                wallpaper,
+                wallpaper_stack,
+                name,
+                sub,
+                start,
+            },
+            page.upcast(),
+        )
     }
 }
 
@@ -349,8 +449,16 @@ impl PhonePage {
         // ── Phone card (hero): thumbnail · name / state / inline stats · action ──
         let (thumb, wallpaper, wallpaper_stack) = wallpaper_thumb(68, 144);
 
-        let name = gtk::Label::builder().xalign(0.0).css_classes(["title-3"]).wrap(true).build();
-        let subtitle = gtk::Label::builder().xalign(0.0).css_classes(["dim-label"]).wrap(true).build();
+        let name = gtk::Label::builder()
+            .xalign(0.0)
+            .css_classes(["title-3"])
+            .wrap(true)
+            .build();
+        let subtitle = gtk::Label::builder()
+            .xalign(0.0)
+            .css_classes(["dim-label"])
+            .wrap(true)
+            .build();
         let (battery, wifi, cell, bluetooth) = (Stat::new(), Stat::new(), Stat::new(), Stat::new());
         // A FlowBox so the stats wrap instead of forcing a minimum width on a narrow window.
         let stats = gtk::FlowBox::builder()
@@ -368,31 +476,60 @@ impl PhonePage {
                 cell.set_focusable(false);
             }
         }
-        let info = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(2).hexpand(true).valign(gtk::Align::Center).build();
+        let info = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(2)
+            .hexpand(true)
+            .valign(gtk::Align::Center)
+            .build();
         info.append(&name);
         info.append(&subtitle);
         info.append(&stats);
 
-        let mirror = gtk::Button::builder().css_classes(["suggested-action"]).label("Mirror screen").build();
+        let mirror = gtk::Button::builder()
+            .css_classes(["suggested-action"])
+            .label("Mirror screen")
+            .build();
         let connect_spinner = adw::Spinner::builder().visible(false).build();
         let connect_label = gtk::Label::new(Some("Connect"));
-        let connect_box = gtk::Box::builder().spacing(8).halign(gtk::Align::Center).build();
+        let connect_box = gtk::Box::builder()
+            .spacing(8)
+            .halign(gtk::Align::Center)
+            .build();
         connect_box.append(&connect_spinner);
         connect_box.append(&connect_label);
-        let connect = gtk::Button::builder().css_classes(["suggested-action"]).child(&connect_box).visible(false).build();
-        let pair = gtk::Button::builder().css_classes(["suggested-action"]).label("Pair a phone").visible(false).build();
-        let actions = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(6).valign(gtk::Align::Center).build();
+        let connect = gtk::Button::builder()
+            .css_classes(["suggested-action"])
+            .child(&connect_box)
+            .visible(false)
+            .build();
+        let pair = gtk::Button::builder()
+            .css_classes(["suggested-action"])
+            .label("Pair a phone")
+            .visible(false)
+            .build();
+        let actions = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(6)
+            .valign(gtk::Align::Center)
+            .build();
         actions.append(&mirror);
         actions.append(&connect);
         actions.append(&pair);
 
-        let hero = gtk::Box::builder().spacing(16).valign(gtk::Align::Start).css_classes(["card", "sc-card"]).build();
+        let hero = gtk::Box::builder()
+            .spacing(16)
+            .valign(gtk::Align::Start)
+            .css_classes(["card", "sc-card"])
+            .build();
         hero.append(&thumb);
         hero.append(&info);
         hero.append(&actions);
 
         // ── Cross Control (compact row directly below hero card) ───────────
-        let cross_group = adw::PreferencesGroup::builder().title("Cross Control").build();
+        let cross_group = adw::PreferencesGroup::builder()
+            .title("Cross Control")
+            .build();
         let cross = adw::ActionRow::builder()
             .title("Cross Control")
             .subtitle("Shared mouse and keyboard, duplicate display or extend display")
@@ -535,18 +672,51 @@ impl PairDialog {
             .height_request(200)
             .css_classes(["qr"])
             .build();
-        let qr_box = gtk::Box::builder().halign(gtk::Align::Center).valign(gtk::Align::Center).build();
+        let qr_box = gtk::Box::builder()
+            .halign(gtk::Align::Center)
+            .valign(gtk::Align::Center)
+            .build();
         qr_box.append(&qr);
 
-        let steps = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(10).hexpand(true).valign(gtk::Align::Center).build();
-        for (i, text) in ["Open Smart Connect on your phone", "Tap + and choose “Scan QR code”", "Point the camera at this code"].iter().enumerate() {
+        let steps = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(10)
+            .hexpand(true)
+            .valign(gtk::Align::Center)
+            .build();
+        for (i, text) in [
+            "Open Smart Connect on your phone",
+            "Tap + and choose “Scan QR code”",
+            "Point the camera at this code",
+        ]
+        .iter()
+        .enumerate()
+        {
             let row = gtk::Box::builder().spacing(10).build();
-            row.append(&gtk::Label::builder().label(&format!("{}", i + 1)).css_classes(["caption", "dim-label"]).valign(gtk::Align::Start).build());
-            row.append(&gtk::Label::builder().label(*text).xalign(0.0).wrap(true).build());
+            row.append(
+                &gtk::Label::builder()
+                    .label(format!("{}", i + 1))
+                    .css_classes(["caption", "dim-label"])
+                    .valign(gtk::Align::Start)
+                    .build(),
+            );
+            row.append(
+                &gtk::Label::builder()
+                    .label(*text)
+                    .xalign(0.0)
+                    .wrap(true)
+                    .build(),
+            );
             steps.append(&row);
         }
         let spinner = adw::Spinner::new();
-        let status = gtk::Label::builder().label("Waiting for phone…").xalign(0.0).hexpand(true).wrap(true).css_classes(["dim-label"]).build();
+        let status = gtk::Label::builder()
+            .label("Waiting for phone…")
+            .xalign(0.0)
+            .hexpand(true)
+            .wrap(true)
+            .css_classes(["dim-label"])
+            .build();
         let status_row = gtk::Box::builder().spacing(8).margin_top(4).build();
         status_row.append(&spinner);
         status_row.append(&status);
@@ -555,7 +725,10 @@ impl PairDialog {
         let top = gtk::Box::builder().spacing(18).build();
         top.append(&qr_box);
         top.append(&steps);
-        let button = gtk::Button::builder().label("New code").halign(gtk::Align::End).build();
+        let button = gtk::Button::builder()
+            .label("New code")
+            .halign(gtk::Align::End)
+            .build();
         let content = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .spacing(18)
@@ -573,10 +746,22 @@ impl PairDialog {
         let toolbar = adw::ToolbarView::new();
         toolbar.add_top_bar(&adw::HeaderBar::new());
         toolbar.set_content(Some(&content));
-        let dialog = adw::Dialog::builder().title("Pair a new phone").content_width(520).child(&toolbar).build();
+        let dialog = adw::Dialog::builder()
+            .title("Pair a new phone")
+            .content_width(520)
+            .child(&toolbar)
+            .build();
         let fw = firewall.clone();
         dialog.connect_map(move |_| fw.check());
-        Self { dialog, qr, qr_box, status, spinner, button, firewall }
+        Self {
+            dialog,
+            qr,
+            qr_box,
+            status,
+            spinner,
+            button,
+            firewall,
+        }
     }
 }
 
@@ -587,7 +772,8 @@ impl Ui {
         let toasts = adw::ToastOverlay::new();
         let (apps, apps_w) = AppsPage::build(&toasts);
         let (display, display_w) = DisplayPage::build(&toasts);
-        let (cross, cross_modes, cross_position) = CrossControlPage::build(&toasts, display.clone());
+        let (cross, cross_modes, cross_position) =
+            CrossControlPage::build(&toasts, display.clone());
         // One Display tab: the Cross Control modes and the phone's position on top, then the
         // display session and its settings.
         let display_column = gtk::Box::builder()
@@ -601,17 +787,36 @@ impl Ui {
         display_column.append(&cross_modes);
         display_column.append(&cross_position);
         display_column.append(&display_w);
-        let display_clamp = adw::Clamp::builder().maximum_size(1100).tightening_threshold(1100).child(&display_column).build();
-        let display_w = gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).vexpand(true).child(&display_clamp).build();
+        let display_clamp = adw::Clamp::builder()
+            .maximum_size(1100)
+            .tightening_threshold(1100)
+            .child(&display_column)
+            .build();
+        let display_w = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vexpand(true)
+            .child(&display_clamp)
+            .build();
         let (files, files_w) = FilesPage::build(&toasts);
         views.add_titled_with_icon(&phone_w, Some("phone"), "Phone", "phone-symbolic");
         views.add_titled_with_icon(&apps_w, Some("apps"), "Apps", "view-app-grid-symbolic");
-        views.add_titled_with_icon(&display_w, Some("display"), "Display", "video-display-symbolic");
+        views.add_titled_with_icon(
+            &display_w,
+            Some("display"),
+            "Display",
+            "video-display-symbolic",
+        );
         views.add_titled_with_icon(&files_w, Some("files"), "Files", "folder-symbolic");
 
         let (down_page, down) = DownPage::build();
-        let spinner = adw::Spinner::builder().width_request(48).height_request(48).build();
-        let connecting_label = gtk::Label::builder().label("Connecting…").css_classes(["dim-label"]).build();
+        let spinner = adw::Spinner::builder()
+            .width_request(48)
+            .height_request(48)
+            .build();
+        let connecting_label = gtk::Label::builder()
+            .label("Connecting…")
+            .css_classes(["dim-label"])
+            .build();
         let connecting = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .spacing(18)
@@ -620,13 +825,18 @@ impl Ui {
             .build();
         connecting.append(&spinner);
         connecting.append(&connecting_label);
-        let root = gtk::Stack::builder().transition_type(gtk::StackTransitionType::Crossfade).build();
+        let root = gtk::Stack::builder()
+            .transition_type(gtk::StackTransitionType::Crossfade)
+            .build();
         root.add_named(&connecting, Some("connecting"));
         root.add_named(&down, Some("down"));
         root.add_named(&views, Some("main"));
 
         let device = DeviceMenu::build();
-        let switcher = adw::ViewSwitcher::builder().stack(&views).policy(adw::ViewSwitcherPolicy::Wide).build();
+        let switcher = adw::ViewSwitcher::builder()
+            .stack(&views)
+            .policy(adw::ViewSwitcherPolicy::Wide)
+            .build();
         let header = adw::HeaderBar::builder().title_widget(&switcher).build();
         header.pack_start(&device.button);
         let switcher_bar = adw::ViewSwitcherBar::builder().stack(&views).build();
@@ -645,8 +855,15 @@ impl Ui {
             .build();
         // Six page names plus the device menu don't fit a narrow header: then the switcher moves to
         // a bar at the bottom and the header keeps the window title and the device menu.
-        let narrow = adw::Breakpoint::new(adw::BreakpointCondition::parse("max-width: 780sp").expect("valid breakpoint condition"));
-        narrow.add_setter(&header, "title-widget", Some(&None::<gtk::Widget>.to_value()));
+        let narrow = adw::Breakpoint::new(
+            adw::BreakpointCondition::parse("max-width: 780sp")
+                .expect("valid breakpoint condition"),
+        );
+        narrow.add_setter(
+            &header,
+            "title-widget",
+            Some(&None::<gtk::Widget>.to_value()),
+        );
         narrow.add_setter(&switcher_bar, "reveal", Some(&true.to_value()));
         window.add_breakpoint(narrow);
 
@@ -670,7 +887,10 @@ impl Ui {
             files,
             tray: RefCell::default(),
             daemon_ctl: RefCell::default(),
-            state: RefCell::new(State { last: lastdevice::load(), ..State::default() }),
+            state: RefCell::new(State {
+                last: lastdevice::load(),
+                ..State::default()
+            }),
         });
         ui.show_switcher(false);
         // Until the daemon answers, the header and the "not running" page show the cached phone.
@@ -829,7 +1049,9 @@ impl Ui {
         // Keep "last connected 5 min ago" current.
         let weak = Rc::downgrade(self);
         glib::timeout_add_seconds_local(60, move || {
-            let Some(ui) = weak.upgrade() else { return glib::ControlFlow::Break };
+            let Some(ui) = weak.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
             if ui.state.borrow().status.is_some() {
                 ui.refresh_phone();
             } else {
@@ -1006,7 +1228,9 @@ impl Ui {
     /// "Alex's Phone · 63%" while connected, empty otherwise.
     fn tray_detail(&self) -> String {
         let st = self.state.borrow();
-        let Some(status) = st.status.as_ref().filter(|s| s.connected) else { return String::new() };
+        let Some(status) = st.status.as_ref().filter(|s| s.connected) else {
+            return String::new();
+        };
         let name = status.name.clone().unwrap_or_else(|| "Phone".into());
         match status.battery {
             Some(b) if status.charging => format!("{name} · {b}% ⚡"),
@@ -1051,7 +1275,11 @@ impl Ui {
     }
 
     /// Runs one daemon command on a worker thread and hands the reply back on the main loop.
-    fn command(self: &Rc<Self>, line: String, done: impl FnOnce(&Rc<Self>, Result<Reply, String>) + 'static) {
+    fn command(
+        self: &Rc<Self>,
+        line: String,
+        done: impl FnOnce(&Rc<Self>, Result<Reply, String>) + 'static,
+    ) {
         let weak = Rc::downgrade(self);
         glib::spawn_future_local(async move {
             let result = gio::spawn_blocking(move || daemon::command(&line))
@@ -1087,7 +1315,7 @@ impl Ui {
             st.status = None;
             st.busy = false;
             st.muted = None; // ask again once the daemon is back
-            // The phone can't be connected without the daemon: it was last seen now.
+                             // The phone can't be connected without the daemon: it was last seen now.
             if std::mem::take(&mut st.was_connected) {
                 st.last.last_connected = Some(lastdevice::now_secs());
                 if let Err(e) = lastdevice::save(&st.last) {
@@ -1127,7 +1355,10 @@ impl Ui {
         self.show_switcher(true);
         let (connected, muted_known) = {
             let st = self.state.borrow();
-            (st.status.as_ref().is_some_and(|s| s.connected), st.muted.is_some())
+            (
+                st.status.as_ref().is_some_and(|s| s.connected),
+                st.muted.is_some(),
+            )
         };
         self.apps.set_connected(connected);
         self.display.set_connected(connected);
@@ -1155,12 +1386,17 @@ impl Ui {
             let mut next = st.last.clone();
             next.absorb(s);
             if s.wallpaper.is_some() && s.wallpaper != st.copied_wallpaper {
-                if let Some(copy) = s.wallpaper_path().and_then(|p| lastdevice::copy_wallpaper(Path::new(p))) {
+                if let Some(copy) = s
+                    .wallpaper_path()
+                    .and_then(|p| lastdevice::copy_wallpaper(Path::new(p)))
+                {
                     next.wallpaper = Some(copy);
                 }
                 st.copied_wallpaper = s.wallpaper.clone();
             }
-            let save = !next.same_fields(&st.last) || !st.was_connected || now.saturating_sub(st.last_saved) >= 300;
+            let save = !next.same_fields(&st.last)
+                || !st.was_connected
+                || now.saturating_sub(st.last_saved) >= 300;
             next.last_connected = Some(now);
             st.last = next;
             st.was_connected = true;
@@ -1184,7 +1420,8 @@ impl Ui {
         let mut st = self.state.borrow_mut();
         let busy = st.busy;
         let pending = st.mirror_pending;
-        let mirroring = st.mirror.as_ref().is_some_and(Mirror::running) || self.apps.mirror_session().is_some();
+        let mirroring =
+            st.mirror.as_ref().is_some_and(Mirror::running) || self.apps.mirror_session().is_some();
         let Some(s) = st.status.clone() else { return };
         let last = st.last.clone();
         let p = &self.phone;
@@ -1211,21 +1448,40 @@ impl Ui {
         set_dimmed(&p.thumb, state != PhoneState::Connected);
 
         // Name and state line. A daemon restart forgets the name until the phone reconnects: use ours.
-        let name = s.name.clone().filter(|n| !n.is_empty()).or_else(|| last.name.clone());
-        let model = s.model.clone().filter(|m| !m.is_empty()).or_else(|| last.model.clone());
+        let name = s
+            .name
+            .clone()
+            .filter(|n| !n.is_empty())
+            .or_else(|| last.name.clone());
+        let model = s
+            .model
+            .clone()
+            .filter(|m| !m.is_empty())
+            .or_else(|| last.model.clone());
         let display_name = match state {
             PhoneState::Unpaired => "No phone paired".to_owned(),
-            _ => name.clone().or_else(|| model.clone()).unwrap_or_else(|| "Phone".to_owned()),
+            _ => name
+                .clone()
+                .or_else(|| model.clone())
+                .unwrap_or_else(|| "Phone".to_owned()),
         };
         p.name.set_label(&display_name);
         let seen = last.last_seen();
         let line = match state {
             PhoneState::Connected => "Connected over Wi-Fi".to_owned(),
             PhoneState::Disconnected if busy => "Connecting…".to_owned(),
-            PhoneState::Disconnected => seen.as_ref().map_or_else(|| "Disconnected".to_owned(), |t| format!("Disconnected · {t}")),
-            PhoneState::Unpaired => "Pair your Motorola phone with Smart Connect to get started".to_owned(),
+            PhoneState::Disconnected => seen.as_ref().map_or_else(
+                || "Disconnected".to_owned(),
+                |t| format!("Disconnected · {t}"),
+            ),
+            PhoneState::Unpaired => {
+                "Pair your Motorola phone with Smart Connect to get started".to_owned()
+            }
         };
-        p.subtitle.set_label(&match model.as_deref().filter(|m| state != PhoneState::Unpaired && Some(*m) != name.as_deref()) {
+        p.subtitle.set_label(&match model
+            .as_deref()
+            .filter(|m| state != PhoneState::Unpaired && Some(*m) != name.as_deref())
+        {
             Some(model) => format!("{model} · {line}"),
             None => line,
         });
@@ -1246,8 +1502,10 @@ impl Ui {
 
         // The card's action: Mirror screen (connected, or a mirror still open), Connect (phone
         // away), or Pair a phone (none paired).
-        p.mirror.set_visible(state == PhoneState::Connected || mirroring);
-        p.mirror.set_sensitive(!pending && (s.connected || mirroring));
+        p.mirror
+            .set_visible(state == PhoneState::Connected || mirroring);
+        p.mirror
+            .set_sensitive(!pending && (s.connected || mirroring));
         p.mirror.set_label(if pending {
             "Starting…"
         } else if mirroring {
@@ -1262,10 +1520,12 @@ impl Ui {
             p.mirror.remove_css_class("destructive-action");
             p.mirror.add_css_class("suggested-action");
         }
-        p.connect.set_visible(state == PhoneState::Disconnected && !mirroring);
+        p.connect
+            .set_visible(state == PhoneState::Disconnected && !mirroring);
         p.connect.set_sensitive(!busy);
         p.connect_spinner.set_visible(busy);
-        p.connect_label.set_label(if busy { "Connecting…" } else { "Connect" });
+        p.connect_label
+            .set_label(if busy { "Connecting…" } else { "Connect" });
         p.pair.set_visible(state == PhoneState::Unpaired);
 
         // Cross Control stays visible for a paired phone (its page says when to connect).
@@ -1274,7 +1534,11 @@ impl Ui {
         // Device menu button + popover.
         let d = &self.device;
         d.label.set_label(&display_name);
-        d.dot.set_css_classes(if s.connected { &["success"] } else { &["dim-label"] });
+        d.dot.set_css_classes(if s.connected {
+            &["success"]
+        } else {
+            &["dim-label"]
+        });
         d.menu_name.set_label(&display_name);
         d.menu_sub.set_label(&match state {
             PhoneState::Connected => match s.battery {
@@ -1282,7 +1546,10 @@ impl Ui {
                 None => "Wi-Fi".to_owned(),
             },
             PhoneState::Disconnected if busy => "Connecting…".to_owned(),
-            PhoneState::Disconnected => seen.map_or_else(|| "Disconnected".to_owned(), |t| format!("Disconnected · {t}")),
+            PhoneState::Disconnected => seen.map_or_else(
+                || "Disconnected".to_owned(),
+                |t| format!("Disconnected · {t}"),
+            ),
             PhoneState::Unpaired => "No phone paired".to_owned(),
         });
         d.check.set_visible(s.connected);
@@ -1314,10 +1581,17 @@ impl Ui {
                     (l, true) => format!("battery-level-{l}-charging-symbolic"),
                     (l, false) => format!("battery-level-{l}-symbolic"),
                 };
-                let tip = format!("{pre}Battery: {b}%{}", if charging { ", charging" } else { "" });
+                let tip = format!(
+                    "{pre}Battery: {b}%{}",
+                    if charging { ", charging" } else { "" }
+                );
                 p.battery.set(&icon, &format!("{b}%"), &tip);
             }
-            None => p.battery.set("battery-missing-symbolic", "—", &format!("{pre}Battery: unknown")),
+            None => p.battery.set(
+                "battery-missing-symbolic",
+                "—",
+                &format!("{pre}Battery: unknown"),
+            ),
         }
         let wifi_word = signal_text(v.wifi_signal);
         match signal_level(v.wifi_signal).filter(|_| v.wifi) {
@@ -1326,20 +1600,39 @@ impl Ui {
                 wifi_word,
                 &format!("{pre}Wi-Fi: {}", wifi_word.to_lowercase()),
             ),
-            None if v.wifi => p.wifi.set("network-wireless-symbolic", "On", &format!("{pre}Wi-Fi: on")),
-            None => p.wifi.set("network-wireless-offline-symbolic", "Off", &format!("{pre}Wi-Fi: off")),
+            None if v.wifi => p.wifi.set(
+                "network-wireless-symbolic",
+                "On",
+                &format!("{pre}Wi-Fi: on"),
+            ),
+            None => p.wifi.set(
+                "network-wireless-offline-symbolic",
+                "Off",
+                &format!("{pre}Wi-Fi: off"),
+            ),
         }
         let cell_word = signal_text(v.cell_signal);
         let cell_icon = signal_level(v.cell_signal).map_or("none", |l| SIGNAL_ICONS[l]);
         p.cell.set(
             &format!("network-cellular-signal-{cell_icon}-symbolic"),
             cell_word,
-            &format!("{pre}Mobile signal: {}", cell_word.to_lowercase().replace('—', "unknown")),
+            &format!(
+                "{pre}Mobile signal: {}",
+                cell_word.to_lowercase().replace('—', "unknown")
+            ),
         );
         if v.bluetooth {
-            p.bluetooth.set("bluetooth-active-symbolic", "On", &format!("{pre}Bluetooth: on"));
+            p.bluetooth.set(
+                "bluetooth-active-symbolic",
+                "On",
+                &format!("{pre}Bluetooth: on"),
+            );
         } else {
-            p.bluetooth.set("bluetooth-disabled-symbolic", "Off", &format!("{pre}Bluetooth: off"));
+            p.bluetooth.set(
+                "bluetooth-disabled-symbolic",
+                "Off",
+                &format!("{pre}Bluetooth: off"),
+            );
         }
     }
 
@@ -1348,18 +1641,31 @@ impl Ui {
     fn refresh_device_offline(&self) {
         let st = self.state.borrow();
         let d = &self.device;
-        let name = st.last.name.clone().or_else(|| st.last.model.clone()).unwrap_or_else(|| "Smart Connect".to_owned());
+        let name = st
+            .last
+            .name
+            .clone()
+            .or_else(|| st.last.model.clone())
+            .unwrap_or_else(|| "Smart Connect".to_owned());
         let starting = st.starting || st.service_starting;
         d.label.set_label(&name);
         d.menu_name.set_label(&name);
         d.dot.set_css_classes(&["dim-label"]);
-        d.menu_sub.set_label(if starting { "Starting the Smart Connect service…" } else { "Smart Connect service isn't running" });
+        d.menu_sub.set_label(if starting {
+            "Starting the Smart Connect service…"
+        } else {
+            "Smart Connect service isn't running"
+        });
         d.check.set_visible(false);
         d.pair.set_sensitive(false);
         d.connect.set_visible(true);
         d.connect.set_sensitive(!starting);
         if let Some(label) = d.connect.child().and_downcast::<gtk::Label>() {
-            label.set_label(if starting { "Starting…" } else { "Start service" });
+            label.set_label(if starting {
+                "Starting…"
+            } else {
+                "Start service"
+            });
         }
         d.button.set_visible(st.status.is_some() || st.last.known());
     }
@@ -1369,12 +1675,25 @@ impl Ui {
         let mut st = self.state.borrow_mut();
         let last = st.last.clone();
         self.down.card.set_visible(last.known());
-        self.down.name.set_label(last.name.as_deref().or(last.model.as_deref()).unwrap_or("Your phone"));
-        self.down.sub.set_label(&last.last_seen().map_or_else(|| "Not connected yet".to_owned(), |t| capitalize(&t)));
+        self.down.name.set_label(
+            last.name
+                .as_deref()
+                .or(last.model.as_deref())
+                .unwrap_or("Your phone"),
+        );
+        self.down.sub.set_label(
+            &last
+                .last_seen()
+                .map_or_else(|| "Not connected yet".to_owned(), |t| capitalize(&t)),
+        );
         let wall = last.wallpaper_path().map(str::to_owned);
         if wall != st.down_wallpaper {
             st.down_wallpaper = wall.clone();
-            show_wallpaper(&self.down.wallpaper, &self.down.wallpaper_stack, wall.as_deref());
+            show_wallpaper(
+                &self.down.wallpaper,
+                &self.down.wallpaper_stack,
+                wall.as_deref(),
+            );
         }
     }
 
@@ -1394,7 +1713,11 @@ impl Ui {
             match &result {
                 // Say plainly that it failed, with the daemon's reason (e.g. the phone isn't reachable).
                 Ok(r) if !r.ok => {
-                    let why = if r.message.is_empty() { "no reason given" } else { r.message.as_str() };
+                    let why = if r.message.is_empty() {
+                        "no reason given"
+                    } else {
+                        r.message.as_str()
+                    };
                     ui.toast(&format!("Couldn't {cmd}: {why}"));
                 }
                 _ => ui.toast_reply(&result),
@@ -1411,7 +1734,9 @@ impl Ui {
         if let Some(sid) = self.apps.mirror_session() {
             let weak = Rc::downgrade(self);
             glib::spawn_future_local(async move {
-                let result = gio::spawn_blocking(move || apps::close(sid)).await.unwrap_or_else(|_| Err("close thread failed".into()));
+                let result = gio::spawn_blocking(move || apps::close(sid))
+                    .await
+                    .unwrap_or_else(|_| Err("close thread failed".into()));
                 let Some(ui) = weak.upgrade() else { return };
                 if let Err(e) = result {
                     ui.toast(&e);
@@ -1436,7 +1761,9 @@ impl Ui {
         self.refresh_phone();
         let weak = Rc::downgrade(self);
         glib::spawn_future_local(async move {
-            let result = gio::spawn_blocking(apps::start_mirror).await.unwrap_or_else(|_| Err("mirror thread failed".into()));
+            let result = gio::spawn_blocking(apps::start_mirror)
+                .await
+                .unwrap_or_else(|_| Err("mirror thread failed".into()));
             let Some(ui) = weak.upgrade() else { return };
             ui.state.borrow_mut().mirror_pending = false;
             match result {
@@ -1476,7 +1803,9 @@ impl Ui {
     fn watch_mirror(self: &Rc<Self>) {
         let weak: Weak<Self> = Rc::downgrade(self);
         glib::timeout_add_local(Duration::from_millis(500), move || {
-            let Some(ui) = weak.upgrade() else { return glib::ControlFlow::Break };
+            let Some(ui) = weak.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
             let exit = ui.state.borrow_mut().mirror.as_mut().and_then(Mirror::poll);
             match exit {
                 None => glib::ControlFlow::Continue,
@@ -1498,10 +1827,15 @@ impl Ui {
     fn refresh_notifications(self: &Rc<Self>) {
         let (s_opt, connected) = {
             let st = self.state.borrow();
-            (st.status.clone(), st.status.as_ref().is_some_and(|s| s.connected))
+            (
+                st.status.clone(),
+                st.status.as_ref().is_some_and(|s| s.connected),
+            )
         };
         let Some(s) = s_opt else {
-            self.phone.notif_stack.set_visible_child_name("disconnected");
+            self.phone
+                .notif_stack
+                .set_visible_child_name("disconnected");
             self.phone.notif_title.set_label("Notifications");
             self.phone.clear_all.set_visible(false);
             return;
@@ -1533,7 +1867,9 @@ impl Ui {
         }
 
         let unread = s.unread.unwrap_or(0).max(0);
-        self.phone.notif_title.set_label(&notification_header_label(Some(unread)));
+        self.phone
+            .notif_title
+            .set_label(&notification_header_label(Some(unread)));
 
         let has_notifications = !notifications.is_empty();
         self.phone.clear_all.set_visible(has_notifications);
@@ -1541,7 +1877,10 @@ impl Ui {
 
         // Rows are kept per key (and re-ordered) so a half-typed reply survives status updates.
         let mut st = self.state.borrow_mut();
-        for n in notifications.iter().filter(|n| !n.pkg.is_empty() && !n.app.is_empty()) {
+        for n in notifications
+            .iter()
+            .filter(|n| !n.pkg.is_empty() && !n.app.is_empty())
+        {
             st.app_names.insert(n.pkg.clone(), n.app.clone());
         }
         st.rows.retain(|key, row| {
@@ -1589,9 +1928,21 @@ impl Ui {
     fn notification_row(self: &Rc<Self>, n: &Notification) -> NotifRow {
         let icon = IconSlot::new(32);
         icon.widget().set_valign(gtk::Align::Start);
-        let header = gtk::Label::builder().xalign(0.0).wrap(true).hexpand(true).css_classes(["heading"]).build();
-        let sub = gtk::Label::builder().xalign(0.0).wrap(true).css_classes(["caption", "dim-label"]).build();
-        let name_col = gtk::Box::builder().orientation(gtk::Orientation::Vertical).hexpand(true).build();
+        let header = gtk::Label::builder()
+            .xalign(0.0)
+            .wrap(true)
+            .hexpand(true)
+            .css_classes(["heading"])
+            .build();
+        let sub = gtk::Label::builder()
+            .xalign(0.0)
+            .wrap(true)
+            .css_classes(["caption", "dim-label"])
+            .build();
+        let name_col = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .hexpand(true)
+            .build();
         name_col.append(&header);
         name_col.append(&sub);
 
@@ -1606,11 +1957,17 @@ impl Ui {
         let open_item = menu_item("Open on phone");
         let dismiss_item = menu_item("Dismiss");
         let mute_item = menu_item("Mute");
-        let menu_box = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(2).build();
+        let menu_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(2)
+            .build();
         menu_box.append(&open_item);
         menu_box.append(&dismiss_item);
         menu_box.append(&mute_item);
-        let menu_pop = gtk::Popover::builder().child(&menu_box).width_request(180).build();
+        let menu_pop = gtk::Popover::builder()
+            .child(&menu_box)
+            .width_request(180)
+            .build();
         let menu = gtk::MenuButton::builder()
             .icon_name("view-more-symbolic")
             .valign(gtk::Align::Start)
@@ -1630,9 +1987,20 @@ impl Ui {
             .wrap_mode(gtk::pango::WrapMode::WordChar)
             .selectable(true)
             .build();
-        let entry = gtk::Entry::builder().hexpand(true).placeholder_text("Reply…").build();
-        let send = gtk::Button::builder().icon_name("mail-send-symbolic").tooltip_text("Send reply").css_classes(["suggested-action"]).build();
-        let reply_box = gtk::Box::builder().spacing(6).margin_top(6).css_classes(["linked"]).build();
+        let entry = gtk::Entry::builder()
+            .hexpand(true)
+            .placeholder_text("Reply…")
+            .build();
+        let send = gtk::Button::builder()
+            .icon_name("mail-send-symbolic")
+            .tooltip_text("Send reply")
+            .css_classes(["suggested-action"])
+            .build();
+        let reply_box = gtk::Box::builder()
+            .spacing(6)
+            .margin_top(6)
+            .css_classes(["linked"])
+            .build();
         reply_box.append(&entry);
         reply_box.append(&send);
         let column = gtk::Box::builder()
@@ -1643,7 +2011,10 @@ impl Ui {
         column.append(&header_box);
         column.append(&body);
         column.append(&reply_box);
-        let row = gtk::ListBoxRow::builder().activatable(false).child(&column).build();
+        let row = gtk::ListBoxRow::builder()
+            .activatable(false)
+            .child(&column)
+            .build();
 
         // ── ⋯ menu handlers (read the current notification from state by key) ──
         let key = n.key.clone();
@@ -1680,7 +2051,12 @@ impl Ui {
             let Some(ui) = weak.upgrade() else { return };
             let data = ui.state.borrow().rows.get(&key).map(|r| r.data.clone());
             if let Some(n) = data.filter(|n| !n.pkg.is_empty()) {
-                let muted = ui.state.borrow().muted.as_ref().is_some_and(|m| m.contains(&n.pkg));
+                let muted = ui
+                    .state
+                    .borrow()
+                    .muted
+                    .as_ref()
+                    .is_some_and(|m| m.contains(&n.pkg));
                 ui.set_app_muted(&n.pkg, !muted);
             }
         });
@@ -1690,7 +2066,9 @@ impl Ui {
         let weak = Rc::downgrade(self);
         let entry_ref = entry.downgrade();
         let send_reply = move || {
-            let (Some(ui), Some(entry)) = (weak.upgrade(), entry_ref.upgrade()) else { return };
+            let (Some(ui), Some(entry)) = (weak.upgrade(), entry_ref.upgrade()) else {
+                return;
+            };
             let text = entry.text().trim().to_owned();
             if text.is_empty() {
                 return;
@@ -1735,11 +2113,19 @@ impl Ui {
 
     /// "Open on phone": forward the notification's own click to the phone.
     fn open_on_phone(self: &Rc<Self>, n: &Notification) {
-        if !self.state.borrow().status.as_ref().is_some_and(|s| s.connected) {
+        if !self
+            .state
+            .borrow()
+            .status
+            .as_ref()
+            .is_some_and(|s| s.connected)
+        {
             self.toast("The phone is not connected");
             return;
         }
-        self.command(daemon::notif_open_line(&n.key, n.service), |ui, result| ui.toast_reply(&result));
+        self.command(daemon::notif_open_line(&n.key, n.service), |ui, result| {
+            ui.toast_reply(&result)
+        });
     }
 
     /// Clears one notification from this PC's list (keeps it on the phone).
@@ -1774,35 +2160,48 @@ impl Ui {
         }
         self.command(daemon::mute_line(None), |ui, result| {
             ui.state.borrow_mut().muted_loading = false;
-            let list = result.as_ref().ok().and_then(Reply::muted).unwrap_or_else(|| {
-                // An older daemon: don't ask again on every status push (showing the page still does).
-                eprintln!("smartconnect-gui: no muted-app list from smartconnectd");
-                Vec::new()
-            });
+            let list = result
+                .as_ref()
+                .ok()
+                .and_then(Reply::muted)
+                .unwrap_or_else(|| {
+                    // An older daemon: don't ask again on every status push (showing the page still does).
+                    eprintln!("smartconnect-gui: no muted-app list from smartconnectd");
+                    Vec::new()
+                });
             ui.set_muted_list(list);
         });
     }
 
     fn app_name(&self, pkg: &str) -> String {
         let known = self.state.borrow().app_names.get(pkg).cloned();
-        known.or_else(|| self.apps.app_name(pkg)).unwrap_or_else(|| pkg.to_owned())
+        known
+            .or_else(|| self.apps.app_name(pkg))
+            .unwrap_or_else(|| pkg.to_owned())
     }
 
     /// Mutes or unmutes the desktop popups of one phone app (the daemon keeps the list).
     fn set_app_muted(self: &Rc<Self>, pkg: &str, mute: bool) {
         let name = self.app_name(pkg);
-        self.command(daemon::mute_line(Some((pkg, mute))), move |ui, result| match &result {
-            Ok(reply) if reply.ok => {
-                if let Some(list) = reply.muted() {
-                    ui.set_muted_list(list);
+        self.command(
+            daemon::mute_line(Some((pkg, mute))),
+            move |ui, result| match &result {
+                Ok(reply) if reply.ok => {
+                    if let Some(list) = reply.muted() {
+                        ui.set_muted_list(list);
+                    }
+                    ui.toast(&if mute {
+                        format!("{name} muted: no more desktop popups from it")
+                    } else {
+                        format!("{name} unmuted")
+                    });
                 }
-                ui.toast(&if mute { format!("{name} muted: no more desktop popups from it") } else { format!("{name} unmuted") });
-            }
-            _ => {
-                ui.toast_reply(&result);
-                ui.refresh_notifications(); // put the toggle back to the daemon's state
-            }
-        });
+                _ => {
+                    ui.toast_reply(&result);
+                    ui.refresh_notifications(); // put the toggle back to the daemon's state
+                }
+            },
+        );
     }
 
     fn set_muted_list(self: &Rc<Self>, mut list: Vec<String>) {
@@ -1818,11 +2217,17 @@ impl Ui {
         let mut rows = Vec::new();
         for pkg in &list {
             let name = self.app_name(pkg);
-            let row = adw::ActionRow::builder().title(&name).use_markup(false).build();
+            let row = adw::ActionRow::builder()
+                .title(&name)
+                .use_markup(false)
+                .build();
             if name != *pkg {
                 row.set_subtitle(pkg);
             }
-            let unmute = gtk::Button::builder().label("Unmute").valign(gtk::Align::Center).build();
+            let unmute = gtk::Button::builder()
+                .label("Unmute")
+                .valign(gtk::Align::Center)
+                .build();
             let weak = Rc::downgrade(self);
             let pkg = pkg.clone();
             unmute.connect_clicked(move |b| {
@@ -1885,7 +2290,11 @@ impl Ui {
 
     fn refresh_pair(&self) {
         let st = self.state.borrow();
-        let path = st.qr_path.as_deref().filter(|_| st.show_qr).map(|p| p.split('?').next().unwrap_or(p));
+        let path = st
+            .qr_path
+            .as_deref()
+            .filter(|_| st.show_qr)
+            .map(|p| p.split('?').next().unwrap_or(p));
         match path {
             Some(path) => {
                 let current = self.pair.qr.file().and_then(|f| f.path());
@@ -1894,7 +2303,9 @@ impl Ui {
                 }
                 self.pair.qr_box.set_visible(true);
                 self.pair.spinner.set_visible(true);
-                self.pair.status.set_label("Waiting for phone… the phone connects automatically once pairing finishes.");
+                self.pair.status.set_label(
+                    "Waiting for phone… the phone connects automatically once pairing finishes.",
+                );
             }
             None => {
                 self.pair.qr_box.set_visible(false);
@@ -1924,17 +2335,32 @@ impl NotifRow {
         self.mute_item.set_visible(!n.pkg.is_empty());
         let time_str = format_notification_time(self.received_secs, lastdevice::now_secs());
         self.time.set_label(&time_str);
-        self.time.set_tooltip_text(Some(&lastdevice::relative(self.received_secs, lastdevice::now_secs())));
+        self.time.set_tooltip_text(Some(&lastdevice::relative(
+            self.received_secs,
+            lastdevice::now_secs(),
+        )));
         self.data = n.clone();
     }
 
     /// Shows the daemon's mute state on the ⋯ menu item (a click asks for the opposite).
     fn set_muted(&self, muted: bool) {
-        let app = if self.data.app.is_empty() { "this app" } else { self.data.app.as_str() };
+        let app = if self.data.app.is_empty() {
+            "this app"
+        } else {
+            self.data.app.as_str()
+        };
         if let Some(label) = self.mute_item.child().and_downcast::<gtk::Label>() {
-            label.set_label(&if muted { format!("Unmute {app}") } else { format!("Mute {app}") });
+            label.set_label(&if muted {
+                format!("Unmute {app}")
+            } else {
+                format!("Mute {app}")
+            });
         }
-        self.menu.set_tooltip_text(Some(if muted { "Muted · more actions" } else { "More actions" }));
+        self.menu.set_tooltip_text(Some(if muted {
+            "Muted · more actions"
+        } else {
+            "More actions"
+        }));
     }
 }
 
@@ -1955,10 +2381,16 @@ pub(crate) fn notification_stack_view(state: PhoneState, count: usize) -> &'stat
     }
 }
 
-pub(crate) fn filter_notifications(raw: &[Notification], dismissed: &mut HashSet<String>) -> Vec<Notification> {
+pub(crate) fn filter_notifications(
+    raw: &[Notification],
+    dismissed: &mut HashSet<String>,
+) -> Vec<Notification> {
     let present: HashSet<&String> = raw.iter().map(|n| &n.key).collect();
     dismissed.retain(|k| present.contains(k));
-    raw.iter().filter(|n| !dismissed.contains(&n.key)).cloned().collect()
+    raw.iter()
+        .filter(|n| !dismissed.contains(&n.key))
+        .cloned()
+        .collect()
 }
 
 pub(crate) fn format_notification_time(received_secs: u64, now_secs: u64) -> String {
@@ -1977,16 +2409,31 @@ mod tests {
         assert_eq!(notification_header_label(None), "Notifications");
         assert_eq!(notification_header_label(Some(0)), "Notifications");
         assert_eq!(notification_header_label(Some(-1)), "Notifications");
-        assert_eq!(notification_header_label(Some(1)), "Notifications · 1 unread");
-        assert_eq!(notification_header_label(Some(32)), "Notifications · 32 unread");
+        assert_eq!(
+            notification_header_label(Some(1)),
+            "Notifications · 1 unread"
+        );
+        assert_eq!(
+            notification_header_label(Some(32)),
+            "Notifications · 32 unread"
+        );
     }
 
     #[test]
     fn stack_views_for_phone_states() {
         assert_eq!(notification_stack_view(PhoneState::Unpaired, 0), "unpaired");
-        assert_eq!(notification_stack_view(PhoneState::Unpaired, 10), "unpaired");
-        assert_eq!(notification_stack_view(PhoneState::Disconnected, 0), "disconnected");
-        assert_eq!(notification_stack_view(PhoneState::Disconnected, 10), "disconnected");
+        assert_eq!(
+            notification_stack_view(PhoneState::Unpaired, 10),
+            "unpaired"
+        );
+        assert_eq!(
+            notification_stack_view(PhoneState::Disconnected, 0),
+            "disconnected"
+        );
+        assert_eq!(
+            notification_stack_view(PhoneState::Disconnected, 10),
+            "disconnected"
+        );
         assert_eq!(notification_stack_view(PhoneState::Connected, 0), "empty");
         assert_eq!(notification_stack_view(PhoneState::Connected, 1), "list");
         assert_eq!(notification_stack_view(PhoneState::Connected, 15), "list");
@@ -1994,8 +2441,16 @@ mod tests {
 
     #[test]
     fn filter_and_dismiss_logic() {
-        let n1 = Notification { key: "k1".into(), title: "Title 1".into(), ..Default::default() };
-        let n2 = Notification { key: "k2".into(), title: "Title 2".into(), ..Default::default() };
+        let n1 = Notification {
+            key: "k1".into(),
+            title: "Title 1".into(),
+            ..Default::default()
+        };
+        let n2 = Notification {
+            key: "k2".into(),
+            title: "Title 2".into(),
+            ..Default::default()
+        };
         let raw = vec![n1.clone(), n2.clone()];
         let mut dismissed = HashSet::new();
 
@@ -2017,7 +2472,11 @@ mod tests {
         assert!(active.is_empty());
 
         // When phone removes k1 and sends a new one k3
-        let n3 = Notification { key: "k3".into(), title: "Title 3".into(), ..Default::default() };
+        let n3 = Notification {
+            key: "k3".into(),
+            title: "Title 3".into(),
+            ..Default::default()
+        };
         let raw2 = vec![n3.clone(), n2.clone()];
         let active = filter_notifications(&raw2, &mut dismissed);
         // k1 was pruned from dismissed because it is no longer in raw2; k2 was dismissed; k3 is new

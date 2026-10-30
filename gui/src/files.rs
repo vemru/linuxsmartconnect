@@ -44,13 +44,18 @@ const MOUNT_GRACE: Duration = Duration::from_millis(2500);
 /// first one that exists is opened; a shortcut with no existing folder is hidden.
 const QUICK: [(&str, &[&str]); 4] = [
     ("Camera", &["DCIM/Camera", "DCIM"]),
-    ("Screenshots", &["Pictures/Screenshots", "DCIM/Screenshots", "Screenshots"]),
+    (
+        "Screenshots",
+        &["Pictures/Screenshots", "DCIM/Screenshots", "Screenshots"],
+    ),
     ("Downloads", &["Download", "Downloads"]),
     ("Documents", &["Documents"]),
 ];
 
 fn runtime_dir() -> PathBuf {
-    std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).unwrap_or_else(std::env::temp_dir)
+    std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
 }
 
 fn log_path() -> PathBuf {
@@ -69,7 +74,10 @@ fn is_mountpoint(dir: &Path) -> bool {
 
 /// "Transport endpoint is not connected": a FUSE mount whose helper process is gone.
 fn is_stale_error(e: &io::Error) -> bool {
-    matches!(e.raw_os_error(), Some(libc::ENOTCONN) | Some(libc::ECONNABORTED))
+    matches!(
+        e.raw_os_error(),
+        Some(libc::ENOTCONN) | Some(libc::ECONNABORTED)
+    )
 }
 
 /// `statfs(dir)`. Unlike `stat` — which the kernel keeps answering from cached attributes for up to
@@ -77,10 +85,15 @@ fn is_stale_error(e: &io::Error) -> bool {
 /// `ENOTCONN` at once on a stale mount. Our helper answers it locally (no round-trip to the phone).
 fn statfs(dir: &Path) -> io::Result<()> {
     use std::os::unix::ffi::OsStrExt;
-    let path = std::ffi::CString::new(dir.as_os_str().as_bytes()).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
+    let path = std::ffi::CString::new(dir.as_os_str().as_bytes())
+        .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
     // SAFETY: a valid NUL-terminated path and a zeroed, writable statfs buffer.
     let mut buf: libc::statfs = unsafe { std::mem::zeroed() };
-    if unsafe { libc::statfs(path.as_ptr(), &mut buf) } == 0 { Ok(()) } else { Err(io::Error::last_os_error()) }
+    if unsafe { libc::statfs(path.as_ptr(), &mut buf) } == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
 }
 
 /// `dir` is a stale FUSE mount (its helper is gone).
@@ -106,7 +119,12 @@ enum Health {
 
 /// Classifies the mount folder from a `statfs` of it, a `stat` of it (its device id), its parent's
 /// device id, and a directory listing (only attempted on a mount point). Pure, for tests.
-fn classify(fs: io::Result<()>, here: io::Result<u64>, parent: Option<u64>, list: impl FnOnce() -> io::Result<()>) -> Health {
+fn classify(
+    fs: io::Result<()>,
+    here: io::Result<u64>,
+    parent: Option<u64>,
+    list: impl FnOnce() -> io::Result<()>,
+) -> Health {
     if fs.is_err_and(|e| is_stale_error(&e)) {
         return Health::Stale;
     }
@@ -130,8 +148,16 @@ fn probe(dir: &Path, deep: bool) -> Health {
     classify(
         statfs(dir),
         std::fs::metadata(dir).map(|m| m.dev()),
-        dir.parent().and_then(|p| std::fs::metadata(p).ok()).map(|m| m.dev()),
-        || if deep { std::fs::read_dir(dir).map(|mut d| drop(d.next())) } else { Ok(()) },
+        dir.parent()
+            .and_then(|p| std::fs::metadata(p).ok())
+            .map(|m| m.dev()),
+        || {
+            if deep {
+                std::fs::read_dir(dir).map(|mut d| drop(d.next()))
+            } else {
+                Ok(())
+            }
+        },
     )
 }
 
@@ -145,8 +171,9 @@ const PROBE_EVERY_TICKS: u32 = 10;
 async fn probe_async(dir: PathBuf, deep: bool) -> (Health, Option<[Option<usize>; 4]>) {
     let work = gio::spawn_blocking(move || {
         let health = probe(&dir, deep);
-        let quick = (deep && health == Health::Live)
-            .then(|| QUICK.map(|(_, candidates)| candidates.iter().position(|c| dir.join(c).is_dir())));
+        let quick = (deep && health == Health::Live).then(|| {
+            QUICK.map(|(_, candidates)| candidates.iter().position(|c| dir.join(c).is_dir()))
+        });
         (health, quick)
     });
     match glib::future_with_timeout(PROBE_TIMEOUT, work).await {
@@ -158,7 +185,11 @@ async fn probe_async(dir: PathBuf, deep: bool) -> (Health, Option<[Option<usize>
 /// The last non-empty line of the mount log, shown when the child exits with an error.
 fn last_log_line() -> Option<String> {
     let text = std::fs::read_to_string(log_path()).ok()?;
-    text.lines().map(str::trim).rev().find(|l| !l.is_empty()).map(str::to_owned)
+    text.lines()
+        .map(str::trim)
+        .rev()
+        .find(|l| !l.is_empty())
+        .map(str::to_owned)
 }
 
 /// `fusermount3 -u DIR`, falling back to a lazy `-uz` (busy or stale mount). Returns the first
@@ -170,7 +201,11 @@ fn fusermount_unmount(dir: &Path) -> Result<(), String> {
         Ok(out) => {
             let msg = String::from_utf8_lossy(&out.stderr);
             let msg = msg.trim();
-            Err(if msg.is_empty() { format!("fusermount3 {flag} exited with {}", out.status) } else { msg.to_owned() })
+            Err(if msg.is_empty() {
+                format!("fusermount3 {flag} exited with {}", out.status)
+            } else {
+                msg.to_owned()
+            })
         }
         Err(e) => Err(format!("could not run fusermount3: {e}")),
     };
@@ -189,7 +224,9 @@ fn cleanup_mount(dir: &Path) {
 fn spawn_mount(dir: &Path) -> Result<Child, String> {
     let bin = binary(BIN);
     let log = File::create(log_path()).map_err(|e| format!("could not open the mount log: {e}"))?;
-    let log2 = log.try_clone().map_err(|e| format!("could not open the mount log: {e}"))?;
+    let log2 = log
+        .try_clone()
+        .map_err(|e| format!("could not open the mount log: {e}"))?;
     Command::new(&bin)
         .arg("mount")
         .arg("--mountpoint")
@@ -259,14 +296,26 @@ pub struct FilesPage {
 /// A themed "card" status tile is built from a plain box; this gives it inner padding (structural
 /// only — the colours come from the `.card` style class, i.e. the user's theme).
 fn card_box() -> gtk::Box {
-    gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(12).css_classes(["card", "sc-card"]).build()
+    gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(12)
+        .css_classes(["card", "sc-card"])
+        .build()
 }
 
 impl FilesPage {
     pub fn build(toasts: &adw::ToastOverlay) -> (Rc<Self>, gtk::Widget) {
         // ── Storage card (hero) ───────────────────────────────────────────────
-        let icon = gtk::Image::builder().icon_name("folder-symbolic").pixel_size(32).build();
-        let title = gtk::Label::builder().label("Phone storage").xalign(0.0).css_classes(["title-4"]).wrap(true).build();
+        let icon = gtk::Image::builder()
+            .icon_name("folder-symbolic")
+            .pixel_size(32)
+            .build();
+        let title = gtk::Label::builder()
+            .label("Phone storage")
+            .xalign(0.0)
+            .css_classes(["title-4"])
+            .wrap(true)
+            .build();
         let detail = gtk::Label::builder()
             .xalign(0.0)
             .css_classes(["dim-label"])
@@ -274,10 +323,20 @@ impl FilesPage {
             .wrap_mode(gtk::pango::WrapMode::WordChar)
             .selectable(true)
             .build();
-        let text = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(2).hexpand(true).valign(gtk::Align::Center).build();
+        let text = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(2)
+            .hexpand(true)
+            .valign(gtk::Align::Center)
+            .build();
         text.append(&title);
         text.append(&detail);
-        let readonly = gtk::Label::builder().label("Read-only").css_classes(["caption", "dim-label", "card", "sc-badge"]).valign(gtk::Align::Center).visible(false).build();
+        let readonly = gtk::Label::builder()
+            .label("Read-only")
+            .css_classes(["caption", "dim-label", "card", "sc-badge"])
+            .valign(gtk::Align::Center)
+            .visible(false)
+            .build();
         let head = gtk::Box::builder().spacing(12).build();
         head.append(&icon);
         head.append(&text);
@@ -285,10 +344,23 @@ impl FilesPage {
 
         let banner = adw::Banner::builder().revealed(false).build();
 
-        let mount = gtk::Button::builder().css_classes(["suggested-action"]).label("Mount").build();
-        let unmount = gtk::Button::builder().label("Unmount").visible(false).build();
-        let open = gtk::Button::builder().css_classes(["suggested-action"]).label("Open in Files").visible(false).build();
-        let actions = gtk::Box::builder().spacing(8).halign(gtk::Align::Start).build();
+        let mount = gtk::Button::builder()
+            .css_classes(["suggested-action"])
+            .label("Mount")
+            .build();
+        let unmount = gtk::Button::builder()
+            .label("Unmount")
+            .visible(false)
+            .build();
+        let open = gtk::Button::builder()
+            .css_classes(["suggested-action"])
+            .label("Open in Files")
+            .visible(false)
+            .build();
+        let actions = gtk::Box::builder()
+            .spacing(8)
+            .halign(gtk::Align::Start)
+            .build();
         actions.append(&mount);
         actions.append(&unmount);
         actions.append(&open);
@@ -310,11 +382,29 @@ impl FilesPage {
         let mut quick = Vec::new();
         let page_ref: Rc<RefCell<Option<std::rc::Weak<Self>>>> = Rc::new(RefCell::new(None));
         for (index, (label, candidates)) in QUICK.into_iter().enumerate() {
-            let inner = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(2).build();
-            inner.append(&gtk::Label::builder().label(label).css_classes(["heading"]).xalign(0.0).build());
-            let name = gtk::Label::builder().label(candidates[0]).css_classes(["caption", "dim-label"]).xalign(0.0).ellipsize(gtk::pango::EllipsizeMode::End).build();
+            let inner = gtk::Box::builder()
+                .orientation(gtk::Orientation::Vertical)
+                .spacing(2)
+                .build();
+            inner.append(
+                &gtk::Label::builder()
+                    .label(label)
+                    .css_classes(["heading"])
+                    .xalign(0.0)
+                    .build(),
+            );
+            let name = gtk::Label::builder()
+                .label(candidates[0])
+                .css_classes(["caption", "dim-label"])
+                .xalign(0.0)
+                .ellipsize(gtk::pango::EllipsizeMode::End)
+                .build();
             inner.append(&name);
-            let button = gtk::Button::builder().css_classes(["card", "sc-tile"]).hexpand(true).child(&inner).build();
+            let button = gtk::Button::builder()
+                .css_classes(["card", "sc-tile"])
+                .hexpand(true)
+                .child(&inner)
+                .build();
             let slot = page_ref.clone();
             button.connect_clicked(move |b| {
                 if let Some(p) = slot.borrow().as_ref().and_then(std::rc::Weak::upgrade) {
@@ -324,14 +414,25 @@ impl FilesPage {
             quick_flow.append(&button);
             quick.push(button);
         }
-        let quick_group = adw::PreferencesGroup::builder().title("Quick folders").visible(false).build();
+        let quick_group = adw::PreferencesGroup::builder()
+            .title("Quick folders")
+            .visible(false)
+            .build();
         quick_group.add(&quick_flow);
 
         // ── Storage settings ──────────────────────────────────────────────────
-        let location = adw::ActionRow::builder().title("Mount location").use_markup(false).build();
-        let change = gtk::Button::builder().label("Change…").valign(gtk::Align::Center).build();
+        let location = adw::ActionRow::builder()
+            .title("Mount location")
+            .use_markup(false)
+            .build();
+        let change = gtk::Button::builder()
+            .label("Change…")
+            .valign(gtk::Align::Center)
+            .build();
         location.add_suffix(&change);
-        let auto_mount = adw::SwitchRow::builder().title("Mount automatically when connected").build();
+        let auto_mount = adw::SwitchRow::builder()
+            .title("Mount automatically when connected")
+            .build();
         let group = adw::PreferencesGroup::builder()
             .title("Storage")
             .description("The phone's storage is mounted read-only.")
@@ -353,8 +454,16 @@ impl FilesPage {
         let (share, share_widget) = ShareSection::build(toasts);
         column.append(&share_widget);
 
-        let clamp = adw::Clamp::builder().maximum_size(1400).tightening_threshold(1400).child(&column).build();
-        let scroller = gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).vexpand(true).child(&clamp).build();
+        let clamp = adw::Clamp::builder()
+            .maximum_size(1400)
+            .tightening_threshold(1400)
+            .child(&column)
+            .build();
+        let scroller = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vexpand(true)
+            .child(&clamp)
+            .build();
 
         let page = Rc::new(Self {
             toasts: toasts.clone(),
@@ -398,7 +507,10 @@ impl FilesPage {
         glib::spawn_future_local(async move {
             let _ = gio::spawn_blocking(move || {
                 if is_stale(&dir) {
-                    eprintln!("smartconnect-gui: clearing a stale mount at {}", dir.display());
+                    eprintln!(
+                        "smartconnect-gui: clearing a stale mount at {}",
+                        dir.display()
+                    );
                     let _ = fusermount_unmount(&dir);
                 }
             })
@@ -498,7 +610,10 @@ impl FilesPage {
 
     /// Opens a folder chooser to pick where the phone's storage is mounted.
     fn choose_folder(self: &Rc<Self>, button: &gtk::Button) {
-        let dialog = gtk::FileDialog::builder().title("Choose the mount folder").accept_label("Use folder").build();
+        let dialog = gtk::FileDialog::builder()
+            .title("Choose the mount folder")
+            .accept_label("Use folder")
+            .build();
         dialog.set_initial_folder(Some(&gio::File::for_path(prefs::load().files.mount_path())));
         let parent = button.root().and_downcast::<gtk::Window>();
         let weak = Rc::downgrade(self);
@@ -510,7 +625,9 @@ impl FilesPage {
                         p.save_dir(&path.display().to_string());
                     }
                 }
-                Err(e) if !e.matches(gtk::DialogError::Dismissed) => p.toast(&format!("Could not choose a folder: {e}")),
+                Err(e) if !e.matches(gtk::DialogError::Dismissed) => {
+                    p.toast(&format!("Could not choose a folder: {e}"))
+                }
                 Err(_) => {}
             }
         });
@@ -526,7 +643,8 @@ impl FilesPage {
         if let Err(e) = prefs::save(&prefs) {
             eprintln!("smartconnect-gui: could not save the mount folder: {e}");
         }
-        self.location.set_subtitle(&self.location_text(&prefs.files));
+        self.location
+            .set_subtitle(&self.location_text(&prefs.files));
     }
 
     /// The folder to mount: the configured one expanded (blank → `~/Phone`).
@@ -589,7 +707,9 @@ impl FilesPage {
         }
         let weak = Rc::downgrade(self);
         glib::timeout_add_local(Duration::from_millis(500), move || {
-            let Some(p) = weak.upgrade() else { return glib::ControlFlow::Break };
+            let Some(p) = weak.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
             // An unmount is reaping the child; stop polling and let it finish.
             if p.st.borrow().busy {
                 p.watching.set(false);
@@ -620,7 +740,8 @@ impl FilesPage {
             let promote = {
                 let st = p.st.borrow();
                 st.phase == Phase::Mounting
-                    && (is_mountpoint(&st.dir) || st.started.is_some_and(|t| t.elapsed() >= MOUNT_GRACE))
+                    && (is_mountpoint(&st.dir)
+                        || st.started.is_some_and(|t| t.elapsed() >= MOUNT_GRACE))
             };
             if promote {
                 p.st.borrow_mut().phase = Phase::Mounted;
@@ -656,6 +777,7 @@ impl FilesPage {
     /// Probes the mount off the main thread (`deep`: list it and find the quick folders; else a
     /// cheap `stat` that still catches a stale mount), records the result, deals with a lost mount,
     /// then runs `then` with the health.
+    #[allow(clippy::type_complexity)]
     fn check_health(self: &Rc<Self>, deep: bool, then: Option<Box<dyn FnOnce(&Rc<Self>, Health)>>) {
         let dir = {
             let mut st = self.st.borrow_mut();
@@ -736,7 +858,9 @@ impl FilesPage {
         let detail = last_log_line();
         let message = match (was_mounting, detail) {
             (true, Some(line)) => format!("Could not mount the phone's storage: {line}"),
-            (true, None) => "Could not mount the phone's storage. Is the phone connected?".to_owned(),
+            (true, None) => {
+                "Could not mount the phone's storage. Is the phone connected?".to_owned()
+            }
             (false, Some(line)) => format!("The phone's storage was unmounted: {line}"),
             (false, None) => "The phone's storage was unmounted.".to_owned(),
         };
@@ -762,7 +886,9 @@ impl FilesPage {
         let weak = Rc::downgrade(self);
         glib::spawn_future_local(async move {
             let d = dir.clone();
-            let result = gio::spawn_blocking(move || fusermount_unmount(&d)).await.unwrap_or_else(|_| Err("unmount thread failed".into()));
+            let result = gio::spawn_blocking(move || fusermount_unmount(&d))
+                .await
+                .unwrap_or_else(|_| Err("unmount thread failed".into()));
             let Some(p) = weak.upgrade() else { return };
             p.reap_child();
             {
@@ -782,7 +908,9 @@ impl FilesPage {
 
     /// Reaps the mount child: it exits once the mount is gone; SIGTERM then wait if it lingers.
     fn reap_child(&self) {
-        let Some(mut child) = self.st.borrow_mut().child.take() else { return };
+        let Some(mut child) = self.st.borrow_mut().child.take() else {
+            return;
+        };
         for _ in 0..25 {
             match child.try_wait() {
                 Ok(Some(_)) => return,
@@ -807,7 +935,10 @@ impl FilesPage {
             self.toast("Still mounting; it opens when ready");
             return;
         }
-        let parent = button.root().and_downcast::<gtk::Window>().map(|w| w.downgrade());
+        let parent = button
+            .root()
+            .and_downcast::<gtk::Window>()
+            .map(|w| w.downgrade());
         self.check_health(
             true,
             Some(Box::new(move |p: &Rc<Self>, health| {
@@ -840,7 +971,10 @@ impl FilesPage {
     fn open_target(&self, target: Option<usize>, parent: Option<&gtk::Window>) {
         let (dir, sub) = {
             let st = self.st.borrow();
-            (st.dir.clone(), target.map(|i| st.quick[i].map(|c| QUICK[i].1[c])))
+            (
+                st.dir.clone(),
+                target.map(|i| st.quick[i].map(|c| QUICK[i].1[c])),
+            )
         };
         let path = match sub {
             None => dir,
@@ -856,7 +990,8 @@ impl FilesPage {
             if let Err(e) = res {
                 if !e.matches(gtk::DialogError::Dismissed) {
                     if let Some(toasts) = weak.upgrade() {
-                        toasts.add_toast(adw::Toast::new(&format!("Could not open the folder: {e}")));
+                        toasts
+                            .add_toast(adw::Toast::new(&format!("Could not open the folder: {e}")));
                     }
                 }
             }
@@ -928,11 +1063,18 @@ impl FilesPage {
             Phase::Mounted => "Phone storage mounted",
         });
         self.detail.set_label(&match p {
-            Phase::Unmounted if !st.connected => "Connect your phone to mount its storage.".to_owned(),
-            Phase::Unmounted => "Mount the phone's storage to browse its files from this PC.".to_owned(),
+            Phase::Unmounted if !st.connected => {
+                "Connect your phone to mount its storage.".to_owned()
+            }
+            Phase::Unmounted => {
+                "Mount the phone's storage to browse its files from this PC.".to_owned()
+            }
             Phase::Mounting => "Handshaking with the phone…".to_owned(),
             Phase::Mounted => match st.health {
-                Health::Offline => format!("{} · the phone is offline; it reconnects when the phone is back", st.dir.display()),
+                Health::Offline => format!(
+                    "{} · the phone is offline; it reconnects when the phone is back",
+                    st.dir.display()
+                ),
                 Health::Unresponsive => format!("{} · not responding right now", st.dir.display()),
                 _ => st.dir.display().to_string(),
             },
@@ -940,14 +1082,17 @@ impl FilesPage {
         self.readonly.set_visible(mounted);
 
         self.mount.set_visible(!mounted);
-        self.mount.set_label(if mounting { "Mounting…" } else { "Mount" });
+        self.mount
+            .set_label(if mounting { "Mounting…" } else { "Mount" });
         // Mount only when the phone is connected and nothing is in flight.
-        self.mount.set_sensitive(st.connected && *p == Phase::Unmounted && !st.busy);
+        self.mount
+            .set_sensitive(st.connected && *p == Phase::Unmounted && !st.busy);
 
         self.open.set_visible(mounted);
         self.open.set_sensitive(!st.busy);
         self.unmount.set_visible(mounted);
-        self.unmount.set_label(if st.busy { "Unmounting…" } else { "Unmount" });
+        self.unmount
+            .set_label(if st.busy { "Unmounting…" } else { "Unmount" });
         self.unmount.set_sensitive(!st.busy);
 
         // Quick folders: shown only while mounted, each hidden (cell and all) when its target is absent.
@@ -965,7 +1110,8 @@ impl FilesPage {
         self.quick_group.set_visible(mounted && any_quick);
 
         // The folder can only be changed while nothing is mounted.
-        self.location.set_sensitive(*p == Phase::Unmounted && !st.busy);
+        self.location
+            .set_sensitive(*p == Phase::Unmounted && !st.busy);
     }
 }
 
@@ -981,18 +1127,40 @@ mod tests {
     fn mount_health() {
         let ok = || Ok(());
         // "Transport endpoint is not connected": the helper is gone.
-        assert_eq!(classify(Ok(()), err(libc::ENOTCONN), Some(1), ok), Health::Stale);
+        assert_eq!(
+            classify(Ok(()), err(libc::ENOTCONN), Some(1), ok),
+            Health::Stale
+        );
         // Our helper answers EIO while the phone is away (it reconnects by itself).
-        assert_eq!(classify(Ok(()), err(libc::EIO), Some(1), ok), Health::Offline);
+        assert_eq!(
+            classify(Ok(()), err(libc::EIO), Some(1), ok),
+            Health::Offline
+        );
         // A missing folder, or a plain folder on the parent's file system.
-        assert_eq!(classify(Ok(()), err(libc::ENOENT), Some(1), ok), Health::NotMounted);
+        assert_eq!(
+            classify(Ok(()), err(libc::ENOENT), Some(1), ok),
+            Health::NotMounted
+        );
         assert_eq!(classify(Ok(()), Ok(1), Some(1), ok), Health::NotMounted);
         // `stat` still answers from the kernel's attribute cache after the helper died; `statfs` doesn't.
-        assert_eq!(classify(err(libc::ENOTCONN).map(drop), Ok(7), Some(1), ok), Health::Stale);
+        assert_eq!(
+            classify(err(libc::ENOTCONN).map(drop), Ok(7), Some(1), ok),
+            Health::Stale
+        );
         // A mount point: the listing decides.
         assert_eq!(classify(Ok(()), Ok(7), Some(1), ok), Health::Live);
-        assert_eq!(classify(Ok(()), Ok(7), Some(1), || Err(io::Error::from_raw_os_error(libc::EIO))), Health::Offline);
-        assert_eq!(classify(Ok(()), Ok(7), Some(1), || Err(io::Error::from_raw_os_error(libc::ENOTCONN))), Health::Stale);
+        assert_eq!(
+            classify(Ok(()), Ok(7), Some(1), || Err(
+                io::Error::from_raw_os_error(libc::EIO)
+            )),
+            Health::Offline
+        );
+        assert_eq!(
+            classify(Ok(()), Ok(7), Some(1), || Err(
+                io::Error::from_raw_os_error(libc::ENOTCONN)
+            )),
+            Health::Stale
+        );
     }
 
     #[test]

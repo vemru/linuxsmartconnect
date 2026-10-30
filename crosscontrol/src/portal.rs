@@ -7,18 +7,18 @@
 //! The first start shows the desktop's "allow input capture" prompt. On portal version 2 the
 //! session is persistent and the restore token is kept, so later starts don't ask again.
 
-use std::num::NonZero;
-use std::os::unix::net::UnixStream;
 use std::io::Write;
+use std::num::NonZero;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use ashpd::desktop::input_capture::{
-    ActivatedBarrier, Barrier, Capabilities, CreateSession2Options, CreateSessionOptions, InputCapture, Region, ReleaseOptions,
-    StartOptions, Zones,
+    ActivatedBarrier, Barrier, Capabilities, CreateSession2Options, CreateSessionOptions,
+    InputCapture, Region, ReleaseOptions, StartOptions, Zones,
 };
 use ashpd::desktop::{PersistMode, Session};
 use async_io::{Async, Timer};
@@ -56,7 +56,10 @@ fn write_token(path: &Path, tok: &str) {
             f.set_permissions(std::fs::Permissions::from_mode(0o600))
         });
     if let Err(e) = saved {
-        eprintln!("portal: could not save restore token to {}: {e}", path.display());
+        eprintln!(
+            "portal: could not save restore token to {}: {e}",
+            path.display()
+        );
     }
 }
 
@@ -65,13 +68,23 @@ fn write_token(path: &Path, tok: &str) {
 async fn start_session(ic: &InputCapture) -> Result<Session<InputCapture>> {
     let caps = Capabilities::Keyboard | Capabilities::Pointer;
     if ic.version() >= 2 {
-        let session = ic.create_session2(CreateSession2Options::default()).await.context("InputCapture.CreateSession2")?;
-        let token = std::fs::read_to_string(token_path()).ok().map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
+        let session = ic
+            .create_session2(CreateSession2Options::default())
+            .await
+            .context("InputCapture.CreateSession2")?;
+        let token = std::fs::read_to_string(token_path())
+            .ok()
+            .map(|t| t.trim().to_string())
+            .filter(|t| !t.is_empty());
         let opts = StartOptions::default()
             .set_capabilities(caps)
             .set_persist_mode(PersistMode::ExplicitlyRevoked)
             .set_restore_token(token);
-        match ic.start(&session, None, opts).await.and_then(|r| r.response()) {
+        match ic
+            .start(&session, None, opts)
+            .await
+            .and_then(|r| r.response())
+        {
             Ok(resp) => {
                 if let Some(t) = resp.restore_token() {
                     write_token(&token_path(), t);
@@ -95,13 +108,26 @@ async fn start_session(ic: &InputCapture) -> Result<Session<InputCapture>> {
 /// One barrier on the chosen edge of the monitor the phone sits next to (the GTK app saves its
 /// rect with the position), else of every zone (monitor). Barriers between two monitors are
 /// refused by the desktop, which leaves exactly the outer edge.
-fn barriers(zones: &Zones, edge: Edge, span: (f64, f64), anchor: Option<(i32, i32, u32, u32)>) -> Vec<(Barrier, Region)> {
-    let regions: Vec<(i32, i32, u32, u32)> =
-        zones.regions().iter().map(|r| (r.x_offset(), r.y_offset(), r.width(), r.height())).collect();
+fn barriers(
+    zones: &Zones,
+    edge: Edge,
+    span: (f64, f64),
+    anchor: Option<(i32, i32, u32, u32)>,
+) -> Vec<(Barrier, Region)> {
+    let regions: Vec<(i32, i32, u32, u32)> = zones
+        .regions()
+        .iter()
+        .map(|r| (r.x_offset(), r.y_offset(), r.width(), r.height()))
+        .collect();
     let zones_list = zones.regions();
     barrier_positions(&regions, edge, span, anchor)
         .into_iter()
-        .filter_map(|(i, pos)| Some((Barrier::new(NonZero::new(i as u32 + 1)?, pos), zones_list[i])))
+        .filter_map(|(i, pos)| {
+            Some((
+                Barrier::new(NonZero::new(i as u32 + 1)?, pos),
+                zones_list[i],
+            ))
+        })
         .collect()
 }
 
@@ -114,15 +140,29 @@ fn barrier_positions(
     (s, e): (f64, f64),
     anchor: Option<(i32, i32, u32, u32)>,
 ) -> Vec<(usize, (i32, i32, i32, i32))> {
-    let matching: Vec<usize> =
-        anchor.map(|rect| regions.iter().enumerate().filter(|(_, r)| **r == rect).map(|(i, _)| i).collect()).unwrap_or_default();
+    let matching: Vec<usize> = anchor
+        .map(|rect| {
+            regions
+                .iter()
+                .enumerate()
+                .filter(|(_, r)| **r == rect)
+                .map(|(i, _)| i)
+                .collect()
+        })
+        .unwrap_or_default();
     if anchor.is_some() && matching.is_empty() {
-        eprintln!("portal: the saved monitor position is not among the portal's zones (did the layout change?); arming every monitor edge");
+        eprintln!(
+            "portal: the saved monitor position is not among the portal's zones (did the layout change?); arming every monitor edge"
+        );
     }
-    let chosen: Vec<usize> = if matching.is_empty() { (0..regions.len()).collect() } else { matching };
+    let chosen: Vec<usize> = if matching.is_empty() {
+        (0..regions.len()).collect()
+    } else {
+        matching
+    };
     chosen
         .into_iter()
-        .filter_map(|i| {
+        .map(|i| {
             let (x, y, w, h) = regions[i];
             let (x, y, w, h) = (x, y, w as i32, h as i32);
             // Only the part of the edge the phone touches. Always at least one pixel, every pixel
@@ -139,7 +179,7 @@ fn barrier_positions(
                 Edge::Top => (x + a, y, x + b, y),
                 Edge::Bottom => (x + a, y + h, x + b, y + h),
             };
-            Some((i, pos))
+            (i, pos)
         })
         .collect()
 }
@@ -152,21 +192,37 @@ async fn arm(
     span: (f64, f64),
     anchor: Option<(i32, i32, u32, u32)>,
 ) -> Result<Vec<(u32, Region)>> {
-    let zones = ic.zones(session, Default::default()).await?.response().context("InputCapture.GetZones")?;
+    let zones = ic
+        .zones(session, Default::default())
+        .await?
+        .response()
+        .context("InputCapture.GetZones")?;
     let wanted = barriers(&zones, edge, span, anchor);
-    let list: Vec<Barrier> = wanted.iter().map(|(b, _)| Barrier::new(b.barrier_id(), b.position())).collect();
+    let list: Vec<Barrier> = wanted
+        .iter()
+        .map(|(b, _)| Barrier::new(b.barrier_id(), b.position()))
+        .collect();
     let resp = ic
         .set_pointer_barriers(session, &list, zones.zone_set(), Default::default())
         .await?
         .response()
         .context("InputCapture.SetPointerBarriers")?;
     let failed: Vec<u32> = resp.failed_barriers().iter().map(|id| id.get()).collect();
-    let armed: Vec<(u32, Region)> =
-        wanted.iter().map(|(b, r)| (b.barrier_id().get(), *r)).filter(|(id, _)| !failed.contains(id)).collect();
+    let armed: Vec<(u32, Region)> = wanted
+        .iter()
+        .map(|(b, r)| (b.barrier_id().get(), *r))
+        .filter(|(id, _)| !failed.contains(id))
+        .collect();
     if armed.is_empty() {
-        bail!("the desktop accepted no pointer barrier on the {edge:?} edge (an edge shared with another monitor is refused)");
+        bail!(
+            "the desktop accepted no pointer barrier on the {edge:?} edge (an edge shared with another monitor is refused)"
+        );
     }
-    println!("portal: barrier on the {edge:?} edge of {} of {} monitor(s)", armed.len(), zones.regions().len());
+    println!(
+        "portal: barrier on the {edge:?} edge of {} of {} monitor(s)",
+        armed.len(),
+        zones.regions().len()
+    );
     Ok(armed)
 }
 
@@ -181,7 +237,12 @@ fn along(edge: Edge, r: Region, (cx, cy): (f32, f32)) -> f64 {
 
 /// Desktop position just inside the edge of `r`, `f` along it.
 fn inside(edge: Edge, r: Region, f: f64) -> (f64, f64) {
-    let (x, y, w, h) = (r.x_offset() as f64, r.y_offset() as f64, r.width() as f64, r.height() as f64);
+    let (x, y, w, h) = (
+        r.x_offset() as f64,
+        r.y_offset() as f64,
+        r.width() as f64,
+        r.height() as f64,
+    );
     match edge {
         Edge::Right => (x + w - 4.0, y + f * h),
         Edge::Left => (x + 3.0, y + f * h),
@@ -218,14 +279,22 @@ struct Capture {
 
 async fn run_async(mut core: Core) -> Result<()> {
     let edge = core.opts.edge;
-    let ic = InputCapture::new().await.context("no InputCapture portal (needs xdg-desktop-portal with a GNOME 45+ or KDE 6.1+ backend)")?;
+    let ic = InputCapture::new().await.context(
+        "no InputCapture portal (needs xdg-desktop-portal with a GNOME 45+ or KDE 6.1+ backend)",
+    )?;
     let session = start_session(&ic).await?;
     let mut armed = arm(&ic, &session, edge, core.opts.span, core.opts.anchor).await?;
 
-    let fd = ic.connect_to_eis(&session, Default::default()).await.context("InputCapture.ConnectToEIS")?;
+    let fd = ic
+        .connect_to_eis(&session, Default::default())
+        .await
+        .context("InputCapture.ConnectToEIS")?;
     let context = ei::Context::new(UnixStream::from(fd))?;
     let (_connection, mut ei_events) = context
-        .handshake_async_io("smartconnect-crosscontrol", ei::handshake::ContextType::Receiver)
+        .handshake_async_io(
+            "smartconnect-crosscontrol",
+            ei::handshake::ContextType::Receiver,
+        )
         .await
         .context("libei handshake")?;
 
@@ -233,18 +302,25 @@ async fn run_async(mut core: Core) -> Result<()> {
     let mut deactivated = ic.receive_deactivated().await?;
     let mut disabled = ic.receive_disabled().await?;
     let mut zones_changed = ic.receive_zones_changed().await?;
-    ic.enable(&session, Default::default()).await.context("InputCapture.Enable")?;
+    ic.enable(&session, Default::default())
+        .await
+        .context("InputCapture.Enable")?;
 
     let watch = Async::new(core.daemon.watch.try_clone()?)?;
     let mut tick = Timer::interval(Duration::from_millis(8));
-    let mut cap = Capture { activation: None, zone: None };
+    let mut cap = Capture {
+        activation: None,
+        zone: None,
+    };
     let mut saw_discrete = false;
 
     if core.opts.accept {
         // The phone asked (svc 26 cmd 0) before we were running: answer it now; the edge is then armed.
         core.request_control();
     }
-    println!("ready: push the pointer into the {edge:?} edge; push back or Ctrl+Alt+Esc to return; Ctrl+C quits");
+    println!(
+        "ready: push the pointer into the {edge:?} edge; push back or Ctrl+Alt+Esc to return; Ctrl+C quits"
+    );
 
     let result: Result<()> = loop {
         if crate::STOP.load(Ordering::SeqCst) {
@@ -254,16 +330,40 @@ async fn run_async(mut core: Core) -> Result<()> {
         let ev = or(
             or(
                 or(
-                    async { activated.next().await.map_or(Ev::Ended("Activated"), Ev::Activated) },
-                    async { deactivated.next().await.map_or(Ev::Ended("Deactivated"), |d| Ev::Deactivated(d.activation_id())) },
+                    async {
+                        activated
+                            .next()
+                            .await
+                            .map_or(Ev::Ended("Activated"), Ev::Activated)
+                    },
+                    async {
+                        deactivated
+                            .next()
+                            .await
+                            .map_or(Ev::Ended("Deactivated"), |d| {
+                                Ev::Deactivated(d.activation_id())
+                            })
+                    },
                 ),
                 or(
-                    async { disabled.next().await.map_or(Ev::Ended("Disabled"), |_| Ev::Disabled) },
-                    async { zones_changed.next().await.map_or(Ev::Ended("ZonesChanged"), |_| Ev::ZonesChanged) },
+                    async {
+                        disabled
+                            .next()
+                            .await
+                            .map_or(Ev::Ended("Disabled"), |_| Ev::Disabled)
+                    },
+                    async {
+                        zones_changed
+                            .next()
+                            .await
+                            .map_or(Ev::Ended("ZonesChanged"), |_| Ev::ZonesChanged)
+                    },
                 ),
             ),
             or(
-                or(async { Ev::Ei(ei_events.next().await) }, async { Ev::Daemon(watch.readable().await) }),
+                or(async { Ev::Ei(ei_events.next().await) }, async {
+                    Ev::Daemon(watch.readable().await)
+                }),
                 async {
                     tick.next().await;
                     Ev::Tick
@@ -285,7 +385,10 @@ async fn run_async(mut core: Core) -> Result<()> {
                         let (x, y) = a.cursor_position()?;
                         armed.iter().map(|(_, r)| *r).find(|r| {
                             let (rx, ry) = (r.x_offset() as f32, r.y_offset() as f32);
-                            x >= rx && x < rx + r.width() as f32 && y >= ry && y < ry + r.height() as f32
+                            x >= rx
+                                && x < rx + r.width() as f32
+                                && y >= ry
+                                && y < ry + r.height() as f32
                         })
                     })
                     .or_else(|| (armed.len() == 1).then(|| armed[0].1));
@@ -308,7 +411,9 @@ async fn run_async(mut core: Core) -> Result<()> {
             }
             Ev::Disabled => {
                 core.leave("capture disabled by the desktop");
-                break Err(anyhow::anyhow!("the desktop disabled input capture (permission revoked or session closed)"));
+                break Err(anyhow::anyhow!(
+                    "the desktop disabled input capture (permission revoked or session closed)"
+                ));
             }
             Ev::ZonesChanged => {
                 // Monitors changed: re-arm. The portal needs the session disabled for that.
@@ -319,10 +424,13 @@ async fn run_async(mut core: Core) -> Result<()> {
                     Err(e) => break Err(e),
                 }
                 if let Err(e) = ic.enable(&session, Default::default()).await {
-                    break Err(anyhow::Error::from(e).context("re-enabling input capture after a monitor change"));
+                    break Err(anyhow::Error::from(e)
+                        .context("re-enabling input capture after a monitor change"));
                 }
             }
-            Ev::Ended(what) => break Err(anyhow::anyhow!("the portal's {what} signal stream ended")),
+            Ev::Ended(what) => {
+                break Err(anyhow::anyhow!("the portal's {what} signal stream ended"));
+            }
             Ev::Ei(ev) => {
                 let ev = match ev {
                     Some(Ok(ev)) => ev,
@@ -331,18 +439,31 @@ async fn run_async(mut core: Core) -> Result<()> {
                 };
                 match ev {
                     EiEvent::SeatAdded(s) => {
-                        s.seat.bind_capabilities(DeviceCapability::Pointer | DeviceCapability::Keyboard | DeviceCapability::Button | DeviceCapability::Scroll);
+                        s.seat.bind_capabilities(
+                            DeviceCapability::Pointer
+                                | DeviceCapability::Keyboard
+                                | DeviceCapability::Button
+                                | DeviceCapability::Scroll,
+                        );
                         let _ = context.flush();
                     }
-                    EiEvent::PointerMotion(m) => action = core.on_relative(m.dx as f64, m.dy as f64),
-                    EiEvent::Button(b) => core.on_button(b.button, b.state == ei::button::ButtonState::Press),
+                    EiEvent::PointerMotion(m) => {
+                        action = core.on_relative(m.dx as f64, m.dy as f64)
+                    }
+                    EiEvent::Button(b) => {
+                        core.on_button(b.button, b.state == ei::button::ButtonState::Press)
+                    }
                     EiEvent::ScrollDiscrete(s) => {
                         saw_discrete = true;
                         core.on_scroll(s.discrete_dy as f64 / 120.0);
                     }
                     EiEvent::ScrollDelta(s) if !saw_discrete => core.on_scroll(s.dy as f64 / 15.0),
-                    EiEvent::KeyboardKey(k) => action = core.on_key(k.key, k.state == ei::keyboard::KeyState::Press),
-                    EiEvent::Disconnected(d) => break Err(anyhow::anyhow!("libei disconnected: {:?}", d.reason)),
+                    EiEvent::KeyboardKey(k) => {
+                        action = core.on_key(k.key, k.state == ei::keyboard::KeyState::Press)
+                    }
+                    EiEvent::Disconnected(d) => {
+                        break Err(anyhow::anyhow!("libei disconnected: {:?}", d.reason));
+                    }
                     _ => {}
                 }
             }
@@ -380,7 +501,9 @@ async fn run_async(mut core: Core) -> Result<()> {
             && !core.wants_capture()
         {
             let pos = cap.zone.map(|r| inside(edge, r, core.edge_fraction()));
-            let opts = ReleaseOptions::default().set_activation_id(id).set_cursor_position(pos);
+            let opts = ReleaseOptions::default()
+                .set_activation_id(id)
+                .set_cursor_position(pos);
             if let Err(e) = ic.release(&session, opts).await {
                 eprintln!("portal: release failed: {e}");
             }
@@ -390,7 +513,9 @@ async fn run_async(mut core: Core) -> Result<()> {
     println!("exiting");
     core.leave("exit");
     if let Some(id) = cap.activation {
-        let _ = ic.release(&session, ReleaseOptions::default().set_activation_id(id)).await;
+        let _ = ic
+            .release(&session, ReleaseOptions::default().set_activation_id(id))
+            .await;
     }
     core.shutdown();
     let _ = ic.disable(&session, Default::default()).await;
@@ -413,7 +538,8 @@ mod tests {
         // A token (and folder) left by an older version: world-readable.
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
         std::fs::write(&p, "old").unwrap();
-        std::fs::set_permissions(p.parent().unwrap(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(p.parent().unwrap(), std::fs::Permissions::from_mode(0o755))
+            .unwrap();
         std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o644)).unwrap();
 
         write_token(&p, "fresh");
@@ -435,7 +561,11 @@ mod tests {
         let z = zones();
         // The phone sits next to the laptop panel: one barrier, on eDP-1's right edge only.
         let got = barrier_positions(&z, Edge::Right, (0.25, 0.75), Some((250, 1440, 1920, 1080)));
-        assert_eq!(got.len(), 1, "the external monitor's right edge must not enter the phone: {got:?}");
+        assert_eq!(
+            got.len(),
+            1,
+            "the external monitor's right edge must not enter the phone: {got:?}"
+        );
         assert_eq!(got[0].0, 1, "the barrier belongs to eDP-1");
         // eDP-1's right edge, over the part of the edge the phone covers (25 %..75 % of 1080 px).
         assert_eq!(got[0].1, (2170, 1710, 2170, 2249));
@@ -443,11 +573,20 @@ mod tests {
         let got = barrier_positions(&z, Edge::Bottom, (0.0, 1.0), Some((0, 0, 2560, 1440)));
         assert_eq!(got, vec![(0, (0, 1440, 2559, 1440))]);
         // No anchor (older position file): every monitor, as before.
-        assert_eq!(barrier_positions(&z, Edge::Right, (0.0, 1.0), None).len(), 2);
+        assert_eq!(
+            barrier_positions(&z, Edge::Right, (0.0, 1.0), None).len(),
+            2
+        );
         // The saved monitor is gone / the layout changed: never arm nothing at all.
-        assert_eq!(barrier_positions(&z, Edge::Right, (0.0, 1.0), Some((0, 0, 1, 1))).len(), 2);
+        assert_eq!(
+            barrier_positions(&z, Edge::Right, (0.0, 1.0), Some((0, 0, 1, 1))).len(),
+            2
+        );
         // A single monitor: the anchor matches or falls back, and only one barrier is set either way.
-        assert_eq!(barrier_positions(&z[..1], Edge::Right, (0.0, 1.0), Some((0, 0, 2560, 1440))).len(), 1);
+        assert_eq!(
+            barrier_positions(&z[..1], Edge::Right, (0.0, 1.0), Some((0, 0, 2560, 1440))).len(),
+            1
+        );
     }
 
     #[test]
@@ -455,7 +594,12 @@ mod tests {
         let z = [(0, 0, 2560, 1440)];
         let got = barrier_positions(&z, Edge::Right, (0.5, 0.5), Some((0, 0, 2560, 1440)));
         // A zero-width span still yields a 1-px barrier, never an inverted or empty one.
-        assert_eq!(got, vec![(0, (2560, 720, 2560, 720))]);        let got = barrier_positions(&z, Edge::Left, (0.0, 1.0), None);
-        assert_eq!(got, vec![(0, (0, 0, 0, 1439))], "the full height, last pixel inclusive");
+        assert_eq!(got, vec![(0, (2560, 720, 2560, 720))]);
+        let got = barrier_positions(&z, Edge::Left, (0.0, 1.0), None);
+        assert_eq!(
+            got,
+            vec![(0, (0, 0, 0, 1439))],
+            "the full height, last pixel inclusive"
+        );
     }
 }

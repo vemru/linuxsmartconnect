@@ -70,12 +70,18 @@ pub fn request(cmd: i64, data: Option<Value>) -> Value {
 
 /// All SMS (or MMS) of the last 10 days, in batches of 50 (`cmd 29`).
 pub fn request_messages(kind: i64) -> Value {
-    request(cmd::GET_MESSAGES_PLUS, Some(json!({ "type": kind, "count": 0 })))
+    request(
+        cmd::GET_MESSAGES_PLUS,
+        Some(json!({ "type": kind, "count": 0 })),
+    )
 }
 
 /// Up to `count` newest messages of one kind in a single reply (`cmd 11`).
 pub fn request_messages_limited(kind: i64, count: i64) -> Value {
-    request(cmd::GET_MESSAGES, Some(json!({ "type": kind, "count": count })))
+    request(
+        cmd::GET_MESSAGES,
+        Some(json!({ "type": kind, "count": count })),
+    )
 }
 
 pub fn request_contacts() -> Value {
@@ -108,7 +114,10 @@ pub fn send_sms(request_id: i64, to: &[String], body: &str, sub_id: i64) -> Valu
 
 /// `cmd 8`: status 1 = read, 0 = unread. `kind` 1 = SMS, 2 = MMS.
 pub fn mark_read(msg_id: i64, kind: i64, read: bool) -> Value {
-    request(cmd::SET_STATE, Some(json!({ "msgId": msg_id, "status": i64::from(read), "type": kind })))
+    request(
+        cmd::SET_STATE,
+        Some(json!({ "msgId": msg_id, "status": i64::from(read), "type": kind })),
+    )
 }
 
 fn now_ms() -> i64 {
@@ -136,11 +145,21 @@ pub struct Msg {
 impl Msg {
     pub fn parse(kind: i64, b: &Value) -> Option<Self> {
         let int = |k: &str| b.get(k).and_then(Value::as_i64);
-        let text = |k: &str| b.get(k).and_then(Value::as_str).unwrap_or_default().to_owned();
+        let text = |k: &str| {
+            b.get(k)
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned()
+        };
         let to = b
             .get("toAddress")
             .and_then(Value::as_array)
-            .map(|a| a.iter().filter_map(Value::as_str).map(str::to_owned).collect())
+            .map(|a| {
+                a.iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect()
+            })
             .unwrap_or_default();
         Some(Self {
             id: int("msgId")?,
@@ -157,7 +176,11 @@ impl Msg {
 
     /// The other party: sender of a received message, first recipient of a sent one.
     pub fn counterpart(&self) -> &str {
-        if self.message_type == MSG_SENT { self.to.first().map(String::as_str).unwrap_or("") } else { &self.from }
+        if self.message_type == MSG_SENT {
+            self.to.first().map(String::as_str).unwrap_or("")
+        } else {
+            &self.from
+        }
     }
 
     pub fn thread(&self) -> String {
@@ -169,7 +192,11 @@ impl Msg {
 /// local forms match; alphanumeric senders (e.g. "VM-BANK") are kept lowercased.
 pub fn thread_key(addr: &str) -> String {
     let digits: String = addr.chars().filter(char::is_ascii_digit).collect();
-    if digits.len() >= 6 && addr.chars().all(|c| c.is_ascii_digit() || " +-()".contains(c)) {
+    if digits.len() >= 6
+        && addr
+            .chars()
+            .all(|c| c.is_ascii_digit() || " +-()".contains(c))
+    {
         digits[digits.len().saturating_sub(10)..].to_owned()
     } else {
         addr.trim().to_lowercase()
@@ -193,7 +220,11 @@ pub struct SmsState {
 
 impl SmsState {
     pub fn enabled(&self) -> bool {
-        self.usable.as_ref().and_then(|u| u.get("enabled")).and_then(Value::as_bool) == Some(true)
+        self.usable
+            .as_ref()
+            .and_then(|u| u.get("enabled"))
+            .and_then(Value::as_bool)
+            == Some(true)
     }
 
     /// Folds one phone frame in. Returns true if it was a Messages frame.
@@ -216,7 +247,11 @@ impl SmsState {
                 v => self.upsert(kind_of(v), bean_list(v), true),
             },
             Some(cmd::MESSAGES_PLUS) => {
-                let first = data.get("currentBatch").and_then(Value::as_i64).unwrap_or(1) <= 1;
+                let first = data
+                    .get("currentBatch")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(1)
+                    <= 1;
                 self.upsert(kind_of(&data), bean_list(&data), first);
             }
             Some(cmd::MESSAGES_CHANGED) => self.upsert(kind_of(&data), bean_list(&data), false),
@@ -227,19 +262,29 @@ impl SmsState {
             }
             Some(cmd::MESSAGES_DELETED) => {
                 let kind = kind_of(&data);
-                for id in data.get("deleteList").and_then(Value::as_array).into_iter().flatten() {
-                    let id = id.as_i64().or_else(|| id.as_str().and_then(|s| s.parse().ok()));
+                for id in data
+                    .get("deleteList")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                {
+                    let id = id
+                        .as_i64()
+                        .or_else(|| id.as_str().and_then(|s| s.parse().ok()));
                     if let Some(id) = id {
                         self.messages.remove(&(kind, id));
                     }
                 }
             }
             Some(cmd::CONTACTS | cmd::CONTACTS_BY_ID) => self.add_contacts(&data),
-            Some(cmd::CONTACTS_CHANGED) => self.add_contacts(data.get("contactBeanList").unwrap_or(&Value::Null)),
+            Some(cmd::CONTACTS_CHANGED) => {
+                self.add_contacts(data.get("contactBeanList").unwrap_or(&Value::Null))
+            }
             Some(cmd::PHONE_NUMBER) => self.sims = Some(data),
             Some(cmd::SEND_AVAILABILITY) => self.send_availability = Some(data),
             Some(cmd::SEND_ACCEPTED | cmd::SEND_RESULT) => {
-                self.send_results.insert(0, json!({ "cmd": c, "data": data }));
+                self.send_results
+                    .insert(0, json!({ "cmd": c, "data": data }));
                 self.send_results.truncate(20);
             }
             _ => {}
@@ -258,7 +303,13 @@ impl SmsState {
 
     fn add_contacts(&mut self, list: &Value) {
         for c in list.as_array().into_iter().flatten() {
-            let Some(name) = c.get("name").and_then(Value::as_str).filter(|n| !n.is_empty()) else { continue };
+            let Some(name) = c
+                .get("name")
+                .and_then(Value::as_str)
+                .filter(|n| !n.is_empty())
+            else {
+                continue;
+            };
             let phones = match c.get("phone") {
                 Some(Value::Array(a)) => a.iter().filter_map(Value::as_str).collect(),
                 Some(Value::String(s)) => vec![s.as_str()],
@@ -280,7 +331,10 @@ impl SmsState {
             .into_iter()
             .map(|(key, msgs)| {
                 let last = msgs.iter().max_by_key(|m| m.date).expect("non-empty group");
-                let unread = msgs.iter().filter(|m| !m.read && m.message_type == MSG_RECEIVED).count();
+                let unread = msgs
+                    .iter()
+                    .filter(|m| !m.read && m.message_type == MSG_RECEIVED)
+                    .count();
                 let v = json!({
                     "thread": key,
                     "address": last.counterpart(),
@@ -293,14 +347,18 @@ impl SmsState {
                 (last.date, v)
             })
             .collect();
-        out.sort_by(|a, b| b.0.cmp(&a.0));
+        out.sort_by_key(|a| std::cmp::Reverse(a.0));
         out.into_iter().map(|(_, v)| v).collect()
     }
 
     /// One conversation, oldest first.
     pub fn thread(&self, key: &str) -> Vec<&Msg> {
         let key = thread_key(key);
-        let mut v: Vec<&Msg> = self.messages.values().filter(|m| m.thread() == key).collect();
+        let mut v: Vec<&Msg> = self
+            .messages
+            .values()
+            .filter(|m| m.thread() == key)
+            .collect();
         v.sort_by_key(|m| m.date);
         v
     }
@@ -319,7 +377,10 @@ impl SmsState {
 }
 
 fn bean_list(v: &Value) -> &[Value] {
-    v.get("messageBeanList").and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[])
+    v.get("messageBeanList")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
 }
 
 /// The daemon-wide store (the session loop only broadcasts frames; this keeps the latest data).
@@ -362,7 +423,9 @@ pub fn spawn_collector(daemon: Arc<Daemon>) {
                         let was = st.enabled();
                         st.apply(svc, &data) && !was && st.enabled()
                     };
-                    if became_enabled && PENDING_SYNC.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                    if became_enabled
+                        && PENDING_SYNC.swap(false, std::sync::atomic::Ordering::SeqCst)
+                    {
                         request_sync(&daemon);
                     }
                 }
@@ -379,10 +442,19 @@ mod tests {
 
     #[test]
     fn request_shapes() {
-        assert_eq!(request_messages(1), json!({"ver":"5.0","cmd":28,"pId":110,"data":{"type":1,"count":0}}));
-        assert_eq!(request_messages_limited(1, 50)["data"], json!({"type":1,"count":50}));
+        assert_eq!(
+            request_messages(1),
+            json!({"ver":"5.0","cmd":28,"pId":110,"data":{"type":1,"count":0}})
+        );
+        assert_eq!(
+            request_messages_limited(1, 50)["data"],
+            json!({"type":1,"count":50})
+        );
         assert_eq!(pc_ready(), json!({"ver":"5.0","cmd":18,"pId":110}));
-        assert_eq!(mark_read(42, 1, true), json!({"ver":"5.0","cmd":8,"pId":110,"data":{"msgId":42,"status":1,"type":1}}));
+        assert_eq!(
+            mark_read(42, 1, true),
+            json!({"ver":"5.0","cmd":8,"pId":110,"data":{"msgId":42,"status":1,"type":1}})
+        );
         let s = send_sms(7, &["+911234567890".into()], "hi", -1);
         assert_eq!(s["cmd"], 4);
         let d = &s["data"];
@@ -401,7 +473,10 @@ mod tests {
     #[test]
     fn sync_threads_and_updates() {
         let mut st = SmsState::default();
-        assert!(st.apply(100, &json!({"cmd":1018,"ver":"5.0","enabled":false,"granted":true,"unreadCnt":1})));
+        assert!(st.apply(
+            100,
+            &json!({"cmd":1018,"ver":"5.0","enabled":false,"granted":true,"unreadCnt":1})
+        ));
         assert!(!st.enabled());
         let batch1 = json!({"ver":"5.0","cmd":29,"pId":110,"data":{"action":4,"type":1,"totalCount":3,"currentBatch":1,"totalBatches":1,
             "messageBeanList":[
@@ -422,7 +497,10 @@ mod tests {
         // Incremental add (cmd 7 action 1), then delete (cmd 14).
         st.apply(204, &json!({"ver":"5.0","cmd":7,"pId":110,"data":{"action":1,"type":1,"messageBeanList":[bean(4,1,"5555550123","x","new",4000,0)]}}));
         assert_eq!(st.thread("5555550123").len(), 3);
-        st.apply(204, &json!({"ver":"5.0","cmd":14,"pId":110,"data":{"type":1,"deleteList":["3"]}}));
+        st.apply(
+            204,
+            &json!({"ver":"5.0","cmd":14,"pId":110,"data":{"type":1,"deleteList":["3"]}}),
+        );
         assert_eq!(st.threads().len(), 1);
 
         // Contacts name the thread; send results are kept.
@@ -441,9 +519,15 @@ mod tests {
     #[test]
     fn legacy_bare_list_and_full_resync_replace() {
         let mut st = SmsState::default();
-        st.apply(204, &json!({"cmd":11,"pId":110,"data":[bean(1,1,"123456789","me","a",1,1)]}));
+        st.apply(
+            204,
+            &json!({"cmd":11,"pId":110,"data":[bean(1,1,"123456789","me","a",1,1)]}),
+        );
         assert_eq!(st.messages.len(), 1);
         st.apply(204, &json!({"cmd":11,"pId":110,"data":{"action":4,"type":1,"messageBeanList":[bean(9,1,"123456789","me","b",2,1)]}}));
-        assert_eq!(st.messages.keys().copied().collect::<Vec<_>>(), vec![(1, 9)]);
+        assert_eq!(
+            st.messages.keys().copied().collect::<Vec<_>>(),
+            vec![(1, 9)]
+        );
     }
 }

@@ -22,7 +22,12 @@ use crate::identity;
 use crate::server::Daemon;
 
 const fn uuid16(x: u16) -> Uuid {
-    Uuid::from_fields(x as u32, 0x0000, 0x1000, &[0x80, 0x00, 0x00, 0x80, 0x5f, 0x9b, 0x34, 0xfb])
+    Uuid::from_fields(
+        x as u32,
+        0x0000,
+        0x1000,
+        &[0x80, 0x00, 0x00, 0x80, 0x5f, 0x9b, 0x34, 0xfb],
+    )
 }
 const SVC_READYFOR: Uuid = uuid16(0x5246);
 const CHR_INVITE: Uuid = uuid16(0x0722);
@@ -32,8 +37,13 @@ const SCAN_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Finds the paired phone by its BLE advert and writes our invite to it. Returns a status message.
 pub async fn connect(daemon: &Daemon) -> Result<String> {
-    let session = bluer::Session::new().await.context("opening BlueZ session (is bluetoothd running?)")?;
-    let adapter = session.default_adapter().await.context("no Bluetooth adapter")?;
+    let session = bluer::Session::new()
+        .await
+        .context("opening BlueZ session (is bluetoothd running?)")?;
+    let adapter = session
+        .default_adapter()
+        .await
+        .context("no Bluetooth adapter")?;
     // Never change adapter state (powering it on can make BlueZ reconnect audio devices).
     if !adapter.is_powered().await.unwrap_or(false) {
         bail!("Bluetooth is off on this computer");
@@ -57,7 +67,10 @@ pub async fn connect(daemon: &Daemon) -> Result<String> {
 }
 
 /// Scans (at most `SCAN_TIMEOUT`) for a 0x5246 advert from a paired phone.
-async fn scan_for_phone(daemon: &Daemon, adapter: &bluer::Adapter) -> Result<(bluer::Address, String)> {
+async fn scan_for_phone(
+    daemon: &Daemon,
+    adapter: &bluer::Adapter,
+) -> Result<(bluer::Address, String)> {
     adapter
         // No UUID filter: in the background the phone's advert carries 0x5246 only as service data,
         // which BlueZ's UUID filter doesn't match. We check the service data ourselves.
@@ -111,7 +124,13 @@ async fn connect_device(device: &bluer::Device) -> Result<()> {
 
 /// Writes the sealed invite, waits briefly for the phone to dial in over Wi-Fi, drops the LE link.
 async fn wake(daemon: &Daemon, device: &bluer::Device, phone: &str) -> Result<String> {
-    let key = daemon.pairing.lock().unwrap().get(phone).map(|p| p.key.clone()).context("phone not paired")?;
+    let key = daemon
+        .pairing
+        .lock()
+        .unwrap()
+        .get(phone)
+        .map(|p| p.key.clone())
+        .context("phone not paired")?;
     let frame = discovery::sealed_invite(daemon, &key)?;
     let result = write_invite(device, &frame).await;
     // Give the phone a moment to dial us over Wi-Fi, then drop the LE link (Windows idles ~60 s; we don't need to).
@@ -131,15 +150,25 @@ async fn wake(daemon: &Daemon, device: &bluer::Device, phone: &str) -> Result<St
 }
 
 /// The first device whose 0x5246 service data carries a salted nonce of a paired phone's realDeviceId.
-async fn find_phone(daemon: &Daemon, adapter: &bluer::Adapter, addrs: &[bluer::Address]) -> Option<(bluer::Address, String)> {
+async fn find_phone(
+    daemon: &Daemon,
+    adapter: &bluer::Adapter,
+    addrs: &[bluer::Address],
+) -> Option<(bluer::Address, String)> {
     for &addr in addrs {
-        let Ok(device) = adapter.device(addr) else { continue };
+        let Ok(device) = adapter.device(addr) else {
+            continue;
+        };
         // Only devices heard in this scan: BlueZ keeps stale entries for the phone's old addresses.
         if !matches!(device.rssi().await, Ok(Some(_))) {
             continue;
         }
-        let Ok(Some(data)) = device.service_data().await else { continue };
-        let Some(payload) = data.get(&SVC_READYFOR) else { continue };
+        let Ok(Some(data)) = device.service_data().await else {
+            continue;
+        };
+        let Some(payload) = data.get(&SVC_READYFOR) else {
+            continue;
+        };
         if payload.len() < 16 {
             continue;
         }
@@ -162,8 +191,13 @@ async fn find_phone(daemon: &Daemon, adapter: &bluer::Adapter, addrs: &[bluer::A
 /// Read-only: nudges the reconnect loop when the PC's Bluetooth adapter is switched on (by the
 /// user), so a backgrounded phone is woken right away instead of at the next 5-minute retry.
 pub async fn watch_adapter(daemon: Arc<Daemon>) -> Result<()> {
-    let session = bluer::Session::new().await.context("opening BlueZ session")?;
-    let adapter = session.default_adapter().await.context("no Bluetooth adapter")?;
+    let session = bluer::Session::new()
+        .await
+        .context("opening BlueZ session")?;
+    let adapter = session
+        .default_adapter()
+        .await
+        .context("no Bluetooth adapter")?;
     let mut events = adapter.events().await?;
     while let Some(ev) = events.next().await {
         if let AdapterEvent::PropertyChanged(AdapterProperty::Powered(true)) = ev {
@@ -198,7 +232,10 @@ async fn write_invite(device: &bluer::Device, frame: &[u8]) -> Result<()> {
         Some(c) => c.notify().await.ok(),
         None => None,
     };
-    invite_chr.write(frame).await.context("writing the invite to 0x0722")?;
+    invite_chr
+        .write(frame)
+        .await
+        .context("writing the invite to 0x0722")?;
     info!(bytes = frame.len(), "ble: invite written to the phone");
     Ok(())
 }

@@ -38,7 +38,12 @@ pub struct Invite {
 
 impl Invite {
     pub fn new(ws_port: u16, ips: Vec<IpAddr>, ttl: Duration) -> Self {
-        Self { token: gen_token(), expires: Instant::now() + ttl, ws_port, ips }
+        Self {
+            token: gen_token(),
+            expires: Instant::now() + ttl,
+            ws_port,
+            ips,
+        }
     }
 
     pub fn is_valid(&self, token: &str) -> bool {
@@ -127,14 +132,19 @@ pub fn render_terminal(payload: &str, invert: bool) -> Result<String> {
     let code = QrCode::with_error_correction_level(payload.as_bytes(), EcLevel::L)?;
     let mut r = code.render::<unicode::Dense1x2>();
     if invert {
-        r.dark_color(unicode::Dense1x2::Light).light_color(unicode::Dense1x2::Dark);
+        r.dark_color(unicode::Dense1x2::Light)
+            .light_color(unicode::Dense1x2::Dark);
     }
     Ok(r.quiet_zone(true).build())
 }
 
 pub fn write_svg(payload: &str, path: &Path) -> Result<()> {
     let code = QrCode::with_error_correction_level(payload.as_bytes(), EcLevel::L)?;
-    let image = code.render::<svg::Color>().min_dimensions(480, 480).quiet_zone(true).build();
+    let image = code
+        .render::<svg::Color>()
+        .min_dimensions(480, 480)
+        .quiet_zone(true)
+        .build();
     // Owner-only: while valid, the QR's token lets any phone pair with this PC.
     crate::identity::write_private(path, image.as_bytes())?;
     Ok(())

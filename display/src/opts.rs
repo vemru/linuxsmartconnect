@@ -98,7 +98,9 @@ impl SizePref {
             // "phone" is how the GUI calls it.
             "requested" | "phone" | "auto" => Ok(SizePref::Requested),
             s => {
-                let (w, h) = s.split_once(['x', 'X']).context("size: use WxH, native or requested")?;
+                let (w, h) = s
+                    .split_once(['x', 'X'])
+                    .context("size: use WxH, native or requested")?;
                 let (w, h): (u32, u32) = (w.trim().parse()?, h.trim().parse()?);
                 if !(16..=8192).contains(&w) || !(16..=8192).contains(&h) {
                     bail!("size {s}: each side must be 16–8192");
@@ -161,7 +163,9 @@ pub fn config_path() -> PathBuf {
     std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
-        .unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".config"))
+        .unwrap_or_else(|| {
+            PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".config")
+        })
         .join("smartconnect-linux")
         .join("display.json")
 }
@@ -173,7 +177,11 @@ pub fn parse_display_scale(v: &str) -> Result<f64> {
         None => {
             let n = v.trim().parse::<f64>()?;
             // A bare 50–400 can only be a percentage (factors stop at 4).
-            if (50.0..=400.0).contains(&n) { n / 100.0 } else { n }
+            if (50.0..=400.0).contains(&n) {
+                n / 100.0
+            } else {
+                n
+            }
         }
     };
     if !(0.5..=4.0).contains(&s) {
@@ -304,7 +312,10 @@ fn load_file(path: &std::path::Path, explicit: bool) -> Option<Value> {
         Ok(text) => match serde_json::from_str::<Value>(&text) {
             Ok(v) => Some(v),
             Err(e) => {
-                eprintln!("{}: not valid JSON ({e}); using the built-in defaults", path.display());
+                eprintln!(
+                    "{}: not valid JSON ({e}); using the built-in defaults",
+                    path.display()
+                );
                 None
             }
         },
@@ -355,7 +366,10 @@ pub fn parse_with(args: &[String], file: Option<&Value>) -> Result<(Option<Opts>
                 println!("{}", crate::desktop::list_json());
                 return Ok((None, warnings));
             }
-            "--mode" => o.mode = Share::parse(&val("mirror|extend")?).context("--mode needs mirror|extend")?,
+            "--mode" => {
+                o.mode =
+                    Share::parse(&val("mirror|extend")?).context("--mode needs mirror|extend")?
+            }
             "--output" => {
                 let v = val("NAME")?;
                 o.output = (v != "auto" && !v.trim().is_empty()).then(|| v.trim().to_owned());
@@ -374,7 +388,12 @@ pub fn parse_with(args: &[String], file: Option<&Value>) -> Result<(Option<Opts>
             "--follow-rotation" => o.follow_rotation = true,
             "--no-follow-rotation" => o.follow_rotation = false,
             "--replace" => o.replace = true,
-            "--side" => o.side = Some(crate::desktop::Edge::parse(&val("left|right|top|bottom")?).context("--side needs left, right, top or bottom")?),
+            "--side" => {
+                o.side = Some(
+                    crate::desktop::Edge::parse(&val("left|right|top|bottom")?)
+                        .context("--side needs left, right, top or bottom")?,
+                )
+            }
             "--config" => {
                 val("PATH")?; // read by parse_args before the file is loaded
             }
@@ -424,13 +443,28 @@ mod tests {
     #[test]
     fn flags_override_the_file() {
         let file = json!({"mode":"extend","size":"1280x720","audio":true,"followRotation":true,"output":"HDMI-A-1"});
-        let a = args(&["--mode", "mirror", "--size", "requested", "--no-audio", "--no-follow-rotation", "--output", "auto"]);
+        let a = args(&[
+            "--mode",
+            "mirror",
+            "--size",
+            "requested",
+            "--no-audio",
+            "--no-follow-rotation",
+            "--output",
+            "auto",
+        ]);
         let o = parse_with(&a, Some(&file)).unwrap().0.unwrap();
         assert_eq!(o.mode, Share::Mirror);
         assert_eq!(o.size, SizePref::Requested);
         assert!(!o.audio && !o.follow_rotation);
         assert_eq!(o.output, None);
-        let o = parse_with(&args(&["--size", "1920x1080", "--audio", "--display-scale", "150%"]), None).unwrap().0.unwrap();
+        let o = parse_with(
+            &args(&["--size", "1920x1080", "--audio", "--display-scale", "150%"]),
+            None,
+        )
+        .unwrap()
+        .0
+        .unwrap();
         assert_eq!(o.size, SizePref::Fixed(1920, 1080));
         assert!(o.audio);
         assert_eq!(o.display_scale, 1.5);
@@ -444,8 +478,17 @@ mod tests {
         assert_eq!(o.unwrap(), Opts::default());
         assert_eq!(warn.len(), 7, "{warn:?}");
         // GUI spellings and empties.
-        let o = parse_with(&[], Some(&json!({"size":"phone","output":"","displayScale":200}))).unwrap().0.unwrap();
-        assert_eq!((o.size, o.output, o.display_scale), (SizePref::Requested, None, 2.0));
+        let o = parse_with(
+            &[],
+            Some(&json!({"size":"phone","output":"","displayScale":200})),
+        )
+        .unwrap()
+        .0
+        .unwrap();
+        assert_eq!(
+            (o.size, o.output, o.display_scale),
+            (SizePref::Requested, None, 2.0)
+        );
         assert_eq!(apply_file(&mut Opts::default(), &json!([1])).len(), 1);
     }
 
@@ -456,10 +499,20 @@ mod tests {
         assert!(parse_with(&args(&["--size"]), None).is_err());
         assert!(parse_with(&args(&["--bogus"]), None).is_err());
         assert!(parse_with(&args(&["--help"]), None).unwrap().0.is_none());
-        let o = parse_with(&args(&["--test-pattern", "--pattern", "smpte", "--config", "/x.json", "--replace"]), None)
-            .unwrap()
-            .0
-            .unwrap();
+        let o = parse_with(
+            &args(&[
+                "--test-pattern",
+                "--pattern",
+                "smpte",
+                "--config",
+                "/x.json",
+                "--replace",
+            ]),
+            None,
+        )
+        .unwrap()
+        .0
+        .unwrap();
         assert_eq!(o.test_pattern.as_deref(), Some("smpte"));
         assert!(o.replace);
     }

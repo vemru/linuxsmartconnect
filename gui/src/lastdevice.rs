@@ -60,7 +60,13 @@ impl LastDevice {
 
     /// Everything but the timestamp equal (to decide whether a save is worth it).
     pub fn same_fields(&self, other: &Self) -> bool {
-        Self { last_connected: None, ..self.clone() } == Self { last_connected: None, ..other.clone() }
+        Self {
+            last_connected: None,
+            ..self.clone()
+        } == Self {
+            last_connected: None,
+            ..other.clone()
+        }
     }
 
     /// The cached wallpaper, if the file is still there.
@@ -70,7 +76,8 @@ impl LastDevice {
 
     /// "last connected 5 min ago", or `None` when never seen.
     pub fn last_seen(&self) -> Option<String> {
-        self.last_connected.map(|t| format!("last connected {}", relative(t, now_secs())))
+        self.last_connected
+            .map(|t| format!("last connected {}", relative(t, now_secs())))
     }
 }
 
@@ -78,7 +85,9 @@ fn state_dir() -> PathBuf {
     std::env::var_os("XDG_STATE_HOME")
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
-        .unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".local/state"))
+        .unwrap_or_else(|| {
+            PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".local/state")
+        })
         .join("smartconnect-linux")
 }
 
@@ -91,7 +100,10 @@ pub fn load() -> LastDevice {
 }
 
 fn load_from(path: &Path) -> LastDevice {
-    std::fs::read_to_string(path).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default()
 }
 
 pub fn save(d: &LastDevice) -> std::io::Result<()> {
@@ -103,14 +115,21 @@ fn save_to(path: &Path, d: &LastDevice) -> std::io::Result<()> {
         std::fs::create_dir_all(dir)?;
     }
     let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, serde_json::to_string_pretty(d).map_err(std::io::Error::other)? + "\n")?;
+    std::fs::write(
+        &tmp,
+        serde_json::to_string_pretty(d).map_err(std::io::Error::other)? + "\n",
+    )?;
     std::fs::rename(tmp, path)
 }
 
 /// Copies the daemon's wallpaper file into the state dir as `last-wallpaper.<ext>` and returns the
 /// copy's path. Written to a temp file first, so a reader never sees half an image.
 pub fn copy_wallpaper(src: &Path) -> Option<String> {
-    let ext = src.extension().and_then(|e| e.to_str()).filter(|e| !e.is_empty()).unwrap_or("img");
+    let ext = src
+        .extension()
+        .and_then(|e| e.to_str())
+        .filter(|e| !e.is_empty())
+        .unwrap_or("img");
     let dir = state_dir();
     std::fs::create_dir_all(&dir).ok()?;
     let dest = dir.join(format!("last-wallpaper.{ext}"));
@@ -121,7 +140,9 @@ pub fn copy_wallpaper(src: &Path) -> Option<String> {
 }
 
 pub fn now_secs() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs())
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
 }
 
 /// A short relative time: "just now", "5 min ago", "3 h ago", "yesterday", "4 days ago".
@@ -153,12 +174,31 @@ mod tests {
 
     #[test]
     fn absorb_keeps_known_name_and_round_trips() {
-        let mut d = LastDevice { name: Some("Phone A".into()), model: Some("Model X".into()), ..LastDevice::default() };
-        let s = Status { connected: true, battery: Some(46), wifi: true, wifi_signal: Some(4), ..Status::default() };
+        let mut d = LastDevice {
+            name: Some("Phone A".into()),
+            model: Some("Model X".into()),
+            ..LastDevice::default()
+        };
+        let s = Status {
+            connected: true,
+            battery: Some(46),
+            wifi: true,
+            wifi_signal: Some(4),
+            ..Status::default()
+        };
         d.absorb(&s);
-        assert_eq!((d.name.as_deref(), d.model.as_deref(), d.battery, d.wifi), (Some("Phone A"), Some("Model X"), Some(46), true));
-        let later = LastDevice { last_connected: Some(5), ..d.clone() };
-        assert!(d.same_fields(&later), "the timestamp alone is no field change");
+        assert_eq!(
+            (d.name.as_deref(), d.model.as_deref(), d.battery, d.wifi),
+            (Some("Phone A"), Some("Model X"), Some(46), true)
+        );
+        let later = LastDevice {
+            last_connected: Some(5),
+            ..d.clone()
+        };
+        assert!(
+            d.same_fields(&later),
+            "the timestamp alone is no field change"
+        );
 
         let dir = std::env::temp_dir().join(format!("sc-gui-lastdev-{}", std::process::id()));
         let file = dir.join("last-device.json");

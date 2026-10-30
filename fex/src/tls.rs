@@ -14,8 +14,12 @@ use sha2::{Digest, Sha256};
 use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
 use tokio_rustls::client::TlsStream;
-use tokio_rustls::rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
-use tokio_rustls::rustls::crypto::{CryptoProvider, verify_tls12_signature, verify_tls13_signature};
+use tokio_rustls::rustls::client::danger::{
+    HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier,
+};
+use tokio_rustls::rustls::crypto::{
+    CryptoProvider, verify_tls12_signature, verify_tls13_signature,
+};
 use tokio_rustls::rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use tokio_rustls::rustls::{self, ClientConfig, DigitallySignedStruct, SignatureScheme};
 
@@ -29,7 +33,11 @@ pub fn fingerprint(der: &[u8]) -> String {
 /// Normalises an advertised fingerprint: hex digits only (separators dropped), lowercase. `None`
 /// unless it is exactly 32 bytes.
 pub fn normalize_fingerprint(fp: &str) -> Option<String> {
-    let hex: String = fp.chars().filter(|c| !matches!(c, ':' | ' ' | '-')).collect::<String>().to_ascii_lowercase();
+    let hex: String = fp
+        .chars()
+        .filter(|c| !matches!(c, ':' | ' ' | '-'))
+        .collect::<String>()
+        .to_ascii_lowercase();
     (hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_hexdigit())).then_some(hex)
 }
 
@@ -51,7 +59,9 @@ impl ServerCertVerifier for PinnedVerifier {
         if fingerprint(end_entity.as_ref()) == self.expected {
             Ok(ServerCertVerified::assertion())
         } else {
-            Err(rustls::Error::General("fex server certificate does not match the advertised fingerprint".into()))
+            Err(rustls::Error::General(
+                "fex server certificate does not match the advertised fingerprint".into(),
+            ))
         }
     }
 
@@ -62,7 +72,12 @@ impl ServerCertVerifier for PinnedVerifier {
         cert: &CertificateDer<'_>,
         dss: &DigitallySignedStruct,
     ) -> Result<HandshakeSignatureValid, rustls::Error> {
-        verify_tls12_signature(message, cert, dss, &self.provider.signature_verification_algorithms)
+        verify_tls12_signature(
+            message,
+            cert,
+            dss,
+            &self.provider.signature_verification_algorithms,
+        )
     }
 
     fn verify_tls13_signature(
@@ -71,11 +86,18 @@ impl ServerCertVerifier for PinnedVerifier {
         cert: &CertificateDer<'_>,
         dss: &DigitallySignedStruct,
     ) -> Result<HandshakeSignatureValid, rustls::Error> {
-        verify_tls13_signature(message, cert, dss, &self.provider.signature_verification_algorithms)
+        verify_tls13_signature(
+            message,
+            cert,
+            dss,
+            &self.provider.signature_verification_algorithms,
+        )
     }
 
     fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
-        self.provider.signature_verification_algorithms.supported_schemes()
+        self.provider
+            .signature_verification_algorithms
+            .supported_schemes()
     }
 }
 
@@ -104,10 +126,13 @@ pub async fn connect(addr: SocketAddr, config: Arc<ClientConfig>) -> Result<TlsS
         .with_context(|| format!("connecting to {addr}"))?;
     let _ = tcp.set_nodelay(true);
     let name = ServerName::IpAddress(addr.ip().into());
-    tokio::time::timeout(CONNECT_TIMEOUT, TlsConnector::from(config).connect(name, tcp))
-        .await
-        .context("TLS handshake timed out")?
-        .context("TLS handshake with the fex server")
+    tokio::time::timeout(
+        CONNECT_TIMEOUT,
+        TlsConnector::from(config).connect(name, tcp),
+    )
+    .await
+    .context("TLS handshake timed out")?
+    .context("TLS handshake with the fex server")
 }
 
 #[cfg(test)]
@@ -117,16 +142,32 @@ mod tests {
     #[test]
     fn fingerprint_known_answers() {
         // SHA-256 test vectors (FIPS 180-2): "" and "abc".
-        assert_eq!(fingerprint(b""), "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
-        assert_eq!(fingerprint(b"abc"), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+        assert_eq!(
+            fingerprint(b""),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+        assert_eq!(
+            fingerprint(b"abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
     }
 
     #[test]
     fn normalizes_fingerprints() {
         let lower = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
-        assert_eq!(normalize_fingerprint(&lower.to_uppercase()).as_deref(), Some(lower));
-        let colons: Vec<String> = lower.as_bytes().chunks(2).map(|c| String::from_utf8_lossy(c).into_owned()).collect();
-        assert_eq!(normalize_fingerprint(&colons.join(":")).as_deref(), Some(lower));
+        assert_eq!(
+            normalize_fingerprint(&lower.to_uppercase()).as_deref(),
+            Some(lower)
+        );
+        let colons: Vec<String> = lower
+            .as_bytes()
+            .chunks(2)
+            .map(|c| String::from_utf8_lossy(c).into_owned())
+            .collect();
+        assert_eq!(
+            normalize_fingerprint(&colons.join(":")).as_deref(),
+            Some(lower)
+        );
         assert_eq!(normalize_fingerprint("abc"), None);
         assert_eq!(normalize_fingerprint(&"zz".repeat(32)), None);
         assert!(client_config("not-a-fingerprint").is_err());

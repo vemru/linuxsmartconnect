@@ -121,20 +121,38 @@ impl Notifier {
 
     /// Shows a plain notification from the daemon itself (not one mirrored from the phone).
     pub async fn notify_local(&self, summary: &str, body: &str) {
-        if let Err(e) = self.proxy.notify("Smart Connect", 0, "dialog-warning", summary, body, &[], HashMap::new(), -1).await {
+        if let Err(e) = self
+            .proxy
+            .notify(
+                "Smart Connect",
+                0,
+                "dialog-warning",
+                summary,
+                body,
+                &[],
+                HashMap::new(),
+                -1,
+            )
+            .await
+        {
             debug!("notifications: local notification failed: {e}");
         }
     }
 
     /// Handles one svc 5/37 frame from the phone.
     pub async fn handle(self: &Arc<Self>, service_id: i64, n: &Value) {
-        let Some(key) = n.get("key").and_then(Value::as_str) else { return };
+        let Some(key) = n.get("key").and_then(Value::as_str) else {
+            return;
+        };
         match n.get("event").and_then(Value::as_i64) {
             Some(0 | 1) => {
                 if n.get("type").and_then(Value::as_i64) == Some(TYPE_CUSTOM_VIEW) {
                     return; // custom RemoteViews: no usable text (Windows drops these too)
                 }
-                let pkg = n.pointer("/data/package_name").and_then(Value::as_str).unwrap_or_default();
+                let pkg = n
+                    .pointer("/data/package_name")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
                 if is_muted(pkg) {
                     debug!(%pkg, "notifications: muted app");
                     return;
@@ -151,7 +169,12 @@ impl Notifier {
                 match since {
                     Some(elapsed) if elapsed < UPDATE_MIN_INTERVAL => {
                         // Coalesce: keep only the newest frame; one delayed task flushes it.
-                        let first = self.pending.lock().unwrap().insert(key.to_owned(), (service_id, n.clone())).is_none();
+                        let first = self
+                            .pending
+                            .lock()
+                            .unwrap()
+                            .insert(key.to_owned(), (service_id, n.clone()))
+                            .is_none();
                         if first {
                             let (me, key) = (self.clone(), key.to_owned());
                             tokio::spawn(async move {
@@ -188,7 +211,10 @@ impl Notifier {
     }
 
     async fn show_now(&self, service_id: i64, key: &str, n: &Value) {
-        self.last.lock().unwrap().insert(key.to_owned(), (fingerprint(n), Instant::now()));
+        self.last
+            .lock()
+            .unwrap()
+            .insert(key.to_owned(), (fingerprint(n), Instant::now()));
         if let Err(e) = self.show(service_id, key, n).await {
             warn!("notifications: showing failed: {e:#}");
         }
@@ -196,7 +222,12 @@ impl Notifier {
 
     async fn show(&self, service_id: i64, key: &str, n: &Value) -> Result<()> {
         let d = n.get("data").cloned().unwrap_or(Value::Null);
-        let s = |k: &str| d.get(k).and_then(Value::as_str).unwrap_or_default().to_owned();
+        let s = |k: &str| {
+            d.get(k)
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned()
+        };
         let app = s("apk_name");
         let pkg = s("package_name");
         let title = first_non_empty(&[s("conversation_title"), s("title"), app.clone()]);
@@ -214,19 +245,26 @@ impl Notifier {
 
         // "default" = click on the notification body: reply if the app takes replies (opening the app
         // on the phone is usually blocked by Android's background-launch rules), else open on phone.
-        let replyable = n
-            .get("actions")
-            .and_then(Value::as_array)
-            .is_some_and(|a| a.iter().any(|a| a.get("remote_input").and_then(Value::as_bool) == Some(true)));
+        let replyable = n.get("actions").and_then(Value::as_array).is_some_and(|a| {
+            a.iter()
+                .any(|a| a.get("remote_input").and_then(Value::as_bool) == Some(true))
+        });
         let mut actions: Vec<String> = if replyable {
             // Noctalia renders the default action as a button too, so it doubles as "Reply".
             vec!["default".into(), "Reply".into()]
         } else {
             vec!["default".into(), "Open on phone".into()]
         };
-        for a in n.get("actions").and_then(Value::as_array).into_iter().flatten() {
-            let (Some(id), Some(name)) = (a.get("action_id").and_then(Value::as_i64), a.get("action_name").and_then(Value::as_str))
-            else {
+        for a in n
+            .get("actions")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let (Some(id), Some(name)) = (
+                a.get("action_id").and_then(Value::as_i64),
+                a.get("action_name").and_then(Value::as_str),
+            ) else {
                 continue;
             };
             // Free-text reply needs inline-reply support from the desktop; skip those buttons for now.
@@ -250,23 +288,63 @@ impl Notifier {
             hints.insert("image-path", zvariant::Value::from(pic.to_owned()));
         }
         let progress = d.get("progress").cloned().unwrap_or(Value::Null);
-        let (cur, max) = (progress.get("current").and_then(Value::as_i64).unwrap_or(0), progress.get("max").and_then(Value::as_i64).unwrap_or(0));
+        let (cur, max) = (
+            progress.get("current").and_then(Value::as_i64).unwrap_or(0),
+            progress.get("max").and_then(Value::as_i64).unwrap_or(0),
+        );
         if max > 0 {
-            hints.insert("value", zvariant::Value::I32(((cur * 100) / max).clamp(0, 100) as i32));
+            hints.insert(
+                "value",
+                zvariant::Value::I32(((cur * 100) / max).clamp(0, 100) as i32),
+            );
         }
 
-        let replaces = self.shown.lock().unwrap().by_key.get(key).copied().unwrap_or(0);
+        let replaces = self
+            .shown
+            .lock()
+            .unwrap()
+            .by_key
+            .get(key)
+            .copied()
+            .unwrap_or(0);
         let summary = title.clone();
         // Markup bodies fold "\n" into a space. Quickshell shells (Noctalia) render Qt StyledText
         // without advertising body-markup, so treat them as markup servers too.
-        let markup = self.proxy.get_capabilities().await.is_ok_and(|c| c.iter().any(|c| c == "body-markup"))
-            || self.proxy.get_server_information().await.is_ok_and(|(name, ..)| name == "quickshell");
-        let shown_body = if markup { markup_body(&body) } else { body.clone() };
-        let id = self.proxy.notify(&app, replaces, &app_icon, &summary, &shown_body, &actions, hints, -1).await?;
+        let markup = self
+            .proxy
+            .get_capabilities()
+            .await
+            .is_ok_and(|c| c.iter().any(|c| c == "body-markup"))
+            || self
+                .proxy
+                .get_server_information()
+                .await
+                .is_ok_and(|(name, ..)| name == "quickshell");
+        let shown_body = if markup {
+            markup_body(&body)
+        } else {
+            body.clone()
+        };
+        let id = self
+            .proxy
+            .notify(
+                &app,
+                replaces,
+                &app_icon,
+                &summary,
+                &shown_body,
+                &actions,
+                hints,
+                -1,
+            )
+            .await?;
         let mut shown = self.shown.lock().unwrap();
         shown.by_key.insert(key.to_owned(), id);
         shown.by_id.insert(id, (key.to_owned(), service_id));
-        self.shown_text.lock().unwrap().insert(key.to_owned(), (title.clone(), body.clone(), app.clone()));
+        self.shown_text
+            .lock()
+            .unwrap()
+            .insert(key.to_owned(), (title.clone(), body.clone(), app.clone()));
         if replyable {
             shown.replyable.insert(key.to_owned());
         } else {
@@ -310,16 +388,21 @@ impl Notifier {
             match status {
                 Ok(s) if s.success() => {}
                 Ok(s) => info!(%s, "notifications: reply window exited abnormally"),
-                Err(e) => warn!("notifications: reply window failed to start (is quickshell `qs` on PATH?): {e}"),
+                Err(e) => warn!(
+                    "notifications: reply window failed to start (is quickshell `qs` on PATH?): {e}"
+                ),
             }
         });
     }
 
     async fn follow_signals(self: Arc<Self>) {
-        let (Ok(mut invoked), Ok(mut closed)) =
-            (self.proxy.receive_action_invoked().await, self.proxy.receive_notification_closed().await)
-        else {
-            warn!("notifications: can't subscribe to notification signals; clicks won't reach the phone");
+        let (Ok(mut invoked), Ok(mut closed)) = (
+            self.proxy.receive_action_invoked().await,
+            self.proxy.receive_notification_closed().await,
+        ) else {
+            warn!(
+                "notifications: can't subscribe to notification signals; clicks won't reach the phone"
+            );
             return;
         };
         loop {
@@ -364,7 +447,9 @@ impl Notifier {
 /// the intent on that app's virtual display; the stream host uses this event to run action buttons
 /// without a window. `None` for anything else (replies, mute, permission requests).
 pub fn click_event(service: i64, cmd: &Value) -> Option<Value> {
-    if !matches!(service, SERVICE_NOTIFY | SERVICE_NOTIFY_WIDGET) || cmd.get("cmd").and_then(Value::as_i64) != Some(0) {
+    if !matches!(service, SERVICE_NOTIFY | SERVICE_NOTIFY_WIDGET)
+        || cmd.get("cmd").and_then(Value::as_i64) != Some(0)
+    {
         return None;
     }
     let kind = match cmd.get("event").and_then(Value::as_i64) {
@@ -373,7 +458,10 @@ pub fn click_event(service: i64, cmd: &Value) -> Option<Value> {
         _ => return None,
     };
     let key = cmd.get("key").and_then(Value::as_str)?;
-    let action_id = cmd.pointer("/data/action_id").cloned().unwrap_or(Value::Null);
+    let action_id = cmd
+        .pointer("/data/action_id")
+        .cloned()
+        .unwrap_or(Value::Null);
     Some(json!({
         "event": "notification_action", "kind": kind, "pkg": key_package(key)?, "key": key,
         "actionId": action_id, "service": service,
@@ -394,9 +482,19 @@ pub fn reply_command(key: &str, text: &str) -> Value {
 
 /// Best readable body for each notification style.
 pub fn body_text(d: &Value) -> String {
-    let s = |k: &str| d.get(k).and_then(Value::as_str).unwrap_or_default().to_owned();
+    let s = |k: &str| {
+        d.get(k)
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned()
+    };
     let strings = |k: &str| -> Vec<String> {
-        d.get(k).and_then(Value::as_array).into_iter().flatten().filter_map(|v| v.as_str().map(str::to_owned)).collect()
+        d.get(k)
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|v| v.as_str().map(str::to_owned))
+            .collect()
     };
     let messages = strings("messages");
     if !messages.is_empty() {
@@ -428,7 +526,14 @@ fn fingerprint(n: &Value) -> u64 {
     use std::hash::{Hash, Hasher};
     let d = n.get("data").cloned().unwrap_or(Value::Null);
     let mut h = std::collections::hash_map::DefaultHasher::new();
-    for k in ["title", "conversation_title", "content", "big_text", "expand_summary", "priority"] {
+    for k in [
+        "title",
+        "conversation_title",
+        "content",
+        "big_text",
+        "expand_summary",
+        "priority",
+    ] {
         d.get(k).map(Value::to_string).hash(&mut h);
     }
     for k in ["messages", "message_persons", "line_text", "progress"] {
@@ -448,7 +553,9 @@ fn fingerprint(n: &Value) -> u64 {
 ///   user to the other party; otherwise `None` and the app icon stands in.
 pub fn sender_avatar(n: &Value) -> Option<&Value> {
     let d = n.get("data")?;
-    let icon = d.get("person_icon").filter(|v| v.as_str().is_some_and(|s| !s.trim().is_empty()))?;
+    let icon = d
+        .get("person_icon")
+        .filter(|v| v.as_str().is_some_and(|s| !s.trim().is_empty()))?;
     let messaging = n.get("type").and_then(Value::as_i64) == Some(3) || d.get("messages").is_some();
     if !messaging {
         return Some(icon);
@@ -462,7 +569,11 @@ pub fn sender_avatar(n: &Value) -> Option<&Value> {
 /// "Icon cache"): `<pkg>.png`, else an `<iconName>` (`<pkg>_<activity>.png`), preferring the main
 /// user's over another user's (`<userId>_<pkg>_<activity>.png`).
 fn cached_app_icon(dir: &std::path::Path, pkg: &str) -> Option<String> {
-    if pkg.is_empty() || !pkg.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-')) {
+    if pkg.is_empty()
+        || !pkg
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+    {
         return None;
     }
     let exact = dir.join(format!("{pkg}.png"));
@@ -477,7 +588,11 @@ fn cached_app_icon(dir: &std::path::Path, pkg: &str) -> Option<String> {
             let stem = name.strip_suffix(".png")?;
             // `<userId>_` prefix for another user's (work profile, clone) copy of the app.
             let (other_user, rest) = match stem.split_once('_') {
-                Some((user, rest)) if !user.is_empty() && user.chars().all(|c| c.is_ascii_digit()) => (true, rest),
+                Some((user, rest))
+                    if !user.is_empty() && user.chars().all(|c| c.is_ascii_digit()) =>
+                {
+                    (true, rest)
+                }
                 _ => (false, stem),
             };
             // The activity is a class name: it has a dot and no `_` in its first segment, which keeps
@@ -488,7 +603,10 @@ fn cached_app_icon(dir: &std::path::Path, pkg: &str) -> Option<String> {
         })
         .collect();
     found.sort();
-    found.into_iter().next().map(|(_, name)| dir.join(name).display().to_string())
+    found
+        .into_iter()
+        .next()
+        .map(|(_, name)| dir.join(name).display().to_string())
 }
 
 /// An installed desktop icon for the phone app, e.g. `com.whatsapp` / "WhatsApp" → `whatsapp.svg`.
@@ -498,7 +616,9 @@ fn themed_icon(pkg: &str, app: &str) -> Option<String> {
     if let Some(hit) = cache.lock().unwrap().get(pkg) {
         return hit.clone();
     }
-    let found = icon_candidates(pkg, app).into_iter().find_map(|name| find_icon_file(&name));
+    let found = icon_candidates(pkg, app)
+        .into_iter()
+        .find_map(|name| find_icon_file(&name));
     cache.lock().unwrap().insert(pkg.to_owned(), found.clone());
     found
 }
@@ -522,7 +642,12 @@ fn icon_candidates(pkg: &str, app: &str) -> Vec<String> {
     if let Some(last) = parts.last() {
         push(last.to_lowercase());
     }
-    out.retain(|s| !matches!(s.as_str(), "android" | "app" | "apps" | "google" | "messenger" | "mobile"));
+    out.retain(|s| {
+        !matches!(
+            s.as_str(),
+            "android" | "app" | "apps" | "google" | "messenger" | "mobile"
+        )
+    });
     out
 }
 
@@ -585,7 +710,11 @@ pub fn is_muted(pkg: &str) -> bool {
 /// Control command `{"cmd":"notif_mute","pkg":"com.example","mute":true|false}` (mute defaults to
 /// true); without `pkg` it just lists the muted packages.
 pub fn mute_command(v: &Value) -> Value {
-    let pkg = v.get("pkg").and_then(Value::as_str).unwrap_or_default().trim();
+    let pkg = v
+        .get("pkg")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim();
     let mut set = muted().lock().unwrap();
     if !pkg.is_empty() {
         if v.get("mute").and_then(Value::as_bool).unwrap_or(true) {
@@ -599,7 +728,8 @@ pub fn mute_command(v: &Value) -> Value {
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
-        if let Err(e) = std::fs::write(&path, serde_json::to_vec_pretty(&list).unwrap_or_default()) {
+        if let Err(e) = std::fs::write(&path, serde_json::to_vec_pretty(&list).unwrap_or_default())
+        {
             return json!({ "ok": false, "message": format!("saving {}: {e}", path.display()) });
         }
     }
@@ -609,25 +739,49 @@ pub fn mute_command(v: &Value) -> Value {
 }
 
 fn first_non_empty(options: &[String]) -> String {
-    options.iter().find(|s| !s.trim().is_empty()).cloned().unwrap_or_default()
+    options
+        .iter()
+        .find(|s| !s.trim().is_empty())
+        .cloned()
+        .unwrap_or_default()
 }
 
 /// Plain text → notification body markup: escape the markup characters, keep line breaks.
 fn markup_body(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('\n', "<br/>")
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('\n', "<br/>")
 }
 
 fn truncate(s: &str, max: usize) -> String {
-    if s.chars().count() <= max { s.to_owned() } else { s.chars().take(max).collect::<String>() + "…" }
+    if s.chars().count() <= max {
+        s.to_owned()
+    } else {
+        s.chars().take(max).collect::<String>() + "…"
+    }
 }
 
 fn sanitize(s: &str) -> String {
-    s.chars().map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '-' { c } else { '_' }).take(120).collect()
+    s.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '.' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .take(120)
+        .collect()
 }
 
 /// Decodes a base64 JPEG field (the phone wraps lines, so strip whitespace) into the runtime dir.
 fn save_image(name: &str, field: Option<&Value>) -> Option<String> {
-    let b64: String = field?.as_str()?.chars().filter(|c| !c.is_whitespace()).collect();
+    let b64: String = field?
+        .as_str()?
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
     if b64.is_empty() {
         return None;
     }
@@ -671,7 +825,10 @@ mod tests {
 
     #[test]
     fn icon_candidates_from_package_and_name() {
-        assert_eq!(icon_candidates("com.whatsapp", "WhatsApp"), ["whatsapp", "com.whatsapp"]);
+        assert_eq!(
+            icon_candidates("com.whatsapp", "WhatsApp"),
+            ["whatsapp", "com.whatsapp"]
+        );
         let t = icon_candidates("org.telegram.messenger", "Telegram");
         assert_eq!(t[0], "telegram");
         assert!(icon_candidates("com.google.android.gm", "Gmail").contains(&"gmail".to_owned()));
@@ -691,23 +848,48 @@ mod tests {
         let ev = click_event(SERVICE_NOTIFY_WIDGET, &open).unwrap();
         assert_eq!(ev["kind"], "open");
         assert!(ev["actionId"].is_null());
-        assert!(click_event(SERVICE_NOTIFY, &reply_command(key, "hi")).is_none(), "replies need no stream");
+        assert!(
+            click_event(SERVICE_NOTIFY, &reply_command(key, "hi")).is_none(),
+            "replies need no stream"
+        );
         assert!(click_event(15, &action).is_none(), "other services");
         assert!(click_event(SERVICE_NOTIFY, &json!({ "cmd": 1, "pkg": "x" })).is_none());
-        assert!(click_event(SERVICE_NOTIFY, &json!({ "cmd": 0, "event": 1, "key": "nokey" })).is_none());
+        assert!(
+            click_event(
+                SERVICE_NOTIFY,
+                &json!({ "cmd": 0, "event": 1, "key": "nokey" })
+            )
+            .is_none()
+        );
     }
 
     #[test]
     fn package_from_notification_key() {
-        assert_eq!(key_package("0|com.whatsapp|12|null|10200").as_deref(), Some("com.whatsapp"));
-        assert_eq!(key_package("0|android|1|tag|1000").as_deref(), Some("android"));
+        assert_eq!(
+            key_package("0|com.whatsapp|12|null|10200").as_deref(),
+            Some("com.whatsapp")
+        );
+        assert_eq!(
+            key_package("0|android|1|tag|1000").as_deref(),
+            Some("android")
+        );
         assert_eq!(key_package("broken"), None);
         assert_eq!(key_package("0||1"), None);
     }
 
     /// A type 3 (messaging) frame; `person` is the style's user Person, as the phone sends it.
-    fn messaging(title: &str, conversation: &str, person: &str, icon: &str, senders: &[&str]) -> Value {
-        let messages: Vec<String> = senders.iter().enumerate().map(|(i, _)| format!("<message {i}>")).collect();
+    fn messaging(
+        title: &str,
+        conversation: &str,
+        person: &str,
+        icon: &str,
+        senders: &[&str],
+    ) -> Value {
+        let messages: Vec<String> = senders
+            .iter()
+            .enumerate()
+            .map(|(i, _)| format!("<message {i}>"))
+            .collect();
         json!({ "key": "0|com.example.chat|1|null|10100", "event": 0, "type": 3,
                 "data": { "package_name": "com.example.chat", "apk_icon": "QUFB", "title": title,
                           "conversation_title": conversation, "person_name": person, "person_icon": icon,
@@ -720,34 +902,73 @@ mod tests {
         let dm = messaging("<Contact A>", "", "You", "U0VMRg==", &["<Contact A>"]);
         assert_eq!(sender_avatar(&dm), None);
         // Group: the owner again, whoever wrote last; no per-sender icons on the wire.
-        let group = messaging("<Group>: <Contact B>", "<Group>", "You", "U0VMRg==", &["<Contact A>", "<Contact B>"]);
+        let group = messaging(
+            "<Group>: <Contact B>",
+            "<Group>",
+            "You",
+            "U0VMRg==",
+            &["<Contact A>", "<Contact B>"],
+        );
         assert_eq!(sender_avatar(&group), None);
         // The owner replied last: still not their own picture.
-        let replied = messaging("<Contact A>", "", "You", "U0VMRg==", &["<Contact A>", "You"]);
+        let replied = messaging(
+            "<Contact A>",
+            "",
+            "You",
+            "U0VMRg==",
+            &["<Contact A>", "You"],
+        );
         assert_eq!(sender_avatar(&replied), None);
     }
 
     #[test]
     fn messaging_avatar_used_when_the_person_is_the_headline() {
         // Apps such as the dialer set the style's user to the other party (same name as the title).
-        let n = messaging("<Contact A>", "", "<Contact A>", "QVZBVEFS", &["<Contact A>"]);
+        let n = messaging(
+            "<Contact A>",
+            "",
+            "<Contact A>",
+            "QVZBVEFS",
+            &["<Contact A>"],
+        );
         assert_eq!(sender_avatar(&n).and_then(Value::as_str), Some("QVZBVEFS"));
         // No icon or no name: nothing to show.
-        assert_eq!(sender_avatar(&messaging("<Contact A>", "", "<Contact A>", "", &["<Contact A>"])), None);
-        assert_eq!(sender_avatar(&messaging("", "", "", "QVZBVEFS", &["<Contact A>"])), None);
+        assert_eq!(
+            sender_avatar(&messaging(
+                "<Contact A>",
+                "",
+                "<Contact A>",
+                "",
+                &["<Contact A>"]
+            )),
+            None
+        );
+        assert_eq!(
+            sender_avatar(&messaging("", "", "", "QVZBVEFS", &["<Contact A>"])),
+            None
+        );
         let mut no_icon = messaging("<Contact A>", "", "<Contact A>", "x", &["<Contact A>"]);
-        no_icon["data"].as_object_mut().unwrap().remove("person_icon");
+        no_icon["data"]
+            .as_object_mut()
+            .unwrap()
+            .remove("person_icon");
         assert_eq!(sender_avatar(&no_icon), None);
     }
 
     #[test]
     fn call_avatar_is_the_caller() {
         let call = json!({ "key": "k", "type": 6, "data": { "title": "<Caller>", "person_name": "<Caller>", "person_icon": "Q0FMTA==" } });
-        assert_eq!(sender_avatar(&call).and_then(Value::as_str), Some("Q0FMTA=="));
+        assert_eq!(
+            sender_avatar(&call).and_then(Value::as_str),
+            Some("Q0FMTA==")
+        );
         // A call style whose person differs from the title is still the caller.
         let call = json!({ "key": "k", "type": 6, "data": { "title": "Incoming call", "person_name": "<Caller>", "person_icon": "Q0FMTA==" } });
         assert!(sender_avatar(&call).is_some());
-        assert_eq!(sender_avatar(&json!({ "key": "k", "type": 0, "data": { "title": "t" } })), None);
+        assert_eq!(
+            sender_avatar(&json!({ "key": "k", "type": 0, "data": { "title": "t" } })),
+            None
+        );
     }
 
     #[test]
@@ -760,12 +981,22 @@ mod tests {
         touch("11_com.example.chat_com.example.chat.Main.png");
         touch("com.example.chat_bar_com.other.Main.png"); // another package's icon
         let got = cached_app_icon(&dir, "com.example.chat").unwrap();
-        assert!(got.ends_with("11_com.example.chat_com.example.chat.Main.png"), "{got}");
+        assert!(
+            got.ends_with("11_com.example.chat_com.example.chat.Main.png"),
+            "{got}"
+        );
         touch("com.example.chat_com.example.chat.Main.png");
         let got = cached_app_icon(&dir, "com.example.chat").unwrap();
-        assert!(got.ends_with("/com.example.chat_com.example.chat.Main.png"), "main user first: {got}");
+        assert!(
+            got.ends_with("/com.example.chat_com.example.chat.Main.png"),
+            "main user first: {got}"
+        );
         touch("com.example.chat.png");
-        assert!(cached_app_icon(&dir, "com.example.chat").unwrap().ends_with("/com.example.chat.png"));
+        assert!(
+            cached_app_icon(&dir, "com.example.chat")
+                .unwrap()
+                .ends_with("/com.example.chat.png")
+        );
         assert_eq!(cached_app_icon(&dir, "../etc"), None);
         assert_eq!(cached_app_icon(&dir, ""), None);
         let _ = std::fs::remove_dir_all(&dir);
@@ -773,7 +1004,10 @@ mod tests {
 
     #[test]
     fn plain_and_bigtext_bodies() {
-        assert_eq!(body_text(&json!({ "content": "short", "big_text": "long version" })), "long version");
+        assert_eq!(
+            body_text(&json!({ "content": "short", "big_text": "long version" })),
+            "long version"
+        );
         assert_eq!(body_text(&json!({ "content": "short" })), "short");
     }
 }

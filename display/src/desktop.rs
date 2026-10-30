@@ -100,14 +100,19 @@ pub struct Output {
 impl Output {
     /// A laptop's own panel.
     pub fn is_internal(&self) -> bool {
-        ["eDP", "LVDS", "DSI"].iter().any(|p| self.name.starts_with(p))
+        ["eDP", "LVDS", "DSI"]
+            .iter()
+            .any(|p| self.name.starts_with(p))
     }
 }
 
 pub fn outputs(desk: Desktop) -> Result<Vec<Output>> {
     let mut list = match desk {
         Desktop::Niri => crate::capture::niri::outputs()?,
-        Desktop::Hyprland => crate::capture::hyprland::outputs()?.iter().map(crate::capture::hyprland::Monitor::output).collect(),
+        Desktop::Hyprland => crate::capture::hyprland::outputs()?
+            .iter()
+            .map(crate::capture::hyprland::Monitor::output)
+            .collect(),
         Desktop::Sway => crate::capture::sway::outputs()?,
         Desktop::Gnome => crate::capture::gnome::outputs()?,
         Desktop::Kde | Desktop::Other => wl_outputs()?,
@@ -123,7 +128,11 @@ pub fn primary<'a>(outs: &'a [Output], exclude: Option<&str>) -> Option<&'a Outp
     outs.iter()
         .filter(usable)
         .find(|o| o.focused && !o.is_virtual)
-        .or_else(|| outs.iter().filter(usable).find(|o| !o.is_virtual && o.logical.is_some_and(|l| (l.0, l.1) == (0, 0))))
+        .or_else(|| {
+            outs.iter()
+                .filter(usable)
+                .find(|o| !o.is_virtual && o.logical.is_some_and(|l| (l.0, l.1) == (0, 0)))
+        })
         .or_else(|| outs.iter().filter(usable).find(|o| !o.is_virtual))
         .or_else(|| outs.iter().find(usable))
 }
@@ -170,7 +179,12 @@ pub struct Placement {
 
 impl Default for Placement {
     fn default() -> Self {
-        Placement { edge: Edge::Right, start: 0.0, end: 1.0, output: None }
+        Placement {
+            edge: Edge::Right,
+            start: 0.0,
+            end: 1.0,
+            output: None,
+        }
     }
 }
 
@@ -185,14 +199,18 @@ pub fn placement_path() -> std::path::PathBuf {
     std::env::var_os("XDG_CONFIG_HOME")
         .map(std::path::PathBuf::from)
         .filter(|p| p.is_absolute())
-        .unwrap_or_else(|| std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".config"))
+        .unwrap_or_else(|| {
+            std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".config")
+        })
         .join("smartconnect-linux")
         .join("crosscontrol.json")
 }
 
 /// The placement file's modification time (a running Extend session follows changes).
 pub fn placement_stamp() -> Option<std::time::SystemTime> {
-    std::fs::metadata(placement_path()).and_then(|m| m.modified()).ok()
+    std::fs::metadata(placement_path())
+        .and_then(|m| m.modified())
+        .ok()
 }
 
 impl Placement {
@@ -203,22 +221,45 @@ impl Placement {
             .and_then(|t| serde_json::from_str::<Value>(&t).ok())
             .and_then(|v| Placement::parse(&v));
         let mut p = saved.unwrap_or_default();
-        if let Some(edge) = SIDE.get() {
-            if p.edge != *edge {
-                // The span belonged to the old edge; keep the monitor the phone sits next to.
-                p = Placement { edge: *edge, start: 0.0, end: 1.0, output: p.output.clone() };
-            }
+        if let Some(edge) = SIDE.get()
+            && p.edge != *edge
+        {
+            // The span belonged to the old edge; keep the monitor the phone sits next to.
+            p = Placement {
+                edge: *edge,
+                start: 0.0,
+                end: 1.0,
+                output: p.output.clone(),
+            };
         }
         p
     }
 
     pub fn parse(v: &Value) -> Option<Placement> {
         let edge = Edge::parse(v.get("edge")?.as_str()?)?;
-        let f = |k: &str| v.get(k).and_then(Value::as_f64).filter(|x| (0.0..=1.0).contains(x));
-        let output = v.get("output").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned);
+        let f = |k: &str| {
+            v.get(k)
+                .and_then(Value::as_f64)
+                .filter(|x| (0.0..=1.0).contains(x))
+        };
+        let output = v
+            .get("output")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned);
         match (f("start"), f("end")) {
-            (Some(start), Some(end)) if start <= end => Some(Placement { edge, start, end, output }),
-            (None, None) => Some(Placement { edge, output, ..Placement::default() }),
+            (Some(start), Some(end)) if start <= end => Some(Placement {
+                edge,
+                start,
+                end,
+                output,
+            }),
+            (None, None) => Some(Placement {
+                edge,
+                output,
+                ..Placement::default()
+            }),
             _ => None,
         }
     }
@@ -226,12 +267,26 @@ impl Placement {
     /// Top-left corner for a `size` (logical px) screen on this side of `primary`, centred on the
     /// chosen spot but kept touching the primary along the whole overlap it can have. When another
     /// screen is already there, it goes past that one instead.
-    pub fn position(&self, primary: (i32, i32, u32, u32), size: (u32, u32), others: &[(i32, i32, u32, u32)]) -> (i32, i32) {
-        let (px, py, pw, ph) = (f64::from(primary.0), f64::from(primary.1), f64::from(primary.2), f64::from(primary.3));
+    pub fn position(
+        &self,
+        primary: (i32, i32, u32, u32),
+        size: (u32, u32),
+        others: &[(i32, i32, u32, u32)],
+    ) -> (i32, i32) {
+        let (px, py, pw, ph) = (
+            f64::from(primary.0),
+            f64::from(primary.1),
+            f64::from(primary.2),
+            f64::from(primary.3),
+        );
         let (w, h) = (f64::from(size.0), f64::from(size.1));
         let centre = ((self.start + self.end) / 2.0).clamp(0.0, 1.0);
         let along = |origin: f64, len: f64, extent: f64| {
-            let (lo, hi) = if extent <= len { (origin, origin + len - extent) } else { (origin + len - extent, origin) };
+            let (lo, hi) = if extent <= len {
+                (origin, origin + len - extent)
+            } else {
+                (origin + len - extent, origin)
+            };
             (origin + centre * len - extent / 2.0).clamp(lo, hi).round()
         };
         let (mut x, mut y) = match self.edge {
@@ -240,10 +295,26 @@ impl Placement {
             Edge::Bottom => (along(px, pw, w), py + ph),
             Edge::Top => (along(px, pw, w), py - h),
         };
-        let r = |o: &(i32, i32, u32, u32)| (f64::from(o.0), f64::from(o.1), f64::from(o.0) + f64::from(o.2), f64::from(o.1) + f64::from(o.3));
-        let overlaps = |x: f64, y: f64| others.iter().map(r).any(|(x0, y0, x1, y1)| x < x1 && x + w > x0 && y < y1 && y + h > y0);
+        let r = |o: &(i32, i32, u32, u32)| {
+            (
+                f64::from(o.0),
+                f64::from(o.1),
+                f64::from(o.0) + f64::from(o.2),
+                f64::from(o.1) + f64::from(o.3),
+            )
+        };
+        let overlaps = |x: f64, y: f64| {
+            others
+                .iter()
+                .map(r)
+                .any(|(x0, y0, x1, y1)| x < x1 && x + w > x0 && y < y1 && y + h > y0)
+        };
         if overlaps(x, y) {
-            let all: Vec<_> = others.iter().chain(std::iter::once(&primary)).map(r).collect();
+            let all: Vec<_> = others
+                .iter()
+                .chain(std::iter::once(&primary))
+                .map(r)
+                .collect();
             match self.edge {
                 Edge::Right => x = all.iter().map(|o| o.2).fold(f64::MIN, f64::max),
                 Edge::Left => x = all.iter().map(|o| o.0).fold(f64::MAX, f64::min) - w,
@@ -262,13 +333,23 @@ pub fn spot(outs: &[Output], name: Option<&str>, size: (u32, u32)) -> (i32, i32)
 }
 
 /// [`spot`] with the placement given explicitly (tests, and callers that just read it).
-pub fn spot_with(outs: &[Output], name: Option<&str>, size: (u32, u32), placement: &Placement) -> (i32, i32) {
+pub fn spot_with(
+    outs: &[Output],
+    name: Option<&str>,
+    size: (u32, u32),
+    placement: &Placement,
+) -> (i32, i32) {
     let usable = |o: &&Output| o.logical.is_some() && Some(o.name.as_str()) != name;
     // The monitor the phone is attached to wins over the primary, so a drag on the GTK page
     // places the phone next to that monitor and not next to whichever one GNOME calls primary.
-    let anchor = placement.output.as_deref().and_then(|want| outs.iter().find(|o| o.name == want)).filter(usable);
-    let Some((primary_name, primary)) =
-        anchor.map(|o| (o.name.clone(), o.logical.unwrap())).or_else(|| primary(outs, name).and_then(|o| o.logical.map(|l| (o.name.clone(), l))))
+    let anchor = placement
+        .output
+        .as_deref()
+        .and_then(|want| outs.iter().find(|o| o.name == want))
+        .filter(usable);
+    let Some((primary_name, primary)) = anchor
+        .map(|o| (o.name.clone(), o.logical.unwrap()))
+        .or_else(|| primary(outs, name).and_then(|o| o.logical.map(|l| (o.name.clone(), l))))
     else {
         return (0, 0);
     };
@@ -283,7 +364,10 @@ pub fn spot_with(outs: &[Output], name: Option<&str>, size: (u32, u32), placemen
 /// Logical size of `px` pixels at `scale`.
 pub fn logical_size((w, h): (u32, u32), scale: f64) -> (u32, u32) {
     let s = if scale > 0.0 { scale } else { 1.0 };
-    ((f64::from(w) / s).round() as u32, (f64::from(h) / s).round() as u32)
+    (
+        (f64::from(w) / s).round() as u32,
+        (f64::from(h) / s).round() as u32,
+    )
 }
 
 /// Moves keyboard focus to output `name`, so a layer-shell keyboard (wvkbd) opens there. Best
@@ -339,7 +423,10 @@ pub fn run_tool(argv: &[&str]) -> Result<String> {
     let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr);
-        let why = [err.trim(), stdout.trim()].into_iter().find(|s| !s.is_empty()).unwrap_or("no output");
+        let why = [err.trim(), stdout.trim()]
+            .into_iter()
+            .find(|s| !s.is_empty())
+            .unwrap_or("no output");
         bail!("`{}` failed: {why}", argv.join(" "));
     }
     Ok(stdout)
@@ -351,11 +438,17 @@ pub fn run_tool(argv: &[&str]) -> Result<String> {
 pub fn wl_outputs() -> Result<Vec<Output>> {
     use wayland_client::{Connection, globals::registry_queue_init};
     let conn = Connection::connect_to_env().context("connecting to Wayland")?;
-    let (globals, mut queue) = registry_queue_init::<wl::State>(&conn).context("Wayland registry")?;
+    let (globals, mut queue) =
+        registry_queue_init::<wl::State>(&conn).context("Wayland registry")?;
     let qh = queue.handle();
     let mut state = wl::State::default();
     let xo: Option<wl::XdgOutputManager> = globals.bind(&qh, 1..=3, ()).ok();
-    for g in globals.contents().clone_list().into_iter().filter(|g| g.interface == "wl_output") {
+    for g in globals
+        .contents()
+        .clone_list()
+        .into_iter()
+        .filter(|g| g.interface == "wl_output")
+    {
         let idx = state.0.len();
         let out: wl::WlOutput = globals.registry().bind(g.name, g.version.min(4), &qh, idx);
         if let Some(m) = &xo {
@@ -371,7 +464,9 @@ pub fn wl_outputs() -> Result<Vec<Output>> {
         .enumerate()
         .map(|(i, o)| {
             let name = o.name.unwrap_or_else(|| format!("output-{i}"));
-            let is_virtual = ["Virtual", "HEADLESS", "Meta-"].iter().any(|p| name.starts_with(p));
+            let is_virtual = ["Virtual", "HEADLESS", "Meta-"]
+                .iter()
+                .any(|p| name.starts_with(p));
             Output {
                 description: o.description.unwrap_or_default(),
                 logical: (o.w > 0 && o.h > 0).then_some((o.x, o.y, o.w as u32, o.h as u32)),
@@ -388,8 +483,11 @@ pub fn wl_outputs() -> Result<Vec<Output>> {
 }
 
 mod wl {
-    use wayland_client::{Connection, Dispatch, QueueHandle, globals::GlobalListContents, protocol::wl_registry::WlRegistry};
     pub use wayland_client::protocol::wl_output::{self, WlOutput};
+    use wayland_client::{
+        Connection, Dispatch, QueueHandle, globals::GlobalListContents,
+        protocol::wl_registry::WlRegistry,
+    };
     pub use wayland_protocols::xdg::xdg_output::zv1::client::zxdg_output_manager_v1::ZxdgOutputManagerV1 as XdgOutputManager;
     use wayland_protocols::xdg::xdg_output::zv1::client::zxdg_output_v1::{self, ZxdgOutputV1};
 
@@ -407,26 +505,60 @@ mod wl {
     pub struct State(pub Vec<Info>);
 
     impl Dispatch<WlRegistry, GlobalListContents> for State {
-        fn event(_: &mut Self, _: &WlRegistry, _: wayland_client::protocol::wl_registry::Event, _: &GlobalListContents, _: &Connection, _: &QueueHandle<Self>) {}
+        fn event(
+            _: &mut Self,
+            _: &WlRegistry,
+            _: wayland_client::protocol::wl_registry::Event,
+            _: &GlobalListContents,
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+        }
     }
     impl Dispatch<XdgOutputManager, ()> for State {
-        fn event(_: &mut Self, _: &XdgOutputManager, _: <XdgOutputManager as wayland_client::Proxy>::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {}
+        fn event(
+            _: &mut Self,
+            _: &XdgOutputManager,
+            _: <XdgOutputManager as wayland_client::Proxy>::Event,
+            _: &(),
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+        }
     }
     impl Dispatch<WlOutput, usize> for State {
-        fn event(s: &mut Self, _: &WlOutput, ev: wl_output::Event, i: &usize, _: &Connection, _: &QueueHandle<Self>) {
+        fn event(
+            s: &mut Self,
+            _: &WlOutput,
+            ev: wl_output::Event,
+            i: &usize,
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
             match ev {
                 wl_output::Event::Name { name } => s.0[*i].name = Some(name),
-                wl_output::Event::Description { description } => s.0[*i].description = Some(description),
+                wl_output::Event::Description { description } => {
+                    s.0[*i].description = Some(description)
+                }
                 _ => {}
             }
         }
     }
     impl Dispatch<ZxdgOutputV1, usize> for State {
-        fn event(s: &mut Self, _: &ZxdgOutputV1, ev: zxdg_output_v1::Event, i: &usize, _: &Connection, _: &QueueHandle<Self>) {
+        fn event(
+            s: &mut Self,
+            _: &ZxdgOutputV1,
+            ev: zxdg_output_v1::Event,
+            i: &usize,
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
             let o = &mut s.0[*i];
             match ev {
                 zxdg_output_v1::Event::LogicalPosition { x, y } => (o.x, o.y) = (x, y),
-                zxdg_output_v1::Event::LogicalSize { width, height } => (o.w, o.h) = (width, height),
+                zxdg_output_v1::Event::LogicalSize { width, height } => {
+                    (o.w, o.h) = (width, height)
+                }
                 zxdg_output_v1::Event::Name { name } => {
                     o.name.get_or_insert(name);
                 }
@@ -440,8 +572,19 @@ mod wl {
 mod tests {
     use super::*;
 
-    fn out(name: &str, logical: Option<(i32, i32, u32, u32)>, focused: bool, is_virtual: bool) -> Output {
-        Output { name: name.into(), description: String::new(), logical, focused, is_virtual }
+    fn out(
+        name: &str,
+        logical: Option<(i32, i32, u32, u32)>,
+        focused: bool,
+        is_virtual: bool,
+    ) -> Output {
+        Output {
+            name: name.into(),
+            description: String::new(),
+            logical,
+            focused,
+            is_virtual,
+        }
     }
 
     #[test]
@@ -452,7 +595,10 @@ mod tests {
         assert_eq!(Desktop::parse("niri"), Some(Desktop::Niri));
         assert_eq!(Desktop::parse("Unity"), None);
         // XDG_CURRENT_DESKTOP is a colon list; Ubuntu's session is "ubuntu:GNOME".
-        assert_eq!("ubuntu:GNOME".split(':').find_map(Desktop::parse), Some(Desktop::Gnome));
+        assert_eq!(
+            "ubuntu:GNOME".split(':').find_map(Desktop::parse),
+            Some(Desktop::Gnome)
+        );
     }
 
     #[test]
@@ -465,22 +611,49 @@ mod tests {
         // A focused virtual output is never the one to duplicate.
         assert_eq!(primary(&outs, None).unwrap().name, "eDP-1");
         let laptop = (0, 0, 1920, 1080);
-        let p = |edge, start, end| Placement { edge, start, end, output: None };
+        let p = |edge, start, end| Placement {
+            edge,
+            start,
+            end,
+            output: None,
+        };
         // Right, centred: a 960x540 phone screen sits half-way down the 1080 px edge.
-        assert_eq!(p(Edge::Right, 0.0, 1.0).position(laptop, (960, 540), &[]), (1920, 270));
+        assert_eq!(
+            p(Edge::Right, 0.0, 1.0).position(laptop, (960, 540), &[]),
+            (1920, 270)
+        );
         // Left, low on the edge: centre 0.9 would hang off the bottom, so it is clamped.
-        assert_eq!(p(Edge::Left, 0.8, 1.0).position(laptop, (960, 540), &[]), (-960, 540));
-        assert_eq!(p(Edge::Top, 0.0, 0.2).position(laptop, (960, 540), &[]), (0, -540));
-        assert_eq!(p(Edge::Bottom, 0.4, 0.6).position(laptop, (960, 540), &[]), (480, 1080));
+        assert_eq!(
+            p(Edge::Left, 0.8, 1.0).position(laptop, (960, 540), &[]),
+            (-960, 540)
+        );
+        assert_eq!(
+            p(Edge::Top, 0.0, 0.2).position(laptop, (960, 540), &[]),
+            (0, -540)
+        );
+        assert_eq!(
+            p(Edge::Bottom, 0.4, 0.6).position(laptop, (960, 540), &[]),
+            (480, 1080)
+        );
         // Taller than the edge: it stays touching along the whole edge.
-        assert_eq!(p(Edge::Right, 0.0, 0.1).position(laptop, (540, 1920), &[]), (1920, -840));
+        assert_eq!(
+            p(Edge::Right, 0.0, 0.1).position(laptop, (540, 1920), &[]),
+            (1920, -840)
+        );
         // A monitor already on the right: go past it.
-        assert_eq!(p(Edge::Right, 0.0, 1.0).position(laptop, (960, 540), &[(1920, 0, 2560, 1440)]), (4480, 270));
+        assert_eq!(
+            p(Edge::Right, 0.0, 1.0).position(laptop, (960, 540), &[(1920, 0, 2560, 1440)]),
+            (4480, 270)
+        );
         // The file format the GTK Cross Control page writes.
-        let v: Value = serde_json::from_str(r#"{"edge":"left","start":0.221,"end":0.921}"#).unwrap();
+        let v: Value =
+            serde_json::from_str(r#"{"edge":"left","start":0.221,"end":0.921}"#).unwrap();
         assert_eq!(Placement::parse(&v), Some(p(Edge::Left, 0.221, 0.921)));
         assert_eq!(Placement::parse(&serde_json::json!({"edge":"up"})), None);
-        assert_eq!(Placement::parse(&serde_json::json!({"edge":"top","start":0.9,"end":0.1})), None);
+        assert_eq!(
+            Placement::parse(&serde_json::json!({"edge":"top","start":0.9,"end":0.1})),
+            None
+        );
     }
 
     #[test]
@@ -490,16 +663,35 @@ mod tests {
             out("eDP-1", Some((250, 1440, 1920, 1080)), false, false),
         ];
         // Right of the laptop panel (the phone's screen touches that monitor, not the primary).
-        let laptop = Placement { edge: Edge::Right, start: 0.4, end: 0.6, output: Some("eDP-1".into()) };
+        let laptop = Placement {
+            edge: Edge::Right,
+            start: 0.4,
+            end: 0.6,
+            output: Some("eDP-1".into()),
+        };
         assert_eq!(spot_with(&outs, None, (960, 540), &laptop), (2170, 1710));
         // Parsing keeps the monitor.
-        let v: Value = serde_json::from_str(r#"{"edge":"right","start":0.4,"end":0.6,"output":"eDP-1"}"#).unwrap();
-        assert_eq!(Placement::parse(&v).unwrap().output.as_deref(), Some("eDP-1"));
+        let v: Value =
+            serde_json::from_str(r#"{"edge":"right","start":0.4,"end":0.6,"output":"eDP-1"}"#)
+                .unwrap();
+        assert_eq!(
+            Placement::parse(&v).unwrap().output.as_deref(),
+            Some("eDP-1")
+        );
         // A monitor that is gone falls back to the primary, not to (0, 0).
-        let gone = Placement { output: Some("DP-9".into()), ..laptop.clone() };
+        let gone = Placement {
+            output: Some("DP-9".into()),
+            ..laptop.clone()
+        };
         assert_eq!(spot_with(&outs, None, (960, 540), &gone), (2560, 450));
         // The anchor is never the output being set up.
-        let excluded = Placement { output: Some("eDP-1".into()), ..laptop };
-        assert_eq!(spot_with(&outs, Some("eDP-1"), (960, 540), &excluded), (2560, 450));
+        let excluded = Placement {
+            output: Some("eDP-1".into()),
+            ..laptop
+        };
+        assert_eq!(
+            spot_with(&outs, Some("eDP-1"), (960, 540), &excluded),
+            (2560, 450)
+        );
     }
 }

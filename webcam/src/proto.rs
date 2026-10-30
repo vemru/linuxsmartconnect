@@ -43,7 +43,10 @@ fn msg(cmd: i64, data: Option<Value>) -> Value {
 /// PC-initiated start ("Start Webcam" on the PC). No `isReply` key: that is what marks it as a
 /// request. The phone answers with its own cmd 0 carrying `isReply:1` (or cmd 65535 on refusal).
 pub fn pc_request() -> Value {
-    msg(CMD_HANDSHAKE, Some(json!({ "minL": 1, "maxL": 1, "heartbeat": 1, "lite": 0 })))
+    msg(
+        CMD_HANDSHAKE,
+        Some(json!({ "minL": 1, "maxL": 1, "heartbeat": 1, "lite": 0 })),
+    )
 }
 
 /// Reply to the phone's own request (its tile was tapped): `isReply:1` plus a port starts it.
@@ -81,27 +84,47 @@ pub fn camera_command(cmd: i64, data: Option<Value>) -> Value {
 
 pub fn answer(session_id: i64, sdp: &str) -> Value {
     let inner = json!({ "type": "answer", "sdp": sdp }).to_string();
-    msg(CMD_WEBRTC_ANSWER, Some(json!({ "sessionId": session_id, "type": "answer", "webRTCData": inner })))
+    msg(
+        CMD_WEBRTC_ANSWER,
+        Some(json!({ "sessionId": session_id, "type": "answer", "webRTCData": inner })),
+    )
 }
 
 pub fn candidate(session_id: i64, mid: &str, mline: u32, candidate: &str) -> Value {
-    let inner = json!({ "type": "candidate", "label": mline, "id": mid, "candidate": candidate }).to_string();
-    msg(CMD_WEBRTC_CANDIDATE, Some(json!({ "sessionId": session_id, "type": "candidate", "webRTCData": inner })))
+    let inner = json!({ "type": "candidate", "label": mline, "id": mid, "candidate": candidate })
+        .to_string();
+    msg(
+        CMD_WEBRTC_CANDIDATE,
+        Some(json!({ "sessionId": session_id, "type": "candidate", "webRTCData": inner })),
+    )
 }
 
 /// What a phone svc 3 payload means for us.
 #[derive(Debug, PartialEq)]
 pub enum Phone {
     /// cmd 0. `is_reply == Some(0)`: the phone asks (tile tapped); `Some(1)`: it accepted our request.
-    Handshake { is_reply: Option<i64> },
+    Handshake {
+        is_reply: Option<i64>,
+    },
     /// cmd 1 with the WebRTC offer; `phone_ip` is the address the phone uses on the LAN.
-    Start { offer_sdp: Option<String>, phone_ip: Option<String> },
+    Start {
+        offer_sdp: Option<String>,
+        phone_ip: Option<String>,
+    },
     Stop,
-    Candidate { session_id: Option<i64>, mid: String, mline: u32, candidate: String },
+    Candidate {
+        session_id: Option<i64>,
+        mid: String,
+        mline: u32,
+        candidate: String,
+    },
     Heartbeat,
     /// cmd 5 (camera state: facing, torch, zoom…) or cmd 3 (camera list).
     CameraState(Value),
-    Error { code: i64, about_cmd: i64 },
+    Error {
+        code: i64,
+        about_cmd: i64,
+    },
     Other(i64),
 }
 
@@ -114,7 +137,8 @@ fn normalize(data: &Value) -> Value {
 }
 
 fn int(v: &Value) -> Option<i64> {
-    v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+    v.as_i64()
+        .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
 }
 
 pub fn parse(payload: &Value) -> Option<Phone> {
@@ -122,7 +146,9 @@ pub fn parse(payload: &Value) -> Option<Phone> {
     let cmd = payload.get("cmd").and_then(int)?;
     let data = payload.get("data").map(normalize).unwrap_or(Value::Null);
     Some(match cmd {
-        CMD_HANDSHAKE => Phone::Handshake { is_reply: data.get("isReply").and_then(int) },
+        CMD_HANDSHAKE => Phone::Handshake {
+            is_reply: data.get("isReply").and_then(int),
+        },
         CMD_START => Phone::Start {
             offer_sdp: data
                 .get("webRTCData")
@@ -133,10 +159,17 @@ pub fn parse(payload: &Value) -> Option<Phone> {
         },
         CMD_STOP => Phone::Stop,
         CMD_WEBRTC_CANDIDATE => {
-            let c: Value = data.get("webRTCData").and_then(Value::as_str).and_then(|s| serde_json::from_str(s).ok())?;
+            let c: Value = data
+                .get("webRTCData")
+                .and_then(Value::as_str)
+                .and_then(|s| serde_json::from_str(s).ok())?;
             Phone::Candidate {
                 session_id: data.get("sessionId").and_then(int),
-                mid: c.get("id").and_then(Value::as_str).unwrap_or("0").to_owned(),
+                mid: c
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .unwrap_or("0")
+                    .to_owned(),
                 mline: c.get("label").and_then(int).unwrap_or(0) as u32,
                 candidate: c.get("candidate").and_then(Value::as_str)?.to_owned(),
             }
@@ -179,7 +212,10 @@ pub fn describe_camera_state(v: &Value) -> String {
     let torch = d.pointer("/flash/state").and_then(int).unwrap_or(0);
     let zoom = d.pointer("/zoom/state").and_then(int).unwrap_or(0);
     let zoom_max = d.pointer("/zoom/max").and_then(int).unwrap_or(0);
-    format!("camera: {facing}, torch {}, zoom {zoom}/{zoom_max}", if torch == 1 { "on" } else { "off" })
+    format!(
+        "camera: {facing}, torch {}, zoom {zoom}/{zoom_max}",
+        if torch == 1 { "on" } else { "off" }
+    )
 }
 
 /// Only offer our candidates on the phone's LAN: same /24 as the address it streams from, or any
@@ -190,7 +226,9 @@ pub fn keep_local_candidate(candidate: &str, phone_ip: Option<Ipv4Addr>) -> bool
     if f.len() < 8 || !f[2].eq_ignore_ascii_case("udp") {
         return false;
     }
-    let Ok(ip) = f[4].parse::<Ipv4Addr>() else { return false };
+    let Ok(ip) = f[4].parse::<Ipv4Addr>() else {
+        return false;
+    };
     match phone_ip {
         Some(p) => ip.octets()[..3] == p.octets()[..3],
         None => ip.is_private(),
@@ -200,7 +238,11 @@ pub fn keep_local_candidate(candidate: &str, phone_ip: Option<Ipv4Addr>) -> bool
 /// Keeps only H.264 in the offer (the phone may list H.265 too) and drops the video-orientation
 /// header extension, so the phone rotates frames itself instead of tagging them.
 pub fn h264_only(sdp: &str) -> String {
-    let lines: Vec<&str> = sdp.split("\r\n").flat_map(|l| l.split('\n')).filter(|l| !l.is_empty()).collect();
+    let lines: Vec<&str> = sdp
+        .split("\r\n")
+        .flat_map(|l| l.split('\n'))
+        .filter(|l| !l.is_empty())
+        .collect();
     let h264: Vec<&str> = lines
         .iter()
         .filter_map(|l| l.strip_prefix("a=rtpmap:"))
@@ -211,7 +253,10 @@ pub fn h264_only(sdp: &str) -> String {
         return sdp.to_owned();
     }
     fn pt_of(l: &str) -> Option<&str> {
-        ["a=rtpmap:", "a=fmtp:", "a=rtcp-fb:"].iter().find_map(|p| l.strip_prefix(p)).and_then(|r| r.split(' ').next())
+        ["a=rtpmap:", "a=fmtp:", "a=rtcp-fb:"]
+            .iter()
+            .find_map(|p| l.strip_prefix(p))
+            .and_then(|r| r.split(' ').next())
     }
     let mut out = Vec::new();
     let mut in_video = false;
@@ -224,7 +269,11 @@ pub fn h264_only(sdp: &str) -> String {
         }
         if l.starts_with("m=video") {
             let parts: Vec<&str> = l.split(' ').collect();
-            let keep: Vec<&str> = parts[3..].iter().copied().filter(|pt| h264.contains(pt)).collect();
+            let keep: Vec<&str> = parts[3..]
+                .iter()
+                .copied()
+                .filter(|pt| h264.contains(pt))
+                .collect();
             out.push(format!("{} {}", parts[..3].join(" "), keep.join(" ")));
         } else if in_video && let Some(pt) = pt_of(l) {
             if h264.contains(&pt) {
@@ -261,7 +310,10 @@ pub enum OfferKind {
 }
 
 /// How to handle a `cmd 1` offer, given the origin of the offer already answered (if any).
-pub fn classify_offer(answered: Option<&(String, u64)>, offer: Option<&(String, u64)>) -> OfferKind {
+pub fn classify_offer(
+    answered: Option<&(String, u64)>,
+    offer: Option<&(String, u64)>,
+) -> OfferKind {
     match (answered, offer) {
         (Some((id, v)), Some((new_id, new_v))) if id == new_id && v == new_v => OfferKind::Repeat,
         (Some((id, _)), Some((new_id, _))) if id == new_id => OfferKind::Renegotiation,
@@ -306,8 +358,14 @@ impl Quality {
 /// the copy sent to the phone carries them: they steer the sender, not our receiver.
 pub fn with_bitrate(sdp: &str, q: Quality) -> String {
     let (min, start, max) = q.kbps();
-    let params = format!("x-google-min-bitrate={min};x-google-start-bitrate={start};x-google-max-bitrate={max}");
-    let lines: Vec<&str> = sdp.split("\r\n").flat_map(|l| l.split('\n')).filter(|l| !l.is_empty()).collect();
+    let params = format!(
+        "x-google-min-bitrate={min};x-google-start-bitrate={start};x-google-max-bitrate={max}"
+    );
+    let lines: Vec<&str> = sdp
+        .split("\r\n")
+        .flat_map(|l| l.split('\n'))
+        .filter(|l| !l.is_empty())
+        .collect();
     let h264: Vec<String> = lines
         .iter()
         .filter_map(|l| l.strip_prefix("a=rtpmap:"))
@@ -333,7 +391,10 @@ pub fn with_bitrate(sdp: &str, q: Quality) -> String {
         }
         match l.strip_prefix("a=fmtp:").and_then(|r| r.split_once(' ')) {
             Some((pt, rest)) if in_video && h264.iter().any(|p| p == pt) => {
-                let kept: Vec<&str> = rest.split(';').filter(|p| !p.trim_start().starts_with("x-google-")).collect();
+                let kept: Vec<&str> = rest
+                    .split(';')
+                    .filter(|p| !p.trim_start().starts_with("x-google-"))
+                    .collect();
                 out.push(format!("a=fmtp:{pt} {};{params}", kept.join(";")));
             }
             _ => out.push(l.to_owned()),
@@ -367,10 +428,22 @@ mod tests {
         let c = "v=0\r\no=- 999 1 IN IP4 127.0.0.1\r\ns=-\r\n";
         let first = sdp_origin(a).unwrap();
         assert_eq!(first, ("6009361234".to_owned(), 2));
-        assert_eq!(classify_offer(Some(&first), sdp_origin(a).as_ref()), OfferKind::Repeat);
-        assert_eq!(classify_offer(Some(&first), sdp_origin(b).as_ref()), OfferKind::Renegotiation);
-        assert_eq!(classify_offer(Some(&first), sdp_origin(c).as_ref()), OfferKind::NewSession);
-        assert_eq!(classify_offer(None, sdp_origin(a).as_ref()), OfferKind::NewSession);
+        assert_eq!(
+            classify_offer(Some(&first), sdp_origin(a).as_ref()),
+            OfferKind::Repeat
+        );
+        assert_eq!(
+            classify_offer(Some(&first), sdp_origin(b).as_ref()),
+            OfferKind::Renegotiation
+        );
+        assert_eq!(
+            classify_offer(Some(&first), sdp_origin(c).as_ref()),
+            OfferKind::NewSession
+        );
+        assert_eq!(
+            classify_offer(None, sdp_origin(a).as_ref()),
+            OfferKind::NewSession
+        );
     }
 
     #[test]
@@ -378,12 +451,19 @@ mod tests {
         let sdp = "v=0\r\no=- 1 2 IN IP4 0.0.0.0\r\nm=video 9 UDP/TLS/RTP/SAVPF 127\r\nc=IN IP4 0.0.0.0\r\n\
 a=mid:0\r\na=rtpmap:127 H264/90000\r\na=fmtp:127 packetization-mode=1;profile-level-id=42e01f\r\n";
         let out = with_bitrate(sdp, Quality::High);
-        assert!(out.contains("c=IN IP4 0.0.0.0\r\nb=AS:8000\r\na=mid:0"), "{out}");
+        assert!(
+            out.contains("c=IN IP4 0.0.0.0\r\nb=AS:8000\r\na=mid:0"),
+            "{out}"
+        );
         assert!(out.contains("a=fmtp:127 packetization-mode=1;profile-level-id=42e01f;x-google-min-bitrate=1500;x-google-start-bitrate=4000;x-google-max-bitrate=8000"));
         // Idempotent: applying another preset replaces the old values.
         let again = with_bitrate(&out, Quality::Low);
         assert_eq!(again.matches("b=AS:").count(), 1);
-        assert!(again.contains("b=AS:1500") && again.contains("x-google-max-bitrate=1500") && !again.contains("=8000"));
+        assert!(
+            again.contains("b=AS:1500")
+                && again.contains("x-google-max-bitrate=1500")
+                && !again.contains("=8000")
+        );
         assert_eq!(Quality::parse("MEDIUM"), Some(Quality::Medium));
         assert_eq!(Quality::parse("ultra"), None);
     }
@@ -418,11 +498,15 @@ a=mid:0\r\na=rtpmap:127 H264/90000\r\na=fmtp:127 packetization-mode=1;profile-le
 
     #[test]
     fn parses_start_with_offer() {
-        let offer = json!({"sdp":"v=0\r\nm=video 9 UDP/TLS/RTP/SAVPF 96\r\n","type":"offer"}).to_string();
+        let offer =
+            json!({"sdp":"v=0\r\nm=video 9 UDP/TLS/RTP/SAVPF 96\r\n","type":"offer"}).to_string();
         let start = json!({"ver":"1","cmd":1,"data":{"prefix":"srtp://","url":"192.168.1.30","port":6466,"w":0,"h":0,
             "cameraId":0,"key":"","mediaFormat":0,"isWebRTC":1,"webRTCData":offer,"isVideoDump":0}});
         match parse(&start) {
-            Some(Phone::Start { offer_sdp: Some(sdp), phone_ip }) => {
+            Some(Phone::Start {
+                offer_sdp: Some(sdp),
+                phone_ip,
+            }) => {
                 assert!(sdp.starts_with("v=0"));
                 assert_eq!(phone_ip.as_deref(), Some("192.168.1.30"));
             }
@@ -444,24 +528,54 @@ a=mid:0\r\na=rtpmap:127 H264/90000\r\na=fmtp:127 packetization-mode=1;profile-le
             })
         );
         // Camera replies arrive as a JSON string.
-        let status = Value::String(json!({"ver":1,"cmd":5,"data":{"cameraId":1,"zoom":{"ability":1,"state":2,"max":8}}}).to_string());
+        let status = Value::String(
+            json!({"ver":1,"cmd":5,"data":{"cameraId":1,"zoom":{"ability":1,"state":2,"max":8}}})
+                .to_string(),
+        );
         match parse(&status) {
-            Some(Phone::CameraState(v)) => assert_eq!(describe_camera_state(&v), "camera: back, torch off, zoom 2/8"),
+            Some(Phone::CameraState(v)) => assert_eq!(
+                describe_camera_state(&v),
+                "camera: back, torch off, zoom 2/8"
+            ),
             other => panic!("{other:?}"),
         }
         let err = json!({"ver":"1","cmd":65535,"data":{"code":10,"cmd":0}});
-        assert_eq!(parse(&err), Some(Phone::Error { code: 10, about_cmd: 0 }));
+        assert_eq!(
+            parse(&err),
+            Some(Phone::Error {
+                code: 10,
+                about_cmd: 0
+            })
+        );
     }
 
     #[test]
     fn candidate_filter() {
         let phone = Some(Ipv4Addr::new(192, 168, 1, 30));
-        assert!(keep_local_candidate("candidate:1 1 UDP 2015363327 192.168.1.20 41234 typ host", phone));
-        assert!(!keep_local_candidate("candidate:2 1 UDP 2015363327 172.17.0.1 41234 typ host", phone));
-        assert!(!keep_local_candidate("candidate:3 1 TCP 1015363327 192.168.1.20 9 typ host tcptype active", phone));
-        assert!(!keep_local_candidate("candidate:4 1 UDP 2015363327 fe80::1 41234 typ host", phone));
-        assert!(keep_local_candidate("candidate:5 1 UDP 2015363327 10.0.0.5 41234 typ host", None));
-        assert!(!keep_local_candidate("candidate:6 1 UDP 2015363327 8.8.8.8 41234 typ host", None));
+        assert!(keep_local_candidate(
+            "candidate:1 1 UDP 2015363327 192.168.1.20 41234 typ host",
+            phone
+        ));
+        assert!(!keep_local_candidate(
+            "candidate:2 1 UDP 2015363327 172.17.0.1 41234 typ host",
+            phone
+        ));
+        assert!(!keep_local_candidate(
+            "candidate:3 1 TCP 1015363327 192.168.1.20 9 typ host tcptype active",
+            phone
+        ));
+        assert!(!keep_local_candidate(
+            "candidate:4 1 UDP 2015363327 fe80::1 41234 typ host",
+            phone
+        ));
+        assert!(keep_local_candidate(
+            "candidate:5 1 UDP 2015363327 10.0.0.5 41234 typ host",
+            None
+        ));
+        assert!(!keep_local_candidate(
+            "candidate:6 1 UDP 2015363327 8.8.8.8 41234 typ host",
+            None
+        ));
     }
 
     #[test]

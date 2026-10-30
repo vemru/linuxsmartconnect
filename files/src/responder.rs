@@ -63,7 +63,10 @@ pub struct ReplyParams {
 /// advertises the same port for portmap/NFS/data so one TLS listener serves everything.
 pub fn build_reply(p: &ReplyParams) -> Value {
     let port = i64::from(p.port);
-    let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0);
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
     json!({
         "type": 1,
         "path": p.label,
@@ -99,7 +102,10 @@ async fn daemon_pc_address() -> Option<String> {
     let mut line = String::new();
     reader.read_line(&mut line).await.ok()?;
     let v: Value = serde_json::from_str(line.trim()).ok()?;
-    v.get("pcAddress").and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_owned)
+    v.get("pcAddress")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
 }
 
 /// Resolves the PC's LAN IP: the explicit override, else the daemon's `pcAddress`, else a private
@@ -139,7 +145,10 @@ fn local_private_ipv4() -> Option<String> {
 pub async fn run(params: ReplyParams, pinned: PinnedFps, state_dir: &Path) -> Result<()> {
     let path = socket_path();
     let watch = UnixStream::connect(&path).await.with_context(|| {
-        format!("connecting to the daemon at {} (is smartconnectd running and the phone connected?)", path.display())
+        format!(
+            "connecting to the daemon at {} (is smartconnectd running and the phone connected?)",
+            path.display()
+        )
     })?;
     let mut watch = BufReader::new(watch);
     watch
@@ -152,7 +161,10 @@ pub async fn run(params: ReplyParams, pinned: PinnedFps, state_dir: &Path) -> Re
     let remembered = store.load();
     if !remembered.is_empty() {
         pinned.write().unwrap().extend(remembered.iter().cloned());
-        info!("accepting {} remembered phone certificate(s) until the phone handshakes", remembered.len());
+        info!(
+            "accepting {} remembered phone certificate(s) until the phone handshakes",
+            remembered.len()
+        );
     }
 
     info!(
@@ -168,7 +180,10 @@ pub async fn run(params: ReplyParams, pinned: PinnedFps, state_dir: &Path) -> Re
     let mut line = String::new();
     loop {
         line.clear();
-        let n = watch.read_line(&mut line).await.context("reading from the daemon control socket")?;
+        let n = watch
+            .read_line(&mut line)
+            .await
+            .context("reading from the daemon control socket")?;
         if n == 0 {
             anyhow::bail!("the daemon closed the control connection");
         }
@@ -189,7 +204,10 @@ pub async fn run(params: ReplyParams, pinned: PinnedFps, state_dir: &Path) -> Re
             set.insert(phone_fp.clone())
         };
         if is_new {
-            info!("pinned phone certificate fp {}…", &phone_fp[..phone_fp.len().min(8)]);
+            info!(
+                "pinned phone certificate fp {}…",
+                &phone_fp[..phone_fp.len().min(8)]
+            );
         }
         if last_fp.as_deref() != Some(phone_fp.as_str()) {
             store.remember(&phone_fp);
@@ -199,7 +217,10 @@ pub async fn run(params: ReplyParams, pinned: PinnedFps, state_dir: &Path) -> Re
         let changed = last_fp.as_deref() != Some(phone_fp.as_str());
         if changed || last_reply.elapsed() >= REPLY_INTERVAL {
             if send(&path, &send_frame(&build_reply(&params))).await && changed {
-                info!("replied type:1 (SSL) — phone should now mount {:?}", params.label);
+                info!(
+                    "replied type:1 (SSL) — phone should now mount {:?}",
+                    params.label
+                );
             }
             last_fp = Some(phone_fp);
             last_reply = Instant::now();
@@ -280,7 +301,10 @@ fn parse_frame(line: &str) -> Option<Incoming> {
             if hs.get("type").and_then(Value::as_i64) != Some(0) {
                 return None;
             }
-            let fp = hs.get("fp").and_then(Value::as_str).filter(|s| !s.is_empty())?;
+            let fp = hs
+                .get("fp")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())?;
             Some(Incoming::Handshake { fp: fp.to_owned() })
         }
         CMD_NETWORK_REQUEST => Some(Incoming::NetworkRequest),
@@ -295,12 +319,20 @@ struct FpStore {
 
 impl FpStore {
     fn new(state_dir: &Path) -> Self {
-        Self { path: state_dir.join("phone-fps") }
+        Self {
+            path: state_dir.join("phone-fps"),
+        }
     }
 
     fn load(&self) -> Vec<String> {
         std::fs::read_to_string(&self.path)
-            .map(|s| s.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_owned).collect())
+            .map(|s| {
+                s.lines()
+                    .map(str::trim)
+                    .filter(|l| !l.is_empty())
+                    .map(str::to_owned)
+                    .collect()
+            })
             .unwrap_or_default()
     }
 
@@ -365,14 +397,23 @@ mod tests {
 
     #[test]
     fn tile_frame_only_touches_the_share_keys() {
-        assert_eq!(tile_frame(true), json!({ "cmd": "send", "service": 25, "data": { "cap": { "20": 1, "206": 1 } } }));
-        assert_eq!(tile_frame(false)["data"]["cap"], json!({ "20": 16, "206": 0 }));
+        assert_eq!(
+            tile_frame(true),
+            json!({ "cmd": "send", "service": 25, "data": { "cap": { "20": 1, "206": 1 } } })
+        );
+        assert_eq!(
+            tile_frame(false)["data"]["cap"],
+            json!({ "20": 16, "206": 0 })
+        );
     }
 
     #[test]
     fn network_request_gets_our_ports_back() {
         let req = json!({ "service": 168, "data": { "ver": "1.0", "cmd": 2006, "data": "{}" } });
-        assert_eq!(parse_frame(&req.to_string()), Some(Incoming::NetworkRequest));
+        assert_eq!(
+            parse_frame(&req.to_string()),
+            Some(Incoming::NetworkRequest)
+        );
         let f = network_response_frame(2049);
         assert_eq!(f["cmd"], "send");
         assert_eq!(f["service"], 168);
@@ -402,7 +443,12 @@ mod tests {
             "data": { "ver": "1.0", "cmd": 1001,
                       "data": json!({"type":0,"dt2type":3,"fp":"PHONEFP","nfs_version":8}).to_string() }
         });
-        assert_eq!(parse_frame(&frame.to_string()), Some(Incoming::Handshake { fp: "PHONEFP".into() }));
+        assert_eq!(
+            parse_frame(&frame.to_string()),
+            Some(Incoming::Handshake {
+                fp: "PHONEFP".into()
+            })
+        );
 
         // type:1 (a server reply, not a request) is ignored.
         let reply = json!({

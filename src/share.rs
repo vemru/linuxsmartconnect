@@ -325,11 +325,12 @@ impl<D: Desktop> ShareManager<D> {
             .clone()
             .unwrap_or_else(|| format!("{}:{}", file.port, file.fingerprint));
         let mut last = self.last_offer.lock().unwrap();
-        if let Some((seen, at)) = last.as_ref() {
-            if *seen == key && at.elapsed() < Duration::from_secs(60) {
-                debug!(%key, "sharing: ignoring a duplicate file offer");
-                return false;
-            }
+        if let Some((seen, at)) = last.as_ref()
+            && *seen == key
+            && at.elapsed() < Duration::from_secs(60)
+        {
+            debug!(%key, "sharing: ignoring a duplicate file offer");
+            return false;
         }
         *last = Some((key, Instant::now()));
         true
@@ -947,12 +948,13 @@ pub fn uri_to_path(uri: &str) -> Option<PathBuf> {
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let (Some(hi), Some(lo)) = (hex_digit(bytes[i + 1]), hex_digit(bytes[i + 2])) {
-                out.push(hi << 4 | lo);
-                i += 3;
-                continue;
-            }
+        if bytes[i] == b'%'
+            && i + 2 < bytes.len()
+            && let (Some(hi), Some(lo)) = (hex_digit(bytes[i + 1]), hex_digit(bytes[i + 2]))
+        {
+            out.push(hi << 4 | lo);
+            i += 3;
+            continue;
         }
         out.push(bytes[i]);
         i += 1;

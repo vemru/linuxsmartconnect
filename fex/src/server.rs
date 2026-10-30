@@ -78,7 +78,10 @@ impl Registry {
     /// Zips `files` and offers them. The phone learns about it from the caller (for the clipboard,
     /// a service 2 message carrying our port and certificate fingerprint).
     pub fn offer(&self, files: &[OutFile], sender_id: &str, sender_name: &str) -> Arc<Transfer> {
-        let entries: Vec<(&str, &[u8])> = files.iter().map(|f| (f.name.as_str(), f.data.as_slice())).collect();
+        let entries: Vec<(&str, &[u8])> = files
+            .iter()
+            .map(|f| (f.name.as_str(), f.data.as_slice()))
+            .collect();
         let zip = zip::write_stored(&entries);
         let task_id = fresh_id(32);
         let request = SendRequest {
@@ -87,7 +90,11 @@ impl Registry {
             sender_name: sender_name.to_owned(),
             file_name: files.first().map(|f| f.name.clone()).unwrap_or_default(),
             file_count: files.len() as u64,
-            mime_type: if files.len() == 1 { files[0].mime_type.clone() } else { "*/*".to_owned() },
+            mime_type: if files.len() == 1 {
+                files[0].mime_type.clone()
+            } else {
+                "*/*".to_owned()
+            },
             // As on the phone: the size of the zip, not the sum of the files.
             total_size: zip.len() as u64,
             files: files
@@ -102,7 +109,14 @@ impl Registry {
                 })
                 .collect(),
         };
-        let t = Arc::new(Transfer { task_id, token: fresh_id(16), zip, request, created: Instant::now(), claimed: Mutex::new(false) });
+        let t = Arc::new(Transfer {
+            task_id,
+            token: fresh_id(16),
+            zip,
+            request,
+            created: Instant::now(),
+            claimed: Mutex::new(false),
+        });
         let mut offers = self.offers.lock().unwrap();
         offers.retain(|o| o.created.elapsed() < OFFER_TTL);
         offers.push(t.clone());
@@ -112,14 +126,24 @@ impl Registry {
     /// The newest unclaimed offer, claimed for a new `/websocket` (which carries no task id).
     fn claim_newest(&self) -> Option<Arc<Transfer>> {
         let offers = self.offers.lock().unwrap();
-        offers.iter().rev().filter(|o| o.created.elapsed() < OFFER_TTL).find(|o| {
-            let mut claimed = o.claimed.lock().unwrap();
-            !std::mem::replace(&mut *claimed, true)
-        }).cloned()
+        offers
+            .iter()
+            .rev()
+            .filter(|o| o.created.elapsed() < OFFER_TTL)
+            .find(|o| {
+                let mut claimed = o.claimed.lock().unwrap();
+                !std::mem::replace(&mut *claimed, true)
+            })
+            .cloned()
     }
 
     fn find(&self, task_id: &str) -> Option<Arc<Transfer>> {
-        self.offers.lock().unwrap().iter().find(|o| o.task_id == task_id).cloned()
+        self.offers
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|o| o.task_id == task_id)
+            .cloned()
     }
 
     fn remove(&self, task_id: &str) {
@@ -128,7 +152,11 @@ impl Registry {
 
     /// Whether any offer is waiting (callers only route fex paths while one is).
     pub fn has_offers(&self) -> bool {
-        self.offers.lock().unwrap().iter().any(|o| o.created.elapsed() < OFFER_TTL)
+        self.offers
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|o| o.created.elapsed() < OFFER_TTL)
     }
 }
 
@@ -152,12 +180,31 @@ async fn run_exchange<S>(ws: &mut WebSocketStream<S>, t: &Transfer) -> Result<bo
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    let version = serde_json::to_string(&VersionNegotiation { version: frame::VERSION, token: None })?;
-    send(ws, &Frame::action("Server1001", Name::VersionNegotiation, Some(version.clone()))).await?;
-    tokio::time::timeout(STEP_TIMEOUT, wait_ack(ws, "Server1001", &version)).await.context("no versionNegotiation ack")??;
+    let version = serde_json::to_string(&VersionNegotiation {
+        version: frame::VERSION,
+        token: None,
+    })?;
+    send(
+        ws,
+        &Frame::action(
+            "Server1001",
+            Name::VersionNegotiation,
+            Some(version.clone()),
+        ),
+    )
+    .await?;
+    tokio::time::timeout(STEP_TIMEOUT, wait_ack(ws, "Server1001", &version))
+        .await
+        .context("no versionNegotiation ack")??;
     let request = serde_json::to_string(&t.request)?;
-    send(ws, &Frame::action("Server1002", Name::SendRequest, Some(request))).await?;
-    tokio::time::timeout(STEP_TIMEOUT, wait_ack(ws, "Server1002", &version)).await.context("no sendRequest ack")??;
+    send(
+        ws,
+        &Frame::action("Server1002", Name::SendRequest, Some(request)),
+    )
+    .await?;
+    tokio::time::timeout(STEP_TIMEOUT, wait_ack(ws, "Server1002", &version))
+        .await
+        .context("no sendRequest ack")??;
     debug!(bytes = t.zip.len(), "fex: the phone accepted our offer");
     // The receiver downloads on its own connection, then reports the outcome here.
     tokio::time::timeout(TRANSFER_TIMEOUT, async {
@@ -173,7 +220,11 @@ where
                     return Ok(status.kind == frame::STATUS_COMPLETE);
                 }
                 (Kind::Action, Name::VersionNegotiation) => {
-                    send(ws, &Frame::ack(&f.id, Name::VersionNegotiation, Some(version.clone()))).await?;
+                    send(
+                        ws,
+                        &Frame::ack(&f.id, Name::VersionNegotiation, Some(version.clone())),
+                    )
+                    .await?;
                 }
                 _ => {}
             }
@@ -183,12 +234,19 @@ where
     .context("the phone never reported the transfer's outcome")?
 }
 
-async fn send<S: AsyncRead + AsyncWrite + Unpin>(ws: &mut WebSocketStream<S>, f: &Frame) -> Result<()> {
+async fn send<S: AsyncRead + AsyncWrite + Unpin>(
+    ws: &mut WebSocketStream<S>,
+    f: &Frame,
+) -> Result<()> {
     debug!(kind = ?f.kind, name = ?f.name, id = %f.id, "fex: ->");
-    ws.send(Message::text(f.to_string())).await.context("writing the fex WebSocket")
+    ws.send(Message::text(f.to_string()))
+        .await
+        .context("writing the fex WebSocket")
 }
 
-async fn next_frame<S: AsyncRead + AsyncWrite + Unpin>(ws: &mut WebSocketStream<S>) -> Result<Frame> {
+async fn next_frame<S: AsyncRead + AsyncWrite + Unpin>(
+    ws: &mut WebSocketStream<S>,
+) -> Result<Frame> {
     loop {
         match ws.next().await {
             Some(Ok(Message::Text(t))) => match Frame::parse(&t) {
@@ -206,13 +264,21 @@ async fn next_frame<S: AsyncRead + AsyncWrite + Unpin>(ws: &mut WebSocketStream<
 }
 
 /// Waits for the ack of our action `id`, answering a receiver's own version negotiation meanwhile.
-async fn wait_ack<S: AsyncRead + AsyncWrite + Unpin>(ws: &mut WebSocketStream<S>, id: &str, version: &str) -> Result<()> {
+async fn wait_ack<S: AsyncRead + AsyncWrite + Unpin>(
+    ws: &mut WebSocketStream<S>,
+    id: &str,
+    version: &str,
+) -> Result<()> {
     loop {
         let f = next_frame(ws).await?;
         match f.kind {
             Kind::Ack if f.id == id => return Ok(()),
             Kind::Action if f.name == Name::VersionNegotiation => {
-                send(ws, &Frame::ack(&f.id, Name::VersionNegotiation, Some(version.to_owned()))).await?;
+                send(
+                    ws,
+                    &Frame::ack(&f.id, Name::VersionNegotiation, Some(version.to_owned())),
+                )
+                .await?;
             }
             _ => {}
         }
@@ -225,7 +291,10 @@ async fn wait_ack<S: AsyncRead + AsyncWrite + Unpin>(ws: &mut WebSocketStream<S>
 /// already checked that the peer is the connected phone.
 pub fn download_response(registry: &Registry, target: &str) -> Vec<u8> {
     let query = target.split_once('?').map(|(_, q)| q).unwrap_or_default();
-    let task = query.split('&').find_map(|kv| kv.strip_prefix("taskId=")).unwrap_or_default();
+    let task = query
+        .split('&')
+        .find_map(|kv| kv.strip_prefix("taskId="))
+        .unwrap_or_default();
     let token = query.split('&').find_map(|kv| kv.strip_prefix("token="));
     match registry.find(task) {
         Some(t) => {
@@ -237,7 +306,10 @@ pub fn download_response(registry: &Registry, target: &str) -> Vec<u8> {
                 token.is_some_and(|tok| tok == t.token)
             };
             if valid {
-                debug!(bytes = t.zip.len(), "fex: the phone is downloading our offer");
+                debug!(
+                    bytes = t.zip.len(),
+                    "fex: the phone is downloading our offer"
+                );
                 let mut out = format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: application/zip\r\nContent-Length: {}\r\nAccept-Ranges: none\r\nConnection: close\r\n\r\n",
                     t.zip.len()
@@ -270,7 +342,11 @@ mod tests {
     use crate::frame::ClientIds;
 
     fn png() -> OutFile {
-        OutFile { name: "clipboard.png".into(), mime_type: "image/png".into(), data: b"\x89PNG\r\n\x1a\nfake".to_vec() }
+        OutFile {
+            name: "clipboard.png".into(),
+            mime_type: "image/png".into(),
+            data: b"\x89PNG\r\n\x1a\nfake".to_vec(),
+        }
     }
 
     #[test]
@@ -278,7 +354,11 @@ mod tests {
         let r = Registry::default();
         let t = r.offer(&[png()], "pc-id", "Linux PC");
         assert_eq!(t.request.file_count, 1);
-        assert_eq!(t.request.total_size, t.zip.len() as u64, "totalSize is the zip's size");
+        assert_eq!(
+            t.request.total_size,
+            t.zip.len() as u64,
+            "totalSize is the zip's size"
+        );
         assert_eq!(t.request.files[0].size, 12);
         assert_eq!(t.request.mime_type, "image/png");
         let back = zip::read_all(&t.zip).unwrap();
@@ -290,7 +370,10 @@ mod tests {
     fn download_serves_the_zip_by_task_id() {
         let r = Registry::default();
         let t = r.offer(&[png()], "", "");
-        let resp = download_response(&r, &format!("/download?taskId={}&token={}", t.task_id, t.token));
+        let resp = download_response(
+            &r,
+            &format!("/download?taskId={}&token={}", t.task_id, t.token),
+        );
         let text = String::from_utf8_lossy(&resp);
         assert!(text.starts_with("HTTP/1.1 200 OK\r\nContent-Type: application/zip\r\n"));
         assert!(resp.ends_with(&t.zip));
@@ -302,10 +385,16 @@ mod tests {
     fn download_rejects_a_wrong_token() {
         let r = Registry::default();
         let t = r.offer(&[png()], "", "");
-        let resp = download_response(&r, &format!("/download?taskId={}&token=deadbeef", t.task_id));
+        let resp = download_response(
+            &r,
+            &format!("/download?taskId={}&token=deadbeef", t.task_id),
+        );
         let text = String::from_utf8_lossy(&resp);
         assert!(text.starts_with("HTTP/1.1 403 Forbidden\r\n"), "{text}");
-        assert!(!resp.ends_with(&t.zip), "the zip must not be served on a token mismatch");
+        assert!(
+            !resp.ends_with(&t.zip),
+            "the zip must not be served on a token mismatch"
+        );
     }
 
     #[test]
@@ -316,7 +405,10 @@ mod tests {
         let resp = download_response(&r, &format!("/download?taskId={}", t.task_id));
         let text = String::from_utf8_lossy(&resp);
         assert!(text.starts_with("HTTP/1.1 403 Forbidden\r\n"), "{text}");
-        assert!(!resp.ends_with(&t.zip), "the zip must not be served without the token");
+        assert!(
+            !resp.ends_with(&t.zip),
+            "the zip must not be served without the token"
+        );
     }
 
     /// The whole exchange against our own client code's frame handling, over an in-memory pipe.
@@ -332,20 +424,51 @@ mod tests {
                 serve_websocket(ws, &r).await
             })
         };
-        let (mut ws, _) = tokio_tungstenite::client_async("ws://pc/websocket", b).await.unwrap();
+        let (mut ws, _) = tokio_tungstenite::client_async("ws://pc/websocket", b)
+            .await
+            .unwrap();
         // version negotiation
         let f = Frame::parse(ws.next().await.unwrap().unwrap().to_text().unwrap()).unwrap();
-        assert_eq!((f.kind, f.name, f.id.as_str()), (Kind::Action, Name::VersionNegotiation, "Server1001"));
-        ws.send(Message::text(Frame::ack(&f.id, Name::VersionNegotiation, Some("{\"version\":1}".into())).to_string())).await.unwrap();
+        assert_eq!(
+            (f.kind, f.name, f.id.as_str()),
+            (Kind::Action, Name::VersionNegotiation, "Server1001")
+        );
+        ws.send(Message::text(
+            Frame::ack(
+                &f.id,
+                Name::VersionNegotiation,
+                Some("{\"version\":1}".into()),
+            )
+            .to_string(),
+        ))
+        .await
+        .unwrap();
         // the offer
         let f = Frame::parse(ws.next().await.unwrap().unwrap().to_text().unwrap()).unwrap();
         let req: SendRequest = f.json().unwrap();
         assert_eq!(req.id, t.task_id);
-        ws.send(Message::text(Frame::ack(&f.id, Name::SendRequest, Some("{}".into())).to_string())).await.unwrap();
+        ws.send(Message::text(
+            Frame::ack(&f.id, Name::SendRequest, Some("{}".into())).to_string(),
+        ))
+        .await
+        .unwrap();
         // done
         let id = ClientIds::default().next_id();
-        let status = Status { task_id: t.task_id.clone(), kind: frame::STATUS_COMPLETE, reason: String::new() };
-        ws.send(Message::text(Frame::action(&id, Name::Status, Some(serde_json::to_string(&status).unwrap())).to_string())).await.unwrap();
+        let status = Status {
+            task_id: t.task_id.clone(),
+            kind: frame::STATUS_COMPLETE,
+            reason: String::new(),
+        };
+        ws.send(Message::text(
+            Frame::action(
+                &id,
+                Name::Status,
+                Some(serde_json::to_string(&status).unwrap()),
+            )
+            .to_string(),
+        ))
+        .await
+        .unwrap();
         let ack = Frame::parse(ws.next().await.unwrap().unwrap().to_text().unwrap()).unwrap();
         assert_eq!((ack.kind, ack.name, ack.id), (Kind::Ack, Name::Status, id));
         assert!(server.await.unwrap().unwrap());

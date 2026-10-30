@@ -15,12 +15,12 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
+use bluer::Uuid;
 use bluer::adv::Advertisement;
 use bluer::gatt::local::{
-    Application, ApplicationHandle, Characteristic, CharacteristicNotify, CharacteristicNotifyMethod,
-    CharacteristicWrite, CharacteristicWriteMethod, Service,
+    Application, ApplicationHandle, Characteristic, CharacteristicNotify,
+    CharacteristicNotifyMethod, CharacteristicWrite, CharacteristicWriteMethod, Service,
 };
-use bluer::Uuid;
 use tokio::sync::Mutex;
 use tracing::info;
 
@@ -28,7 +28,12 @@ use crate::identity::Identity;
 
 /// 16-bit Bluetooth SIG UUID → full 128-bit form (base `0000xxxx-0000-1000-8000-00805f9b34fb`).
 const fn uuid16(x: u16) -> Uuid {
-    Uuid::from_fields(x as u32, 0x0000, 0x1000, &[0x80, 0x00, 0x00, 0x80, 0x5f, 0x9b, 0x34, 0xfb])
+    Uuid::from_fields(
+        x as u32,
+        0x0000,
+        0x1000,
+        &[0x80, 0x00, 0x00, 0x80, 0x5f, 0x9b, 0x34, 0xfb],
+    )
 }
 
 /// Primary GATT service the phone scans for and connects into (ScanFilter serviceUuid 0x5246).
@@ -48,7 +53,9 @@ const BLE_OS_WINDOWS: u8 = 4;
 
 /// Live notifiers for the notifiable characteristics, filled when the phone subscribes.
 #[derive(Clone, Default)]
-pub struct Notifiers(Arc<Mutex<BTreeMap<&'static str, bluer::gatt::local::CharacteristicNotifier>>>);
+pub struct Notifiers(
+    Arc<Mutex<BTreeMap<&'static str, bluer::gatt::local::CharacteristicNotifier>>>,
+);
 
 pub struct BleHandles {
     _adv: bluer::adv::AdvertisementHandle,
@@ -64,7 +71,7 @@ pub struct BleHandles {
 fn service_data(device_id_16: &[u8; 16]) -> Vec<u8> {
     let mut v = Vec::with_capacity(20);
     v.push(0x10); // non-tablet PC
-    v.push((0 << 4) | (BLE_OS_WINDOWS & 0x0F)); // subtype 0, osId windows
+    v.push(BLE_OS_WINDOWS & 0x0F); // subtype 0, osId windows
     v.extend_from_slice(&0u16.to_le_bytes()); // capability bitmask (0 to start)
     v.extend_from_slice(device_id_16);
     v
@@ -72,16 +79,34 @@ fn service_data(device_id_16: &[u8; 16]) -> Vec<u8> {
 
 /// Decode the daemon's base64 deviceId to the raw 16 bytes the advertisement/GATT framing need.
 fn device_id_16(identity: &Identity) -> Result<[u8; 16]> {
-    let raw = B64.decode(identity.device_id.as_bytes()).context("deviceId is not base64")?;
-    let arr: [u8; 16] = raw.as_slice().try_into().context("deviceId is not 16 bytes")?;
+    let raw = B64
+        .decode(identity.device_id.as_bytes())
+        .context("deviceId is not base64")?;
+    let arr: [u8; 16] = raw
+        .as_slice()
+        .try_into()
+        .context("deviceId is not 16 bytes")?;
     Ok(arr)
 }
 
 pub async fn start(identity: &Identity) -> Result<BleHandles> {
-    let session = bluer::Session::new().await.context("opening BlueZ session (is bluetoothd running?)")?;
-    let adapter = session.default_adapter().await.context("no Bluetooth adapter")?;
-    adapter.set_powered(true).await.context("powering on the adapter")?;
-    let address = adapter.address().await.context("reading adapter address")?.to_string().to_uppercase();
+    let session = bluer::Session::new()
+        .await
+        .context("opening BlueZ session (is bluetoothd running?)")?;
+    let adapter = session
+        .default_adapter()
+        .await
+        .context("no Bluetooth adapter")?;
+    adapter
+        .set_powered(true)
+        .await
+        .context("powering on the adapter")?;
+    let address = adapter
+        .address()
+        .await
+        .context("reading adapter address")?
+        .to_string()
+        .to_uppercase();
     info!(adapter = %adapter.name(), %address, "BLE adapter ready");
 
     let dev_id = device_id_16(identity)?;
@@ -102,17 +127,25 @@ pub async fn start(identity: &Identity) -> Result<BleHandles> {
         }],
         ..Default::default()
     };
-    let app_handle = adapter.serve_gatt_application(app).await.context("registering GATT application")?;
+    let app_handle = adapter
+        .serve_gatt_application(app)
+        .await
+        .context("registering GATT application")?;
     info!("GATT server registered: service 0x5246 (chars 0x0722/0726/0728/5247)");
 
     let adv = Advertisement {
         advertisement_type: bluer::adv::Type::Peripheral,
         service_uuids: [SVC_READYFOR].into_iter().collect(),
-        service_data: [(SVC_READYFOR, service_data(&dev_id))].into_iter().collect(),
+        service_data: [(SVC_READYFOR, service_data(&dev_id))]
+            .into_iter()
+            .collect(),
         discoverable: Some(true),
         ..Default::default()
     };
-    let adv_handle = adapter.advertise(adv).await.context("starting BLE advertisement")?;
+    let adv_handle = adapter
+        .advertise(adv)
+        .await
+        .context("starting BLE advertisement")?;
     info!(
         service = "0x5246",
         os = BLE_OS_WINDOWS,
@@ -120,7 +153,12 @@ pub async fn start(identity: &Identity) -> Result<BleHandles> {
         "advertising as a ReadyFor PC — scan the QR on the phone now"
     );
 
-    Ok(BleHandles { _adv: adv_handle, _app: app_handle, notifiers, address })
+    Ok(BleHandles {
+        _adv: adv_handle,
+        _app: app_handle,
+        notifiers,
+        address,
+    })
 }
 
 fn write_char(uuid: Uuid, label: &'static str) -> Characteristic {
@@ -161,7 +199,11 @@ fn write_notify_char(uuid: Uuid, label: &'static str, notifiers: Notifiers) -> C
 }
 
 fn notify_char(uuid: Uuid, label: &'static str, notifiers: Notifiers) -> Characteristic {
-    Characteristic { uuid, notify: Some(subscribe_notify(label, notifiers)), ..Default::default() }
+    Characteristic {
+        uuid,
+        notify: Some(subscribe_notify(label, notifiers)),
+        ..Default::default()
+    }
 }
 
 /// On subscribe, stash the writer so the daemon can later push GattResponse notifications.

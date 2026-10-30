@@ -36,18 +36,33 @@ pub fn binary(name: &str) -> PathBuf {
 
 /// The override variable for a helper: `smartconnect-display` → `SMARTCONNECT_DISPLAY_BIN`.
 pub fn env_var(name: &str) -> String {
-    format!("SMARTCONNECT_{}_BIN", name.trim_start_matches("smartconnect-").to_uppercase().replace('-', "_"))
+    format!(
+        "SMARTCONNECT_{}_BIN",
+        name.trim_start_matches("smartconnect-")
+            .to_uppercase()
+            .replace('-', "_")
+    )
 }
 
 impl Mirror {
     /// The screen-mirroring viewer.
     pub fn viewer() -> Self {
-        Self { name: "smartconnect-mirror", label: "Mirroring", child: None, stop_requested: false }
+        Self {
+            name: "smartconnect-mirror",
+            label: "Mirroring",
+            child: None,
+            stop_requested: false,
+        }
     }
 
     /// Cross Control (PC pointer/keyboard drives the phone).
     pub fn cross_control() -> Self {
-        Self { name: "smartconnect-crosscontrol", label: "Cross Control", child: None, stop_requested: false }
+        Self {
+            name: "smartconnect-crosscontrol",
+            label: "Cross Control",
+            child: None,
+            stop_requested: false,
+        }
     }
 
     pub fn running(&self) -> bool {
@@ -64,7 +79,10 @@ impl Mirror {
             return Ok(());
         }
         let bin = binary(self.name);
-        let child = Command::new(&bin).args(args).spawn().map_err(|e| format!("Could not start {}: {e}", bin.display()))?;
+        let child = Command::new(&bin)
+            .args(args)
+            .spawn()
+            .map_err(|e| format!("Could not start {}: {e}", bin.display()))?;
         self.child = Some(child);
         self.stop_requested = false;
         Ok(())
@@ -106,7 +124,10 @@ mod tests {
     #[test]
     fn binary_lookup_order() {
         assert_eq!(env_var("smartconnect-mirror"), "SMARTCONNECT_MIRROR_BIN");
-        assert_eq!(env_var("smartconnect-crosscontrol"), "SMARTCONNECT_CROSSCONTROL_BIN");
+        assert_eq!(
+            env_var("smartconnect-crosscontrol"),
+            "SMARTCONNECT_CROSSCONTROL_BIN"
+        );
         // No override and nothing next to the test binary: left to the $PATH search.
         let name = "smartconnect-no-such-helper";
         assert_eq!(binary(name), PathBuf::from(name));

@@ -53,7 +53,11 @@ enum Locker {
 /// arguments. Returns its executable (to run `qs ipc` with the same build) and pid.
 fn find_noctalia() -> Option<(PathBuf, u32)> {
     for entry in std::fs::read_dir("/proc").ok()?.flatten() {
-        let Some(pid) = entry.file_name().to_str().and_then(|s| s.parse::<u32>().ok()) else {
+        let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|s| s.parse::<u32>().ok())
+        else {
             continue;
         };
         let Ok(cmdline) = std::fs::read(entry.path().join("cmdline")) else {
@@ -65,7 +69,8 @@ fn find_noctalia() -> Option<(PathBuf, u32)> {
         if !matches!(name, "qs" | "quickshell") || !args.any(|a| a.contains("noctalia-shell")) {
             continue;
         }
-        let exe = std::fs::read_link(entry.path().join("exe")).unwrap_or_else(|_| PathBuf::from(name));
+        let exe =
+            std::fs::read_link(entry.path().join("exe")).unwrap_or_else(|_| PathBuf::from(name));
         return Some((exe, pid));
     }
     None
@@ -119,7 +124,14 @@ async fn lock(locker: &Locker, session: &str) -> Result<(), String> {
         }
         Locker::Noctalia { qs, pid } => {
             let mut cmd = Command::new(qs);
-            cmd.args(["ipc", "--pid", &pid.to_string(), "call", "lockScreen", "lock"]);
+            cmd.args([
+                "ipc",
+                "--pid",
+                &pid.to_string(),
+                "call",
+                "lockScreen",
+                "lock",
+            ]);
             cmd
         }
         Locker::Logind => {
@@ -130,7 +142,11 @@ async fn lock(locker: &Locker, session: &str) -> Result<(), String> {
     };
     match cmd.output().await {
         Ok(o) if o.status.success() => Ok(()),
-        Ok(o) => Err(format!("exited with {}: {}", o.status, String::from_utf8_lossy(&o.stderr).trim())),
+        Ok(o) => Err(format!(
+            "exited with {}: {}",
+            o.status,
+            String::from_utf8_lossy(&o.stderr).trim()
+        )),
         Err(e) => Err(e.to_string()),
     }
 }
@@ -149,15 +165,22 @@ async fn wait_locked(session: &str, limit: Duration) -> bool {
 }
 
 async fn has_system_bus_name(name: &str) -> bool {
-    let Ok(conn) = zbus::Connection::system().await else { return false };
-    let Ok(dbus) = zbus::fdo::DBusProxy::new(&conn).await else { return false };
-    let Ok(name) = zbus::names::BusName::try_from(name) else { return false };
+    let Ok(conn) = zbus::Connection::system().await else {
+        return false;
+    };
+    let Ok(dbus) = zbus::fdo::DBusProxy::new(&conn).await else {
+        return false;
+    };
+    let Ok(name) = zbus::names::BusName::try_from(name) else {
+        return false;
+    };
     dbus.name_has_owner(name).await.unwrap_or(false)
 }
 
 /// Why `loginctl lock-session` locked nothing, for the log and the desktop notification.
 async fn no_lock_reason() -> String {
-    let gnome = std::env::var("XDG_CURRENT_DESKTOP").is_ok_and(|d| d.split(':').any(|d| d.eq_ignore_ascii_case("GNOME")));
+    let gnome = std::env::var("XDG_CURRENT_DESKTOP")
+        .is_ok_and(|d| d.split(':').any(|d| d.eq_ignore_ascii_case("GNOME")));
     if gnome && !has_system_bus_name("org.gnome.DisplayManager").await {
         return "GNOME Shell only has a lock screen when GDM is the display manager, and this session wasn't started by GDM."
             .to_string();
@@ -217,7 +240,9 @@ pub async fn run(daemon: std::sync::Arc<Daemon>, lock_command: Option<String>) {
         if !seen {
             // Noctalia and custom commands needn't set LockedHint: trust them, but the unlock
             // can't be followed, so the tile stays "locked" until the next lock or reconnect.
-            info!("pc-lock: the screen locker doesn't report logind's LockedHint; the phone won't be told when the PC unlocks");
+            info!(
+                "pc-lock: the screen locker doesn't report logind's LockedHint; the phone won't be told when the PC unlocks"
+            );
         } else if !TRACKING.swap(true, Ordering::SeqCst) {
             let daemon = daemon.clone();
             tokio::spawn(async move {
@@ -247,6 +272,8 @@ mod tests {
 
     #[test]
     fn lock_command_overrides_detection() {
-        assert!(matches!(pick_locker(Some("swaylock -f")), Locker::Command(c) if c == "swaylock -f"));
+        assert!(
+            matches!(pick_locker(Some("swaylock -f")), Locker::Command(c) if c == "swaylock -f")
+        );
     }
 }

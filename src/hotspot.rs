@@ -49,7 +49,10 @@ pub struct HotspotConfig {
 
 impl fmt::Debug for HotspotConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("HotspotConfig").field("ssid", &self.ssid).field("pwd", &"<redacted>").finish()
+        f.debug_struct("HotspotConfig")
+            .field("ssid", &self.ssid)
+            .field("pwd", &"<redacted>")
+            .finish()
     }
 }
 
@@ -59,7 +62,10 @@ impl HotspotConfig {
         let mut rng = rand::thread_rng();
         let tag: String = (0..4).map(|_| rng.sample(Alphanumeric) as char).collect();
         let pwd: String = (0..16).map(|_| rng.sample(Alphanumeric) as char).collect();
-        Self { ssid: format!("SmartConnect-{tag}"), pwd }
+        Self {
+            ssid: format!("SmartConnect-{tag}"),
+            pwd,
+        }
     }
 
     /// `cmd 1` reply carrying the SoftAP config the phone should start.
@@ -143,14 +149,16 @@ pub async fn run(daemon: Arc<Daemon>) {
                 } else {
                     info!("hotspot: phone stopped tethering");
                 }
-                if let Some(cfg) = current.take() {
-                    if joined {
-                        forget(&cfg).await;
-                    }
+                if let Some(cfg) = current.take()
+                    && joined
+                {
+                    forget(&cfg).await;
                 }
                 joined = false;
             }
-            Some(Event::NoNetwork) => info!("hotspot: phone has no mobile data, hotspot not started"),
+            Some(Event::NoNetwork) => {
+                info!("hotspot: phone has no mobile data, hotspot not started")
+            }
             Some(Event::Other(c)) => info!(cmd = c, "hotspot: unhandled cmd"),
             None => {}
         }
@@ -159,12 +167,17 @@ pub async fn run(daemon: Arc<Daemon>) {
 
 /// `nmcli dev wifi connect <ssid> password <pwd>`; the passphrase stays out of logs and errors.
 async fn join(cfg: &HotspotConfig) -> Result<(), String> {
-    let _ = Command::new("nmcli").args(["dev", "wifi", "rescan", "ssid", &cfg.ssid]).output().await;
+    let _ = Command::new("nmcli")
+        .args(["dev", "wifi", "rescan", "ssid", &cfg.ssid])
+        .output()
+        .await;
     // The SoftAP can take a few seconds to show up in scan results.
     let mut last = String::new();
     for _ in 0..5 {
         let out = Command::new("nmcli")
-            .args(["--wait", "30", "dev", "wifi", "connect", &cfg.ssid, "password", &cfg.pwd])
+            .args([
+                "--wait", "30", "dev", "wifi", "connect", &cfg.ssid, "password", &cfg.pwd,
+            ])
             .output()
             .await
             .map_err(|e| format!("spawn nmcli: {e}"))?;
@@ -179,11 +192,18 @@ async fn join(cfg: &HotspotConfig) -> Result<(), String> {
 
 /// Drops the hotspot profile so NetworkManager falls back to the usual Wi-Fi.
 async fn forget(cfg: &HotspotConfig) {
-    let _ = Command::new("nmcli").args(["connection", "delete", "id", &cfg.ssid]).output().await;
+    let _ = Command::new("nmcli")
+        .args(["connection", "delete", "id", &cfg.ssid])
+        .output()
+        .await;
 }
 
 fn redact(s: &str, pwd: &str) -> String {
-    if pwd.is_empty() { s.to_string() } else { s.replace(pwd, "<redacted>") }
+    if pwd.is_empty() {
+        s.to_string()
+    } else {
+        s.replace(pwd, "<redacted>")
+    }
 }
 
 #[cfg(test)]
@@ -193,10 +213,22 @@ mod tests {
     #[test]
     fn parses_phone_cmds() {
         assert_eq!(parse(&json!({"ver":"1.0.0","cmd":0})), Some(Event::Invite));
-        assert_eq!(parse(&json!({"ver":"1.0.0","cmd":2})), Some(Event::Tethered));
-        assert_eq!(parse(&json!({"ver":"1.0.0","cmd":4,"errorCode":1313})), Some(Event::Stopped));
-        assert_eq!(parse(&json!({"ver":"1.0.0","cmd":5,"netAvailable":1})), Some(Event::NoNetwork));
-        assert_eq!(parse(&json!({"ver":"1.0.0","cmd":6,"errorCode":1312})), Some(Event::Error(1312)));
+        assert_eq!(
+            parse(&json!({"ver":"1.0.0","cmd":2})),
+            Some(Event::Tethered)
+        );
+        assert_eq!(
+            parse(&json!({"ver":"1.0.0","cmd":4,"errorCode":1313})),
+            Some(Event::Stopped)
+        );
+        assert_eq!(
+            parse(&json!({"ver":"1.0.0","cmd":5,"netAvailable":1})),
+            Some(Event::NoNetwork)
+        );
+        assert_eq!(
+            parse(&json!({"ver":"1.0.0","cmd":6,"errorCode":1312})),
+            Some(Event::Error(1312))
+        );
         assert_eq!(parse(&json!({"ver":"1.0.0"})), None);
     }
 

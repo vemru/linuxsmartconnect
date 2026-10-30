@@ -42,7 +42,11 @@ const SUSPEND_THRESHOLD: Duration = Duration::from_secs(10);
 
 pub fn backoff(attempt: usize, phone_on_lan: bool) -> Duration {
     let wait = Duration::from_secs(BACKOFF_S[attempt.min(BACKOFF_S.len() - 1)]);
-    if phone_on_lan && attempt < EAGER_ATTEMPTS { wait.min(EAGER_CAP) } else { wait }
+    if phone_on_lan && attempt < EAGER_ATTEMPTS {
+        wait.min(EAGER_CAP)
+    } else {
+        wait
+    }
 }
 
 /// Whether the phone is on the LAN, from a TCP connect to its last address.
@@ -91,12 +95,17 @@ pub async fn run(daemon: Arc<Daemon>, reason: &'static str) {
     let mut attempt = 0usize;
     let mut presence = Presence::Unknown;
     loop {
-        if attempt > 0 {
-            if let Some(ip) = daemon.phone_ip() {
-                presence = probe(ip).await;
-            }
+        if attempt > 0
+            && let Some(ip) = daemon.phone_ip()
+        {
+            presence = probe(ip).await;
         }
-        let wake = wait(&daemon, backoff(attempt, presence == Presence::Present), &mut presence).await;
+        let wake = wait(
+            &daemon,
+            backoff(attempt, presence == Presence::Present),
+            &mut presence,
+        )
+        .await;
         if !daemon.should_dial_back() || daemon.pairing.lock().unwrap().is_empty() {
             break;
         }
@@ -106,7 +115,12 @@ pub async fn run(daemon: Arc<Daemon>, reason: &'static str) {
         }
         let started = Instant::now();
         let (ok, msg) = crate::discovery::connect_now(&daemon).await;
-        info!(attempt, ok, took_ms = started.elapsed().as_millis() as u64, "auto-reconnect: {msg}");
+        info!(
+            attempt,
+            ok,
+            took_ms = started.elapsed().as_millis() as u64,
+            "auto-reconnect: {msg}"
+        );
         if ok {
             // The phone dials back on its own; give it a moment before deciding.
             let until = Instant::now() + Duration::from_secs(5);
@@ -134,7 +148,9 @@ async fn wait(daemon: &Daemon, delay: Duration, presence: &mut Presence) -> Wake
         if Instant::now() >= deadline {
             return Wake::Backoff;
         }
-        let Some(ip) = daemon.phone_ip() else { continue };
+        let Some(ip) = daemon.phone_ip() else {
+            continue;
+        };
         let now = probe(ip).await;
         let was = std::mem::replace(presence, now);
         debug!(?was, ?now, "auto-reconnect: presence probe");
@@ -148,7 +164,17 @@ async fn wait(daemon: &Daemon, delay: Duration, presence: &mut Presence) -> Wake
 /// Private IPv4 addresses on physical-looking interfaces. Container bridges and VPN tunnels are
 /// skipped because the phone would try (and time out on) every listed IP.
 pub fn detect_lan_ips() -> Result<Vec<IpAddr>> {
-    const SKIP: &[&str] = &["lo", "docker", "br-", "veth", "virbr", "tun", "tap", "wg", "tailscale"];
+    const SKIP: &[&str] = &[
+        "lo",
+        "docker",
+        "br-",
+        "veth",
+        "virbr",
+        "tun",
+        "tap",
+        "wg",
+        "tailscale",
+    ];
     let mut ips: Vec<IpAddr> = if_addrs::get_if_addrs()?
         .into_iter()
         .filter(|i| !SKIP.iter().any(|p| i.name.starts_with(p)))
@@ -176,7 +202,10 @@ pub fn slept_for(before: (Duration, Duration), now: (Duration, Duration)) -> Dur
 
 fn clocks() -> (Duration, Duration) {
     fn read(clock: libc::clockid_t) -> Duration {
-        let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+        let mut ts = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
         // SAFETY: clock_gettime only writes the timespec we pass; both clocks exist on Linux.
         if unsafe { libc::clock_gettime(clock, &mut ts) } != 0 {
             return Duration::ZERO;
@@ -238,10 +267,16 @@ mod tests {
     fn a_refusing_phone_is_present() {
         let e = |k| Err(std::io::Error::from(k));
         assert_eq!(classify(&Ok(())), Presence::Present);
-        assert_eq!(classify(&e(ErrorKind::ConnectionRefused)), Presence::Present);
+        assert_eq!(
+            classify(&e(ErrorKind::ConnectionRefused)),
+            Presence::Present
+        );
         assert_eq!(classify(&e(ErrorKind::TimedOut)), Presence::Absent);
         assert_eq!(classify(&e(ErrorKind::HostUnreachable)), Presence::Absent);
-        assert_eq!(classify(&e(ErrorKind::NetworkUnreachable)), Presence::Unknown);
+        assert_eq!(
+            classify(&e(ErrorKind::NetworkUnreachable)),
+            Presence::Unknown
+        );
     }
 
     #[test]

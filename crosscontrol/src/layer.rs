@@ -10,14 +10,18 @@ use std::time::Instant;
 use anyhow::{Context, Result, bail};
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState},
-    delegate_compositor, delegate_layer, delegate_output, delegate_registry, delegate_seat, delegate_shm,
+    delegate_compositor, delegate_layer, delegate_output, delegate_registry, delegate_seat,
+    delegate_shm,
     output::{OutputHandler, OutputState},
     registry::{ProvidesRegistryState, RegistryState},
     registry_handlers,
     seat::{Capability, SeatHandler, SeatState},
     shell::{
         WaylandSurface,
-        wlr_layer::{Anchor, KeyboardInteractivity, Layer, LayerShell, LayerShellHandler, LayerSurface, LayerSurfaceConfigure},
+        wlr_layer::{
+            Anchor, KeyboardInteractivity, Layer, LayerShell, LayerShellHandler, LayerSurface,
+            LayerSurfaceConfigure,
+        },
     },
     shm::{Shm, ShmHandler, slot::SlotPool},
 };
@@ -51,7 +55,9 @@ pub fn available() -> bool {
     let Ok((globals, _queue)) = registry_queue_init::<App>(&conn) else {
         return false;
     };
-    globals.contents().with_list(|list| list.iter().any(|g| g.interface == "zwlr_layer_shell_v1"))
+    globals
+        .contents()
+        .with_list(|list| list.iter().any(|g| g.interface == "zwlr_layer_shell_v1"))
 }
 
 struct App {
@@ -96,7 +102,13 @@ struct App {
 impl App {
     fn create_strip(&mut self, qh: &QueueHandle<Self>) {
         let surface = self.compositor.create_surface(qh);
-        let layer = self.layer_shell.create_layer_surface(qh, surface, Layer::Overlay, Some("smartconnect-crosscontrol-edge"), self.output.as_ref());
+        let layer = self.layer_shell.create_layer_surface(
+            qh,
+            surface,
+            Layer::Overlay,
+            Some("smartconnect-crosscontrol-edge"),
+            self.output.as_ref(),
+        );
         let (anchor, size) = match self.core.opts.edge {
             Edge::Right => (Anchor::RIGHT | Anchor::TOP | Anchor::BOTTOM, (1, 0)),
             Edge::Left => (Anchor::LEFT | Anchor::TOP | Anchor::BOTTOM, (1, 0)),
@@ -113,12 +125,19 @@ impl App {
 
     fn attach_transparent(&mut self, which: u8, w: u32, h: u32) {
         let (w, h) = (w.max(1), h.max(1));
-        let Ok((buffer, canvas)) = self.pool.create_buffer(w as i32, h as i32, w as i32 * 4, wl_shm::Format::Argb8888) else {
+        let Ok((buffer, canvas)) =
+            self.pool
+                .create_buffer(w as i32, h as i32, w as i32 * 4, wl_shm::Format::Argb8888)
+        else {
             eprintln!("shm buffer {w}x{h} failed");
             return;
         };
         canvas.fill(0);
-        let layer = if which == 1 { self.strip.as_ref() } else { self.overlay.as_ref() };
+        let layer = if which == 1 {
+            self.strip.as_ref()
+        } else {
+            self.overlay.as_ref()
+        };
         if let Some(layer) = layer {
             layer.wl_surface().damage_buffer(0, 0, w as i32, h as i32);
             let _ = buffer.attach_to(layer.wl_surface());
@@ -136,7 +155,10 @@ impl App {
 
     /// Position of the pointer along the edge strip, 0..1 from the top or the left.
     fn along(&self) -> f64 {
-        let (sw, sh) = (self.strip_size.0.max(1) as f64, self.strip_size.1.max(1) as f64);
+        let (sw, sh) = (
+            self.strip_size.0.max(1) as f64,
+            self.strip_size.1.max(1) as f64,
+        );
         match self.core.opts.edge {
             Edge::Left | Edge::Right => self.strip_pos.1 / sh,
             Edge::Top | Edge::Bottom => self.strip_pos.0 / sw,
@@ -157,14 +179,21 @@ impl App {
 
         // Fullscreen transparent overlay with exclusive keyboard.
         let surface = self.compositor.create_surface(qh);
-        let layer = self.layer_shell.create_layer_surface(qh, surface, Layer::Overlay, Some("smartconnect-crosscontrol-grab"), self.output.as_ref());
+        let layer = self.layer_shell.create_layer_surface(
+            qh,
+            surface,
+            Layer::Overlay,
+            Some("smartconnect-crosscontrol-grab"),
+            self.output.as_ref(),
+        );
         layer.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
         layer.set_size(0, 0);
         layer.set_exclusive_zone(-1);
         layer.set_keyboard_interactivity(KeyboardInteractivity::Exclusive);
         layer.commit();
         if let (Some(c), Some(p)) = (&self.constraints, &self.pointer) {
-            self.lock = Some(c.lock_pointer(layer.wl_surface(), p, None, Lifetime::Persistent, qh, ()));
+            self.lock =
+                Some(c.lock_pointer(layer.wl_surface(), p, None, Lifetime::Persistent, qh, ()));
         } else {
             eprintln!("no pointer-constraints: relying on relative motion only");
         }
@@ -234,11 +263,39 @@ impl App {
 // ---------------------------------------------------------------- sctk handlers
 
 impl CompositorHandler for App {
-    fn scale_factor_changed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: i32) {}
-    fn transform_changed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: wl_output::Transform) {}
+    fn scale_factor_changed(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_surface::WlSurface,
+        _: i32,
+    ) {
+    }
+    fn transform_changed(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_surface::WlSurface,
+        _: wl_output::Transform,
+    ) {
+    }
     fn frame(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: u32) {}
-    fn surface_enter(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: &wl_output::WlOutput) {}
-    fn surface_leave(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: &wl_output::WlOutput) {}
+    fn surface_enter(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_surface::WlSurface,
+        _: &wl_output::WlOutput,
+    ) {
+    }
+    fn surface_leave(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_surface::WlSurface,
+        _: &wl_output::WlOutput,
+    ) {
+    }
 }
 
 impl OutputHandler for App {
@@ -260,7 +317,14 @@ impl LayerShellHandler for App {
         }
     }
 
-    fn configure(&mut self, _: &Connection, _: &QueueHandle<Self>, layer: &LayerSurface, cfg: LayerSurfaceConfigure, _: u32) {
+    fn configure(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        layer: &LayerSurface,
+        cfg: LayerSurfaceConfigure,
+        _: u32,
+    ) {
         let (w, h) = cfg.new_size;
         if self.strip.as_ref() == Some(layer) {
             self.strip_size = (w, h);
@@ -278,7 +342,13 @@ impl SeatHandler for App {
         &mut self.seat_state
     }
     fn new_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_seat::WlSeat) {}
-    fn new_capability(&mut self, _: &Connection, qh: &QueueHandle<Self>, seat: wl_seat::WlSeat, cap: Capability) {
+    fn new_capability(
+        &mut self,
+        _: &Connection,
+        qh: &QueueHandle<Self>,
+        seat: wl_seat::WlSeat,
+        cap: Capability,
+    ) {
         self.seat.get_or_insert_with(|| seat.clone());
         if cap == Capability::Pointer && self.pointer.is_none() {
             let p = seat.get_pointer(qh, ());
@@ -291,7 +361,14 @@ impl SeatHandler for App {
             self.keyboard = Some(seat.get_keyboard(qh, ()));
         }
     }
-    fn remove_capability(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_seat::WlSeat, _: Capability) {}
+    fn remove_capability(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: wl_seat::WlSeat,
+        _: Capability,
+    ) {
+    }
     fn remove_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_seat::WlSeat) {}
 }
 
@@ -318,15 +395,35 @@ delegate_registry!(App);
 // ---------------------------------------------------------------- raw protocol dispatch
 
 impl Dispatch<wl_pointer::WlPointer, ()> for App {
-    fn event(app: &mut Self, ptr: &wl_pointer::WlPointer, ev: wl_pointer::Event, _: &(), _: &Connection, qh: &QueueHandle<Self>) {
+    fn event(
+        app: &mut Self,
+        ptr: &wl_pointer::WlPointer,
+        ev: wl_pointer::Event,
+        _: &(),
+        _: &Connection,
+        qh: &QueueHandle<Self>,
+    ) {
         use wl_pointer::Event as E;
         match ev {
-            E::Enter { serial, surface, surface_x, surface_y } => {
+            E::Enter {
+                serial,
+                surface,
+                surface_x,
+                surface_y,
+            } => {
                 app.pointer_serial = serial;
-                if app.overlay.as_ref().is_some_and(|o| o.wl_surface() == &surface) {
+                if app
+                    .overlay
+                    .as_ref()
+                    .is_some_and(|o| o.wl_surface() == &surface)
+                {
                     app.focus = 2;
                     ptr.set_cursor(serial, None, 0, 0); // hide the PC cursor while on the phone
-                } else if app.strip.as_ref().is_some_and(|s| s.wl_surface() == &surface) {
+                } else if app
+                    .strip
+                    .as_ref()
+                    .is_some_and(|s| s.wl_surface() == &surface)
+                {
                     app.focus = 1;
                     app.strip_pos = (surface_x, surface_y);
                     app.knock = 0.0;
@@ -336,24 +433,41 @@ impl Dispatch<wl_pointer::WlPointer, ()> for App {
                 }
             }
             E::Leave { .. } => app.focus = 0,
-            E::Motion { surface_x, surface_y, .. } => {
+            E::Motion {
+                surface_x,
+                surface_y,
+                ..
+            } => {
                 if app.focus == 1 {
                     // Sliding along the edge into the phone's part of it counts as arriving.
                     let was_in = app.core.in_span(app.along());
                     app.strip_pos = (surface_x, surface_y);
-                    if !was_in && app.core.in_span(app.along()) && Instant::now() >= app.core.cooldown_until {
+                    if !was_in
+                        && app.core.in_span(app.along())
+                        && Instant::now() >= app.core.cooldown_until
+                    {
                         app.edge_hit(qh);
                     }
                 }
             }
             E::Button { button, state, .. } => {
-                app.core.on_button(button, matches!(state, WEnum::Value(wl_pointer::ButtonState::Pressed)));
+                app.core.on_button(
+                    button,
+                    matches!(state, WEnum::Value(wl_pointer::ButtonState::Pressed)),
+                );
             }
-            E::AxisValue120 { axis: WEnum::Value(wl_pointer::Axis::VerticalScroll), value120 } => {
+            E::AxisValue120 {
+                axis: WEnum::Value(wl_pointer::Axis::VerticalScroll),
+                value120,
+            } => {
                 app.saw_value120 = true;
                 app.core.on_scroll(value120 as f64 / 120.0);
             }
-            E::Axis { axis: WEnum::Value(wl_pointer::Axis::VerticalScroll), value, .. } if !app.saw_value120 => {
+            E::Axis {
+                axis: WEnum::Value(wl_pointer::Axis::VerticalScroll),
+                value,
+                ..
+            } if !app.saw_value120 => {
                 app.core.on_scroll(value / 15.0);
             }
             _ => {}
@@ -362,26 +476,39 @@ impl Dispatch<wl_pointer::WlPointer, ()> for App {
 }
 
 impl Dispatch<wl_keyboard::WlKeyboard, ()> for App {
-    fn event(app: &mut Self, _: &wl_keyboard::WlKeyboard, ev: wl_keyboard::Event, _: &(), _: &Connection, qh: &QueueHandle<Self>) {
+    fn event(
+        app: &mut Self,
+        _: &wl_keyboard::WlKeyboard,
+        ev: wl_keyboard::Event,
+        _: &(),
+        _: &Connection,
+        qh: &QueueHandle<Self>,
+    ) {
         use wl_keyboard::Event as E;
         match ev {
             E::Key { key, state, .. } => {
                 let action = app.core.on_key(key, matches!(state, WEnum::Value(wl_keyboard::KeyState::Pressed)));
                 app.act(qh, action);
             }
-            E::Leave { .. } => {
+            E::Leave { .. }
                 // Keyboard focus lost while on the phone: don't leave keys stuck down there.
-                if app.core.captured {
+                if app.core.captured => {
                     app.core.release_all();
                 }
-            }
             _ => {} // keymap fd is closed on drop
         }
     }
 }
 
 impl Dispatch<ZwpRelativePointerV1, ()> for App {
-    fn event(app: &mut Self, _: &ZwpRelativePointerV1, ev: zwp_relative_pointer_v1::Event, _: &(), _: &Connection, qh: &QueueHandle<Self>) {
+    fn event(
+        app: &mut Self,
+        _: &ZwpRelativePointerV1,
+        ev: zwp_relative_pointer_v1::Event,
+        _: &(),
+        _: &Connection,
+        qh: &QueueHandle<Self>,
+    ) {
         if let zwp_relative_pointer_v1::Event::RelativeMotion { dx, dy, .. } = ev {
             app.on_relative(qh, dx, dy);
         }
@@ -389,7 +516,14 @@ impl Dispatch<ZwpRelativePointerV1, ()> for App {
 }
 
 impl Dispatch<ZwpLockedPointerV1, ()> for App {
-    fn event(app: &mut Self, _: &ZwpLockedPointerV1, ev: zwp_locked_pointer_v1::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
+    fn event(
+        app: &mut Self,
+        _: &ZwpLockedPointerV1,
+        ev: zwp_locked_pointer_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
         match ev {
             zwp_locked_pointer_v1::Event::Locked => {
                 app.locked = true;
@@ -411,9 +545,14 @@ macro_rules! ignore_events {
         }
     )*};
 }
-ignore_events!(ZwpPointerConstraintsV1, ZwpRelativePointerManagerV1, ZwpKeyboardShortcutsInhibitManagerV1, ZwpKeyboardShortcutsInhibitorV1);
+ignore_events!(
+    ZwpPointerConstraintsV1,
+    ZwpRelativePointerManagerV1,
+    ZwpKeyboardShortcutsInhibitManagerV1,
+    ZwpKeyboardShortcutsInhibitorV1
+);
 
-fn bind_opt<I, U>(globals: &GlobalList, qh: &QueueHandle<App>) -> Option<I>
+fn bind_opt<I>(globals: &GlobalList, qh: &QueueHandle<App>) -> Option<I>
 where
     I: wayland_client::Proxy + 'static,
     App: Dispatch<I, ()>,
@@ -432,7 +571,8 @@ pub fn run(core: Core) -> Result<()> {
     let (globals, mut queue) = registry_queue_init::<App>(&conn)?;
     let qh = queue.handle();
     let compositor = CompositorState::bind(&globals, &qh)?;
-    let layer_shell = LayerShell::bind(&globals, &qh).context("compositor lacks wlr-layer-shell (try --backend portal)")?;
+    let layer_shell = LayerShell::bind(&globals, &qh)
+        .context("compositor lacks wlr-layer-shell (try --backend portal)")?;
     let shm = Shm::bind(&globals, &qh)?;
     let pool = SlotPool::new(4096, &shm)?;
 
@@ -441,9 +581,9 @@ pub fn run(core: Core) -> Result<()> {
         registry_state: RegistryState::new(&globals),
         seat_state: SeatState::new(&globals, &qh),
         output_state: OutputState::new(&globals, &qh),
-        constraints: bind_opt::<ZwpPointerConstraintsV1, ()>(&globals, &qh),
-        rel_mgr: bind_opt::<ZwpRelativePointerManagerV1, ()>(&globals, &qh),
-        inhibit_mgr: bind_opt::<ZwpKeyboardShortcutsInhibitManagerV1, ()>(&globals, &qh),
+        constraints: bind_opt::<ZwpPointerConstraintsV1>(&globals, &qh),
+        rel_mgr: bind_opt::<ZwpRelativePointerManagerV1>(&globals, &qh),
+        inhibit_mgr: bind_opt::<ZwpKeyboardShortcutsInhibitManagerV1>(&globals, &qh),
         compositor,
         layer_shell,
         shm,
@@ -482,7 +622,11 @@ pub fn run(core: Core) -> Result<()> {
         }
     });
     if let Some(o) = chosen {
-        let name = app.output_state.info(o).and_then(|i| i.name).unwrap_or_default();
+        let name = app
+            .output_state
+            .info(o)
+            .and_then(|i| i.name)
+            .unwrap_or_default();
         println!("using output {name}");
         app.output = Some(o.clone());
     } else if app.core.opts.output.is_some() {
@@ -493,7 +637,10 @@ pub fn run(core: Core) -> Result<()> {
         // The phone asked (svc 26 cmd 0) before we were running: answer it now; the edge is then armed.
         app.core.request_control();
     }
-    println!("ready: push the pointer into the {:?} edge; push back or Ctrl+Alt+Esc to return; Ctrl+C quits", app.core.opts.edge);
+    println!(
+        "ready: push the pointer into the {:?} edge; push back or Ctrl+Alt+Esc to return; Ctrl+C quits",
+        app.core.opts.edge
+    );
 
     let wl_fd = conn.backend().poll_fd().as_raw_fd();
     let d_fd = app.core.daemon.watch.as_raw_fd();
@@ -502,8 +649,16 @@ pub fn run(core: Core) -> Result<()> {
         queue.flush()?;
         if let Some(guard) = queue.prepare_read() {
             let mut fds = [
-                libc::pollfd { fd: wl_fd, events: libc::POLLIN, revents: 0 },
-                libc::pollfd { fd: d_fd, events: libc::POLLIN, revents: 0 },
+                libc::pollfd {
+                    fd: wl_fd,
+                    events: libc::POLLIN,
+                    revents: 0,
+                },
+                libc::pollfd {
+                    fd: d_fd,
+                    events: libc::POLLIN,
+                    revents: 0,
+                },
             ];
             let timeout = if app.core.busy() { 8 } else { 200 };
             unsafe { libc::poll(fds.as_mut_ptr(), 2, timeout) };

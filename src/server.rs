@@ -1,12 +1,12 @@
 //! Control WebSocket server: TLS, `/readyfor/` upgrade, MANAGER handshake, then a
 //! logging loop for everything the phone sends.
 
+use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -25,12 +25,12 @@ use tracing::{info, warn};
 
 use crate::clipboard::{self, LocalClipboard};
 use crate::discovery;
-use crate::notifications::{self, Notifier, PhoneCommand};
-use crate::status::StatusHub;
 use crate::identity::{self, Identity};
 use crate::invite::{self, Invite};
+use crate::notifications::{self, Notifier, PhoneCommand};
 use crate::pairing::PairingStore;
 use crate::proto::{self, Hello, SERVICE_MANAGER, WsMsg};
+use crate::status::StatusHub;
 
 const CONTROL_PATH: &str = "/readyfor/";
 /// Windows sets a 40 s read deadline for the first frame after the upgrade.
@@ -96,6 +96,8 @@ pub struct Daemon {
 }
 
 impl Daemon {
+    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         identity: Identity,
         pairing: PairingStore,
@@ -108,8 +110,10 @@ impl Daemon {
     ) -> Self {
         // Last known /readyfor/mdns endpoint per phone, kept across restarts.
         let endpoints_path = session_dir.with_file_name("phone-endpoints.json");
-        let endpoints: HashMap<String, SocketAddr> =
-            std::fs::read(&endpoints_path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+        let endpoints: HashMap<String, SocketAddr> = std::fs::read(&endpoints_path)
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default();
         let status = StatusHub::new(!pairing.is_empty(), Some(qr.svg_path.display().to_string()));
         let phone_ip = endpoints.values().next().map(SocketAddr::ip);
         Self {
@@ -276,7 +280,13 @@ impl Daemon {
     /// address (DHCP gave the phone a new lease) moves with it, keeping its port.
     pub fn remember_phone_ip(&self, phone: &str, ip: IpAddr) {
         *self.phone_ip.lock().unwrap() = Some(ip);
-        let moved = self.phone_mdns.lock().unwrap().get(phone).filter(|a| a.ip() != ip).map(|a| SocketAddr::new(ip, a.port()));
+        let moved = self
+            .phone_mdns
+            .lock()
+            .unwrap()
+            .get(phone)
+            .filter(|a| a.ip() != ip)
+            .map(|a| SocketAddr::new(ip, a.port()));
         if let Some(addr) = moved {
             self.remember_phone_mdns(phone, addr);
         }
@@ -298,16 +308,21 @@ impl Daemon {
     }
 
     pub fn known_phone_endpoints(&self) -> Vec<(String, SocketAddr)> {
-        self.phone_mdns.lock().unwrap().iter().map(|(p, a)| (p.clone(), *a)).collect()
+        self.phone_mdns
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(p, a)| (p.clone(), *a))
+            .collect()
     }
 
     pub fn remember_phone_mdns(&self, phone: &str, addr: SocketAddr) {
         *self.phone_ip.lock().unwrap() = Some(addr.ip());
         let mut map = self.phone_mdns.lock().unwrap();
-        if map.insert(phone.to_owned(), addr) != Some(addr) {
-            if let Ok(json) = serde_json::to_vec_pretty(&*map) {
-                let _ = crate::identity::write_private(&self.endpoints_path, &json);
-            }
+        if map.insert(phone.to_owned(), addr) != Some(addr)
+            && let Ok(json) = serde_json::to_vec_pretty(&*map)
+        {
+            let _ = crate::identity::write_private(&self.endpoints_path, &json);
         }
     }
 
@@ -316,7 +331,11 @@ impl Daemon {
         let mut slot = self.invite.lock().unwrap();
         let fresh = matches!(slot.as_ref(), Some(inv) if inv.expires > Instant::now() + Duration::from_secs(60));
         if !fresh {
-            *slot = Some(Invite::new(self.ws_port, self.ips(), self.token_ttl.max(Duration::from_secs(120))));
+            *slot = Some(Invite::new(
+                self.ws_port,
+                self.ips(),
+                self.token_ttl.max(Duration::from_secs(120)),
+            ));
         }
         slot.as_ref().unwrap().token.clone()
     }
@@ -337,7 +356,11 @@ pub fn tls_acceptor(id: &Identity) -> Result<TlsAcceptor> {
     Ok(TlsAcceptor::from(Arc::new(config)))
 }
 
-pub async fn serve(daemon: Arc<Daemon>, listener: TcpListener, acceptor: TlsAcceptor) -> Result<()> {
+pub async fn serve(
+    daemon: Arc<Daemon>,
+    listener: TcpListener,
+    acceptor: TlsAcceptor,
+) -> Result<()> {
     loop {
         let (tcp, peer) = listener.accept().await?;
         let daemon = daemon.clone();
@@ -350,7 +373,13 @@ pub async fn serve(daemon: Arc<Daemon>, listener: TcpListener, acceptor: TlsAcce
     }
 }
 
-async fn handle(daemon: Arc<Daemon>, acceptor: TlsAcceptor, tcp: TcpStream, peer: SocketAddr) -> Result<()> {
+#[allow(clippy::result_large_err)]
+async fn handle(
+    daemon: Arc<Daemon>,
+    acceptor: TlsAcceptor,
+    tcp: TcpStream,
+    peer: SocketAddr,
+) -> Result<()> {
     info!(%peer, "TCP connection");
     // The PC address the phone reached us on: helpers offer WebRTC candidates on it only.
     let local_ip = tcp.local_addr().ok().map(|a| a.ip().to_string());
@@ -371,7 +400,9 @@ async fn handle(daemon: Arc<Daemon>, acceptor: TlsAcceptor, tcp: TcpStream, peer
             Err(_) => info!(%peer, "client sent no data within 3s"),
         }
     }
-    let tls = timeout(TLS_HANDSHAKE_TIMEOUT, acceptor.accept(tcp)).await.context("TLS handshake timed out")??;
+    let tls = timeout(TLS_HANDSHAKE_TIMEOUT, acceptor.accept(tcp))
+        .await
+        .context("TLS handshake timed out")??;
     {
         let (_, conn) = tls.get_ref();
         info!(
@@ -386,10 +417,22 @@ async fn handle(daemon: Arc<Daemon>, acceptor: TlsAcceptor, tcp: TcpStream, peer
     // Our fex offers (clipboard images to the phone) share this port: route their two paths there,
     // and replay the request head into the control WebSocket for everything else.
     let mut tls = tls;
-    let head = timeout(FIRST_MESSAGE_TIMEOUT, crate::fex_host::read_head(&mut tls)).await.context("no HTTP request")??;
-    if let Some(target) = crate::fex_host::target(&head).filter(|t| crate::fex_host::is_fex(t)).map(str::to_owned) {
+    let head = timeout(FIRST_MESSAGE_TIMEOUT, crate::fex_host::read_head(&mut tls))
+        .await
+        .context("no HTTP request")??;
+    if let Some(target) = crate::fex_host::target(&head)
+        .filter(|t| crate::fex_host::is_fex(t))
+        .map(str::to_owned)
+    {
         info!(%peer, "fex request");
-        return crate::fex_host::serve(daemon.clipboard.fex(), crate::fex_host::Prefixed::new(head, tls), &target, peer, daemon.phone_ip()).await;
+        return crate::fex_host::serve(
+            daemon.clipboard.fex(),
+            crate::fex_host::Prefixed::new(head, tls),
+            &target,
+            peer,
+            daemon.phone_ip(),
+        )
+        .await;
     }
     let tls = crate::fex_host::Prefixed::new(head, tls);
 
@@ -415,7 +458,9 @@ async fn handle(daemon: Arc<Daemon>, acceptor: TlsAcceptor, tcp: TcpStream, peer
     let mut log = SessionLog::create(&daemon.session_dir, peer)?;
     let (mut tx, mut rx) = ws.split();
 
-    let first = timeout(FIRST_MESSAGE_TIMEOUT, rx.next()).await.context("no first message within 40 s")?;
+    let first = timeout(FIRST_MESSAGE_TIMEOUT, rx.next())
+        .await
+        .context("no first message within 40 s")?;
     let text = match first {
         Some(Ok(Message::Text(t))) => t.to_string(),
         other => bail!("expected a text frame first, got {other:?}"),
@@ -423,7 +468,10 @@ async fn handle(daemon: Arc<Daemon>, acceptor: TlsAcceptor, tcp: TcpStream, peer
     log.record("in", &text);
     let hello_msg: WsMsg = serde_json::from_str(&text).context("first frame is not a WsMsg")?;
     if hello_msg.service_id != SERVICE_MANAGER {
-        bail!("first frame is for serviceId {}, expected 0", hello_msg.service_id);
+        bail!(
+            "first frame is for serviceId {}, expected 0",
+            hello_msg.service_id
+        );
     }
     let data = hello_msg.data.unwrap_or(Value::Null);
     let hello = Hello::parse(&data);
@@ -437,7 +485,10 @@ async fn handle(daemon: Arc<Daemon>, acceptor: TlsAcceptor, tcp: TcpStream, peer
     );
 
     // Stable identity: the phone's realDeviceId (the envelope deviceId is a per-connection nonce).
-    let stable_id = hello.real_device_id.unwrap_or(hello_msg.device_id.as_str()).to_owned();
+    let stable_id = hello
+        .real_device_id
+        .unwrap_or(hello_msg.device_id.as_str())
+        .to_owned();
     let already_paired = daemon.pairing.lock().unwrap().get(&stable_id).is_some();
     let token_ok = daemon.token_valid(hello.token.unwrap_or_default());
     // Accept a fresh pair (valid invite token) OR a reconnect from a device we've already paired.
@@ -446,11 +497,12 @@ async fn handle(daemon: Arc<Daemon>, acceptor: TlsAcceptor, tcp: TcpStream, peer
         return Ok(());
     }
 
-    let record = daemon
-        .pairing
-        .lock()
-        .unwrap()
-        .pair(&stable_id, hello.device_name, hello.real_device_id)?;
+    let record =
+        daemon
+            .pairing
+            .lock()
+            .unwrap()
+            .pair(&stable_id, hello.device_name, hello.real_device_id)?;
     info!(%peer, phone = %stable_id, reconnect = already_paired, token_ok, "accepted");
     let id = &daemon.identity;
     let sku = identity::product_name();
@@ -492,7 +544,11 @@ async fn handle(daemon: Arc<Daemon>, acceptor: TlsAcceptor, tcp: TcpStream, peer
     info!(%peer, phone = %hello_msg.device_id, "phone verified; session log: {}", log.describe());
     // The phone only draws a feature tile when the service is also in this svc 25 `cap` map.
     let status = daemon.device_status();
-    let out = serde_json::to_string(&WsMsg::outgoing(&id.device_id, proto::SERVICE_DEVICE_STATUS, status))?;
+    let out = serde_json::to_string(&WsMsg::outgoing(
+        &id.device_id,
+        proto::SERVICE_DEVICE_STATUS,
+        status,
+    ))?;
     tx.send(Message::text(out.clone())).await?;
     log.record("out", &out);
 
@@ -661,7 +717,10 @@ where
     tx.send(Message::text(out.clone())).await?;
     log.record("out", &out);
     let data = msg.data.as_ref();
-    let cmd = data.and_then(|d| d.get("cmd").or_else(|| d.get("msgId"))).map(ToString::to_string).unwrap_or_default();
+    let cmd = data
+        .and_then(|d| d.get("cmd").or_else(|| d.get("msgId")))
+        .map(ToString::to_string)
+        .unwrap_or_default();
     info!(%peer, "-> svc {} cmd {}", msg.service_id, cmd);
     Ok(())
 }
@@ -674,10 +733,10 @@ where
 fn exchange_key(daemon: &Daemon, phone_id: &str, data: &Value, first_pair: bool) -> Option<Value> {
     let mut pairing = daemon.pairing.lock().unwrap();
     let key = pairing.get(phone_id)?.key.clone();
-    if let Some(phone_key) = data.pointer("/device/key").and_then(Value::as_str) {
-        if let Err(e) = pairing.save_phone_key(phone_id, phone_key) {
-            warn!("saving the phone's key: {e:#}");
-        }
+    if let Some(phone_key) = data.pointer("/device/key").and_then(Value::as_str)
+        && let Err(e) = pairing.save_phone_key(phone_id, phone_key)
+    {
+        warn!("saving the phone's key: {e:#}");
     }
     drop(pairing);
     info!(phone = %phone_id, "key exchange: sending our key");
@@ -715,11 +774,21 @@ fn schedule_post_pair_dial(daemon: &Daemon, phone_id: &str) {
         return;
     };
     let (id, key, token) = {
-        let key = daemon.pairing.lock().unwrap().get(phone_id).map(|p| p.key.clone());
-        (daemon.identity.device_id.clone(), key, daemon.current_token())
+        let key = daemon
+            .pairing
+            .lock()
+            .unwrap()
+            .get(phone_id)
+            .map(|p| p.key.clone());
+        (
+            daemon.identity.device_id.clone(),
+            key,
+            daemon.current_token(),
+        )
     };
     let Some(key) = key else { return };
-    let invite = discovery::invite_json(&daemon.identity, &token, &daemon.ips(), daemon.ws_port).to_string();
+    let invite =
+        discovery::invite_json(&daemon.identity, &token, &daemon.ips(), daemon.ws_port).to_string();
     let phone = phone_id.to_owned();
     tokio::spawn(async move {
         tokio::time::sleep(Duration::from_secs(5)).await;
@@ -764,7 +833,11 @@ fn summarize(text: &str) -> String {
         return format!("unparsed frame ({} bytes)", text.len());
     };
     let data = msg.data.as_ref();
-    let field = |k: &str| data.and_then(|d| d.get(k)).map(|v| v.to_string()).unwrap_or_else(|| "-".into());
+    let field = |k: &str| {
+        data.and_then(|d| d.get(k))
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "-".into())
+    };
     format!(
         "<- svc {} (src {}) cmd {} data.msgId {} ({} bytes)",
         msg.service_id,
@@ -794,21 +867,37 @@ impl SessionLog {
     fn create(dir: &Path, peer: SocketAddr) -> Result<Self> {
         use std::os::unix::fs::OpenOptionsExt;
         if !SESSION_LOGS.load(Ordering::Relaxed) {
-            return Ok(Self { path: None, file: None });
+            return Ok(Self {
+                path: None,
+                file: None,
+            });
         }
         crate::identity::create_private_dir(dir)?;
         let path = dir.join(format!("{}-{}.jsonl", unix_ms(), peer.ip()));
-        let file = OpenOptions::new().create(true).append(true).mode(0o600).open(&path)?;
-        Ok(Self { path: Some(path), file: Some(file) })
+        let file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .mode(0o600)
+            .open(&path)?;
+        Ok(Self {
+            path: Some(path),
+            file: Some(file),
+        })
     }
 
     fn describe(&self) -> String {
-        self.path.as_ref().map_or_else(|| "off (enable with --session-log)".to_owned(), |p| p.display().to_string())
+        self.path.as_ref().map_or_else(
+            || "off (enable with --session-log)".to_owned(),
+            |p| p.display().to_string(),
+        )
     }
 
     fn record(&mut self, dir: &str, text: &str) {
-        let Some(file) = self.file.as_mut() else { return };
-        let mut body = serde_json::from_str::<Value>(text).unwrap_or_else(|_| Value::String(text.to_owned()));
+        let Some(file) = self.file.as_mut() else {
+            return;
+        };
+        let mut body =
+            serde_json::from_str::<Value>(text).unwrap_or_else(|_| Value::String(text.to_owned()));
         redact(&mut body);
         let line = json!({ "ts_ms": unix_ms(), "dir": dir, "frame": body });
         if let Err(e) = writeln!(file, "{line}") {
@@ -826,7 +915,9 @@ const SECRET_FIELDS: [&str; 7] = ["key", "token", "pwd", "password", "passwd", "
 fn redact(frame: &mut Value) {
     let svc = frame.get("serviceId").and_then(Value::as_i64);
     let src = frame.get("srcServiceId").and_then(Value::as_i64);
-    let Some(data) = frame.get_mut("data").and_then(Value::as_object_mut) else { return };
+    let Some(data) = frame.get_mut("data").and_then(Value::as_object_mut) else {
+        return;
+    };
     let sms = |s: Option<i64>| matches!(s, Some(100 | 204 | 205 | 206));
     match svc {
         Some(notifications::SERVICE_NOTIFY | notifications::SERVICE_NOTIFY_WIDGET) => {
@@ -848,14 +939,18 @@ fn redact(frame: &mut Value) {
         }
         _ => {}
     }
-    redact_where(data, &|k| SECRET_FIELDS.contains(&k.to_ascii_lowercase().as_str()));
+    redact_where(data, &|k| {
+        SECRET_FIELDS.contains(&k.to_ascii_lowercase().as_str())
+    });
 }
 
 /// Replaces every string value (at any depth) whose field name matches with a length marker.
 fn redact_where(map: &mut serde_json::Map<String, Value>, matches: &dyn Fn(&str) -> bool) {
     for (k, v) in map.iter_mut() {
         match v {
-            Value::String(s) if matches(k) => *v = json!(format!("<redacted {} chars>", s.chars().count())),
+            Value::String(s) if matches(k) => {
+                *v = json!(format!("<redacted {} chars>", s.chars().count()))
+            }
             Value::Object(inner) => redact_where(inner, matches),
             Value::Array(items) => {
                 for item in items.iter_mut() {
@@ -870,7 +965,10 @@ fn redact_where(map: &mut serde_json::Map<String, Value>, matches: &dyn Fn(&str)
 }
 
 fn unix_ms() -> u128 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0)
 }
 
 /// This PC's battery percentage for the phone's device page (100 on machines without a battery).
@@ -880,7 +978,13 @@ fn pc_battery() -> i64 {
         .flatten()
         .flatten()
         .filter(|e| e.file_name().to_string_lossy().starts_with("BAT"))
-        .find_map(|e| std::fs::read_to_string(e.path().join("capacity")).ok()?.trim().parse().ok())
+        .find_map(|e| {
+            std::fs::read_to_string(e.path().join("capacity"))
+                .ok()?
+                .trim()
+                .parse()
+                .ok()
+        })
         .unwrap_or(100)
 }
 
@@ -896,7 +1000,8 @@ mod redact_tests {
         assert_eq!(verify["data"]["token"], "<redacted 2 chars>");
         assert_eq!(verify["data"]["device"]["deviceName"], "PC");
 
-        let mut hotspot = json!({ "serviceId": 13, "data": { "cmd": 1, "ssid": "x", "pwd": "secret123" } });
+        let mut hotspot =
+            json!({ "serviceId": 13, "data": { "cmd": 1, "ssid": "x", "pwd": "secret123" } });
         redact(&mut hotspot);
         assert_eq!(hotspot["data"]["pwd"], "<redacted 9 chars>");
 
