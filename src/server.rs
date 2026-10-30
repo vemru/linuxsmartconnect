@@ -42,6 +42,64 @@ const PING_INTERVAL: Duration = Duration::from_secs(20);
 /// Without it a dead TCP link looks "connected" until the kernel gives up (~15 min).
 const PEER_SILENCE_LIMIT: Duration = Duration::from_secs(70);
 
+/// Tracks failed reconnect / authentication attempts per IP for exponential backoff rate limiting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FailedAuth {
+    pub count: u32,
+    pub last_attempt: Instant,
+}
+
+impl FailedAuth {
+    pub fn penalty(&self) -> Duration {
+        if self.count < 3 {
+            Duration::ZERO
+        } else {
+            // Exponential: 3 fails -> 500ms, 4 fails -> 1s, 5 fails -> 2s, 6 fails -> 4s, ... max 32s
+            let exponent = (self.count - 3).min(6);
+            Duration::from_millis(500 * (1 << exponent))
+        }
+    }
+
+    pub fn is_blocked(&self, now: Instant) -> bool {
+        if now.duration_since(self.last_attempt) > Duration::from_secs(300) {
+            false
+        } else {
+            now.duration_since(self.last_attempt) < self.penalty()
+        }
+    }
+}
+
+/// Whether an IP is strictly local/private (IPv4 loopback 127.0.0.0/8, RFC1918 10.0.0.0/8,
+/// 172.16.0.0/12, 192.168.0.0/16, link-local 169.254.0.0/16, IPv6 loopback ::1,
+/// unique-local fc00::/7, or link-local fe80::/10).
+pub fn is_private_or_local(ip: &IpAddr) -> bool {
+    let canonical = ip.to_canonical();
+    match canonical {
+        IpAddr::V4(v4) => {
+            let o = v4.octets();
+            // Loopback: 127.0.0.0/8
+            o[0] == 127
+                // RFC1918 10.0.0.0/8
+                || o[0] == 10
+                // RFC1918 172.16.0.0/12 (172.16.0.0 .. 172.31.255.255)
+                || (o[0] == 172 && (16..=31).contains(&o[1]))
+                // RFC1918 192.168.0.0/16
+                || (o[0] == 192 && o[1] == 168)
+                // Link-local: 169.254.0.0/16
+                || (o[0] == 169 && o[1] == 254)
+        }
+        IpAddr::V6(v6) => {
+            let o = v6.octets();
+            // Loopback ::1
+            v6.is_loopback()
+                // Unique-local: fc00::/7 (0xfc or 0xfd)
+                || (o[0] & 0xfe) == 0xfc
+                // Link-local: fe80::/10 (1111 1110 10xx xxxx)
+                || (o[0] == 0xfe && (o[1] & 0xc0) == 0x80)
+        }
+    }
+}
+
 pub struct QrOutput {
     pub invert: bool,
     pub svg_path: PathBuf,
@@ -93,10 +151,13 @@ pub struct Daemon {
     /// Per-service svc 25 `cap` flags set by helpers (e.g. cross control's in-use bit), merged over
     /// `proto::device_status_caps()` so the phone always gets the full tile map.
     pub cap_overrides: Mutex<serde_json::Map<String, Value>>,
+    /// Allow connections from public/non-LAN IPs (by default, non-private IPs are dropped).
+    pub allow_public: std::sync::atomic::AtomicBool,
+    /// Rate-limiting state for failed authentication and reconnect attempts per IP.
+    pub failed_auth: Mutex<HashMap<IpAddr, FailedAuth>>,
 }
 
 impl Daemon {
-    #[allow(clippy::too_many_arguments)]
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         identity: Identity,
@@ -144,7 +205,43 @@ impl Daemon {
             notifier: std::sync::OnceLock::new(),
             share: std::sync::OnceLock::new(),
             cap_overrides: Mutex::default(),
+            allow_public: std::sync::atomic::AtomicBool::new(false),
+            failed_auth: Mutex::default(),
         }
+    }
+
+    pub fn set_allow_public(&self, allow: bool) {
+        self.allow_public.store(allow, Ordering::SeqCst);
+    }
+
+    pub fn allow_public(&self) -> bool {
+        self.allow_public.load(Ordering::SeqCst)
+    }
+
+    pub fn is_auth_rate_limited(&self, ip: IpAddr) -> bool {
+        let now = Instant::now();
+        let mut map = self.failed_auth.lock().unwrap();
+        map.retain(|_, v| now.duration_since(v.last_attempt) <= Duration::from_secs(300));
+        map.get(&ip).is_some_and(|fa| fa.is_blocked(now))
+    }
+
+    pub fn record_auth_failure(&self, ip: IpAddr) {
+        let now = Instant::now();
+        let mut map = self.failed_auth.lock().unwrap();
+        let entry = map.entry(ip).or_insert(FailedAuth {
+            count: 0,
+            last_attempt: now,
+        });
+        if now.duration_since(entry.last_attempt) > Duration::from_secs(300) {
+            entry.count = 1;
+        } else {
+            entry.count = entry.count.saturating_add(1);
+        }
+        entry.last_attempt = now;
+    }
+
+    pub fn clear_auth_failure(&self, ip: IpAddr) {
+        self.failed_auth.lock().unwrap().remove(&ip);
     }
 
     /// Svc 25 `cmd 1` carrying the full tile map (base caps + helper overrides).
@@ -363,6 +460,10 @@ pub async fn serve(
 ) -> Result<()> {
     loop {
         let (tcp, peer) = listener.accept().await?;
+        if !daemon.allow_public() && !is_private_or_local(&peer.ip()) {
+            warn!(%peer, "rejecting control connection from non-LAN address (use --allow-public or SMARTCONNECT_ALLOW_PUBLIC=1 to override)");
+            continue;
+        }
         let daemon = daemon.clone();
         let acceptor = acceptor.clone();
         tokio::spawn(async move {
@@ -380,6 +481,10 @@ async fn handle(
     tcp: TcpStream,
     peer: SocketAddr,
 ) -> Result<()> {
+    if daemon.is_auth_rate_limited(peer.ip()) {
+        warn!(%peer, "reconnect rate-limited due to prior failed auth attempts; dropping connection");
+        return Ok(());
+    }
     info!(%peer, "TCP connection");
     // The PC address the phone reached us on: helpers offer WebRTC candidates on it only.
     let local_ip = tcp.local_addr().ok().map(|a| a.ip().to_string());
@@ -493,9 +598,12 @@ async fn handle(
     let token_ok = daemon.token_valid(hello.token.unwrap_or_default());
     // Accept a fresh pair (valid invite token) OR a reconnect from a device we've already paired.
     if !token_ok && !already_paired {
+        daemon.record_auth_failure(peer.ip());
         warn!(%peer, phone = %stable_id, "no valid invite token and not a known device; dropping");
         return Ok(());
     }
+
+    daemon.clear_auth_failure(peer.ip());
 
     let record =
         daemon
@@ -1012,5 +1120,126 @@ mod redact_tests {
         let mut sms = json!({ "serviceId": 100, "srcServiceId": 204, "data": { "cmd": 29, "data": [{ "body": "otp" }] } });
         redact(&mut sms);
         assert_eq!(sms["data"], json!({ "cmd": 29, "redacted": true }));
+    }
+
+    #[test]
+    fn test_is_private_or_local_ipv4() {
+        use std::str::FromStr;
+
+        // Loopback 127.0.0.0/8
+        assert!(is_private_or_local(&IpAddr::from_str("127.0.0.1").unwrap()));
+        assert!(is_private_or_local(
+            &IpAddr::from_str("127.255.255.254").unwrap()
+        ));
+
+        // RFC1918 10.0.0.0/8
+        assert!(is_private_or_local(&IpAddr::from_str("10.0.0.1").unwrap()));
+        assert!(is_private_or_local(
+            &IpAddr::from_str("10.254.1.2").unwrap()
+        ));
+
+        // RFC1918 172.16.0.0/12 (172.16 - 172.31)
+        assert!(is_private_or_local(
+            &IpAddr::from_str("172.16.0.1").unwrap()
+        ));
+        assert!(is_private_or_local(
+            &IpAddr::from_str("172.31.255.254").unwrap()
+        ));
+        assert!(!is_private_or_local(
+            &IpAddr::from_str("172.15.255.255").unwrap()
+        ));
+        assert!(!is_private_or_local(
+            &IpAddr::from_str("172.32.0.1").unwrap()
+        ));
+
+        // RFC1918 192.168.0.0/16
+        assert!(is_private_or_local(
+            &IpAddr::from_str("192.168.1.1").unwrap()
+        ));
+        assert!(is_private_or_local(
+            &IpAddr::from_str("192.168.254.254").unwrap()
+        ));
+        assert!(!is_private_or_local(
+            &IpAddr::from_str("192.167.1.1").unwrap()
+        ));
+        assert!(!is_private_or_local(
+            &IpAddr::from_str("192.169.1.1").unwrap()
+        ));
+
+        // Link-local 169.254.0.0/16
+        assert!(is_private_or_local(
+            &IpAddr::from_str("169.254.1.1").unwrap()
+        ));
+
+        // Public IPs
+        assert!(!is_private_or_local(&IpAddr::from_str("8.8.8.8").unwrap()));
+        assert!(!is_private_or_local(&IpAddr::from_str("1.1.1.1").unwrap()));
+        assert!(!is_private_or_local(
+            &IpAddr::from_str("142.250.190.46").unwrap()
+        ));
+    }
+
+    #[test]
+    fn test_is_private_or_local_ipv6() {
+        use std::str::FromStr;
+
+        // Loopback
+        assert!(is_private_or_local(&IpAddr::from_str("::1").unwrap()));
+
+        // Unique-local fc00::/7 (fc00... to fdff...)
+        assert!(is_private_or_local(&IpAddr::from_str("fc00::1").unwrap()));
+        assert!(is_private_or_local(
+            &IpAddr::from_str("fd12:3456:789a::1").unwrap()
+        ));
+
+        // Link-local fe80::/10
+        assert!(is_private_or_local(&IpAddr::from_str("fe80::1").unwrap()));
+
+        // Public IPv6
+        assert!(!is_private_or_local(
+            &IpAddr::from_str("2001:db8::1").unwrap()
+        ));
+        assert!(!is_private_or_local(
+            &IpAddr::from_str("2606:4700::1").unwrap()
+        ));
+
+        // IPv4-mapped IPv6
+        assert!(is_private_or_local(
+            &IpAddr::from_str("::ffff:192.168.1.1").unwrap()
+        ));
+        assert!(!is_private_or_local(
+            &IpAddr::from_str("::ffff:8.8.8.8").unwrap()
+        ));
+    }
+
+    #[test]
+    fn test_failed_auth_rate_limiting() {
+        let now = Instant::now();
+        let mut fa = FailedAuth {
+            count: 0,
+            last_attempt: now,
+        };
+
+        // Fewer than 3 failures has no penalty
+        assert_eq!(fa.penalty(), Duration::ZERO);
+        assert!(!fa.is_blocked(now));
+
+        fa.count = 2;
+        assert_eq!(fa.penalty(), Duration::ZERO);
+        assert!(!fa.is_blocked(now));
+
+        // 3 failures -> 500ms
+        fa.count = 3;
+        assert_eq!(fa.penalty(), Duration::from_millis(500));
+        assert!(fa.is_blocked(now + Duration::from_millis(200)));
+        assert!(!fa.is_blocked(now + Duration::from_millis(600)));
+
+        // 4 failures -> 1000ms
+        fa.count = 4;
+        assert_eq!(fa.penalty(), Duration::from_millis(1000));
+
+        // Exponential ceiling
+        fa.count = 100;
+        assert_eq!(fa.penalty(), Duration::from_millis(32000));
     }
 }

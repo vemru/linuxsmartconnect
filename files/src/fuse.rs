@@ -998,6 +998,7 @@ mod tests {
                     srv_pinned,
                     false,
                     false,
+                    false,
                 )
                 .unwrap();
                 tokio::spawn(srv.serve(listener));

@@ -20,6 +20,7 @@ use crate::icons::{IconSlot, Query};
 use crate::lastdevice::{self, LastDevice};
 use crate::lifecycle::{self, Daemon};
 use crate::mirror::{Exit, Mirror};
+use crate::prefs;
 use crate::tray;
 
 const SIGNAL_WORDS: [&str; 6] = ["None", "Very weak", "Weak", "Fair", "Good", "Excellent"];
@@ -167,6 +168,11 @@ struct PhonePage {
     cross_group: adw::PreferencesGroup,
     /// Opens the Cross Control page.
     cross: adw::ActionRow,
+    webcam_group: adw::PreferencesGroup,
+    webcam_row: adw::ActionRow,
+    webcam_start_btn: gtk::Button,
+    webcam_flip_btn: gtk::Button,
+    webcam_torch_btn: gtk::Button,
     notif_title: gtk::Label,
     clear_all: gtk::Button,
     notif_stack: gtk::Stack,
@@ -539,6 +545,39 @@ impl PhonePage {
         cross.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));
         cross_group.add(&cross);
 
+        // ── Webcam (compact row for phone as a PC webcam) ───────────
+        let webcam_group = adw::PreferencesGroup::builder().title("Webcam").build();
+        let webcam_row = adw::ActionRow::builder()
+            .title("Phone as webcam")
+            .subtitle("Use your phone's camera in video calls and desktop apps")
+            .build();
+        webcam_row.add_prefix(&gtk::Image::from_icon_name("camera-web-symbolic"));
+
+        let webcam_flip_btn = gtk::Button::builder()
+            .icon_name("camera-switch-symbolic")
+            .tooltip_text("Switch front and back camera")
+            .css_classes(["flat"])
+            .valign(gtk::Align::Center)
+            .visible(false)
+            .build();
+        let webcam_torch_btn = gtk::Button::builder()
+            .icon_name("weather-clear-symbolic")
+            .tooltip_text("Toggle phone light (torch)")
+            .css_classes(["flat"])
+            .valign(gtk::Align::Center)
+            .visible(false)
+            .build();
+        let webcam_start_btn = gtk::Button::builder()
+            .label("Start webcam")
+            .css_classes(["suggested-action"])
+            .valign(gtk::Align::Center)
+            .build();
+
+        webcam_row.add_suffix(&webcam_flip_btn);
+        webcam_row.add_suffix(&webcam_torch_btn);
+        webcam_row.add_suffix(&webcam_start_btn);
+        webcam_group.add(&webcam_row);
+
         // ── Notifications section (fills remaining space and scrolls internally) ──
         let notif_title = gtk::Label::builder()
             .label("Notifications")
@@ -626,6 +665,7 @@ impl PhonePage {
             .build();
         column.append(&hero);
         column.append(&cross_group);
+        column.append(&webcam_group);
         column.append(&notif_section);
 
         let clamp = adw::Clamp::builder()
@@ -653,6 +693,11 @@ impl PhonePage {
             pair,
             cross_group,
             cross,
+            webcam_group,
+            webcam_row,
+            webcam_start_btn,
+            webcam_flip_btn,
+            webcam_torch_btn,
             notif_title,
             clear_all,
             notif_stack,
@@ -1006,6 +1051,25 @@ impl Ui {
                 ui.open_preferences();
             }
         });
+        // Webcam buttons: Start/Stop, Switch Camera, Toggle Torch
+        let weak = Rc::downgrade(self);
+        self.phone.webcam_start_btn.connect_clicked(move |_| {
+            if let Some(ui) = weak.upgrade() {
+                ui.toggle_webcam();
+            }
+        });
+        let weak = Rc::downgrade(self);
+        self.phone.webcam_flip_btn.connect_clicked(move |_| {
+            if let Some(ui) = weak.upgrade() {
+                ui.flip_webcam();
+            }
+        });
+        let weak = Rc::downgrade(self);
+        self.phone.webcam_torch_btn.connect_clicked(move |_| {
+            if let Some(ui) = weak.upgrade() {
+                ui.toggle_webcam_torch();
+            }
+        });
         // Pair dialog's "New code" asks for a fresh QR.
         let weak = Rc::downgrade(self);
         self.pair.button.connect_clicked(move |_| {
@@ -1060,6 +1124,17 @@ impl Ui {
             }
             glib::ControlFlow::Continue
         });
+        // Keep webcam session status in sync (e.g. if started on the phone or in a terminal).
+        let weak = Rc::downgrade(self);
+        glib::timeout_add_seconds_local(1, move || {
+            let Some(ui) = weak.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
+            if ui.state.borrow().status.is_some() {
+                ui.refresh_webcam_status();
+            }
+            glib::ControlFlow::Continue
+        });
     }
 
     /// "Start service" (the not-running page or the device menu): the same path as opening the app —
@@ -1109,6 +1184,14 @@ impl Ui {
                     tray::Command::Connect => ui.tray_connect(true),
                     tray::Command::Disconnect => ui.tray_connect(false),
                     tray::Command::Quit => ui.quit(),
+                    tray::Command::WebcamToggleMirror => ui.tray_toggle_mirror(),
+                    tray::Command::WebcamToggleFlipV => ui.tray_toggle_flip_v(),
+                    tray::Command::WebcamSetBrightness(b) => ui.tray_set_brightness(b),
+                    tray::Command::WebcamSetContrast(c) => ui.tray_set_contrast(c),
+                    tray::Command::WebcamSetQuality(q) => ui.tray_set_quality(q),
+                    tray::Command::WebcamSwitchCamera => ui.flip_webcam(),
+                    tray::Command::WebcamToggleTorch => ui.toggle_webcam_torch(),
+                    tray::Command::WebcamStop => ui.toggle_webcam(),
                 }
             }
         });
@@ -1161,6 +1244,82 @@ impl Ui {
         group.add(&start_at_login);
         let page = adw::PreferencesPage::new();
         page.add(&group);
+
+        // Webcam Preferences
+        let webcam_group = adw::PreferencesGroup::builder()
+            .title("Webcam")
+            .description("Phone camera as a PC webcam (service 3)")
+            .build();
+
+        let current_quality = prefs::load().webcam.quality;
+        let quality_model = gtk::StringList::new(&[
+            "Low · 1.5 Mbit/s",
+            "Medium · 4 Mbit/s",
+            "High · 8 Mbit/s (default)",
+            "Max · 15 Mbit/s",
+        ]);
+        let quality_idx = match current_quality.as_str() {
+            "low" => 0,
+            "medium" => 1,
+            "max" => 3,
+            _ => 2,
+        };
+        let quality_row = adw::ComboRow::builder()
+            .title("Streaming quality")
+            .subtitle("Maximum H.264 bitrate requested from the phone encoder")
+            .model(&quality_model)
+            .selected(quality_idx)
+            .build();
+
+        let weak = Rc::downgrade(self);
+        quality_row.connect_selected_notify(move |row| {
+            let Some(ui) = weak.upgrade() else { return };
+            let q = match row.selected() {
+                0 => "low",
+                1 => "medium",
+                3 => "max",
+                _ => "high",
+            };
+            let mut p = prefs::load();
+            p.webcam.quality = q.to_owned();
+            if let Err(e) = prefs::save(&p) {
+                ui.toast(&format!("Could not save webcam quality: {e}"));
+            } else {
+                ui.toast(&format!("Webcam quality set to {q}"));
+            }
+        });
+        webcam_group.add(&quality_row);
+
+        let output_info = crate::webcam::loopback_device_info();
+        let output_sub = match &output_info {
+            Some(dev) => format!("v4l2loopback virtual device active: {dev}"),
+            None => "PipeWire camera node (install v4l2loopback for web browsers & Google Meet)"
+                .to_owned(),
+        };
+        let output_row = adw::ActionRow::builder()
+            .title("Output device")
+            .subtitle(&output_sub)
+            .build();
+        output_row.add_prefix(&gtk::Image::from_icon_name("camera-web-symbolic"));
+        if output_info.is_none() {
+            let copy_btn = gtk::Button::builder()
+                .icon_name("edit-copy-symbolic")
+                .tooltip_text("Copy setup command: sudo packaging/setup-v4l2loopback.sh")
+                .css_classes(["flat"])
+                .valign(gtk::Align::Center)
+                .build();
+            let ui = Rc::clone(self);
+            copy_btn.connect_clicked(move |b| {
+                b.clipboard()
+                    .set_text("sudo packaging/setup-v4l2loopback.sh");
+                ui.toast("Copied setup command to clipboard");
+            });
+            output_row.add_suffix(&copy_btn);
+        }
+        webcam_group.add(&output_row);
+
+        page.add(&webcam_group);
+
         let dialog = adw::PreferencesDialog::new();
         dialog.add(&page);
         dialog.present(Some(&self.window));
@@ -1215,13 +1374,51 @@ impl Ui {
         }
     }
 
-    /// Pushes the current state, window visibility and the device line to the tray.
+    /// Pushes the current state, window visibility, device line and webcam state to the tray.
     fn refresh_tray(&self) {
         let state = self.tray_state();
         let visible = self.window.is_visible();
         let detail = self.tray_detail();
+        let webcam_state = if crate::webcam::is_running() {
+            let prefs = crate::prefs::load().webcam;
+            let st = crate::webcam::get_status();
+            let size = if let Some(ref s) = st {
+                s.size.clone()
+            } else {
+                "1280x720".into()
+            };
+            let (mirror, flip_v, b_pct, c_pct, quality) = if let Some(ref s) = st {
+                (
+                    s.mirror,
+                    s.flip_v,
+                    (s.brightness * 100.0).round() as i32,
+                    (s.contrast * 100.0).round() as i32,
+                    s.quality.clone(),
+                )
+            } else {
+                (
+                    prefs.mirror,
+                    prefs.flip_vertical,
+                    (prefs.brightness * 100.0).round() as i32,
+                    (prefs.contrast * 100.0).round() as i32,
+                    prefs.quality.clone(),
+                )
+            };
+            Some(tray::WebcamTrayState {
+                active: true,
+                quality,
+                mirror,
+                flip_v,
+                brightness: b_pct,
+                contrast: c_pct,
+                fps: 0.0,
+                size,
+            })
+        } else {
+            None
+        };
         if let Some(tray) = self.tray.borrow().as_ref() {
-            tray.set(state, visible, detail);
+            tray.set(state, visible, detail, webcam_state);
         }
     }
 
@@ -1531,6 +1728,8 @@ impl Ui {
         // Cross Control stays visible for a paired phone (its page says when to connect).
         p.cross_group.set_visible(s.paired);
 
+        self.refresh_webcam_status();
+
         // Device menu button + popover.
         let d = &self.device;
         d.label.set_label(&display_name);
@@ -1820,6 +2019,178 @@ impl Ui {
                 }
             }
         });
+    }
+
+    fn toggle_webcam(self: &Rc<Self>) {
+        let is_running = crate::webcam::is_running();
+        let weak = Rc::downgrade(self);
+        if is_running {
+            glib::spawn_future_local(async move {
+                let res = gio::spawn_blocking(crate::webcam::stop).await;
+                let Some(ui) = weak.upgrade() else { return };
+                if let Ok(Err(e)) = res {
+                    ui.toast(&format!("Could not stop webcam: {e}"));
+                }
+                ui.refresh_webcam_status();
+            });
+        } else {
+            let quality = {
+                let p = prefs::load();
+                p.webcam.quality
+            };
+            glib::spawn_future_local(async move {
+                let res = gio::spawn_blocking(move || crate::webcam::start(Some(&quality))).await;
+                let Some(ui) = weak.upgrade() else { return };
+                match res {
+                    Ok(Ok(())) => {
+                        ui.toast("Webcam started (virtual camera available to apps)");
+                    }
+                    Ok(Err(e)) => {
+                        ui.toast(&format!("Could not start webcam: {e}"));
+                    }
+                    Err(_) => {
+                        ui.toast("Webcam worker task failed");
+                    }
+                }
+                ui.refresh_webcam_status();
+            });
+        }
+    }
+
+    fn flip_webcam(self: &Rc<Self>) {
+        let weak = Rc::downgrade(self);
+        glib::spawn_future_local(async move {
+            let res = gio::spawn_blocking(crate::webcam::switch_camera).await;
+            let Some(ui) = weak.upgrade() else { return };
+            if let Ok(Err(e)) = res {
+                ui.toast(&format!("Could not switch camera: {e}"));
+            }
+        });
+    }
+
+    fn toggle_webcam_torch(self: &Rc<Self>) {
+        let weak = Rc::downgrade(self);
+        glib::spawn_future_local(async move {
+            let res = gio::spawn_blocking(crate::webcam::toggle_torch).await;
+            let Some(ui) = weak.upgrade() else { return };
+            if let Ok(Err(e)) = res {
+                ui.toast(&format!("Could not toggle torch: {e}"));
+            }
+        });
+    }
+
+    fn tray_toggle_mirror(self: &Rc<Self>) {
+        let weak = Rc::downgrade(self);
+        glib::spawn_future_local(async move {
+            let res = gio::spawn_blocking(crate::webcam::toggle_mirror).await;
+            let Some(ui) = weak.upgrade() else { return };
+            match res {
+                Ok(Ok(m)) => ui.toast(if m {
+                    "Webcam stream mirrored"
+                } else {
+                    "Webcam mirror disabled"
+                }),
+                Ok(Err(e)) => ui.toast(&format!("Could not toggle mirror: {e}")),
+                Err(_) => ui.toast("Webcam worker task failed"),
+            }
+            ui.refresh_tray();
+        });
+    }
+
+    fn tray_toggle_flip_v(self: &Rc<Self>) {
+        let weak = Rc::downgrade(self);
+        glib::spawn_future_local(async move {
+            let res = gio::spawn_blocking(crate::webcam::toggle_flip_v).await;
+            let Some(ui) = weak.upgrade() else { return };
+            match res {
+                Ok(Ok(v)) => ui.toast(if v {
+                    "Webcam flipped vertically"
+                } else {
+                    "Webcam vertical flip disabled"
+                }),
+                Ok(Err(e)) => ui.toast(&format!("Could not toggle vertical flip: {e}")),
+                Err(_) => ui.toast("Webcam worker task failed"),
+            }
+            ui.refresh_tray();
+        });
+    }
+
+    fn tray_set_brightness(self: &Rc<Self>, val: i32) {
+        let weak = Rc::downgrade(self);
+        glib::spawn_future_local(async move {
+            let res = gio::spawn_blocking(move || crate::webcam::set_brightness(val)).await;
+            let Some(ui) = weak.upgrade() else { return };
+            match res {
+                Ok(Ok(())) => ui.toast(&format!("Webcam brightness: {val:+}%")),
+                Ok(Err(e)) => ui.toast(&format!("Could not set brightness: {e}")),
+                Err(_) => ui.toast("Webcam worker task failed"),
+            }
+            ui.refresh_tray();
+        });
+    }
+
+    fn tray_set_contrast(self: &Rc<Self>, val: i32) {
+        let weak = Rc::downgrade(self);
+        glib::spawn_future_local(async move {
+            let res = gio::spawn_blocking(move || crate::webcam::set_contrast(val)).await;
+            let Some(ui) = weak.upgrade() else { return };
+            match res {
+                Ok(Ok(())) => ui.toast(&format!("Webcam contrast: {val}%")),
+                Ok(Err(e)) => ui.toast(&format!("Could not set contrast: {e}")),
+                Err(_) => ui.toast("Webcam worker task failed"),
+            }
+            ui.refresh_tray();
+        });
+    }
+
+    fn tray_set_quality(self: &Rc<Self>, q: String) {
+        let weak = Rc::downgrade(self);
+        glib::spawn_future_local(async move {
+            let q_clone = q.clone();
+            let res = gio::spawn_blocking(move || crate::webcam::set_quality(&q_clone)).await;
+            let Some(ui) = weak.upgrade() else { return };
+            match res {
+                Ok(Ok(())) => ui.toast(&format!("Webcam quality set to {q}")),
+                Ok(Err(e)) => ui.toast(&format!("Could not set quality: {e}")),
+                Err(_) => ui.toast("Webcam worker task failed"),
+            }
+            ui.refresh_tray();
+        });
+    }
+
+    fn refresh_webcam_status(&self) {
+        let s_connected = self
+            .state
+            .borrow()
+            .status
+            .as_ref()
+            .is_some_and(|s| s.connected);
+        let p = &self.phone;
+        p.webcam_group.set_visible(true);
+        let running = crate::webcam::is_running();
+        if running {
+            p.webcam_row.set_subtitle("Camera stream active");
+            p.webcam_start_btn.set_label("Stop webcam");
+            p.webcam_start_btn.remove_css_class("suggested-action");
+            p.webcam_start_btn.add_css_class("destructive-action");
+            p.webcam_start_btn.set_sensitive(true);
+            p.webcam_flip_btn.set_visible(true);
+            p.webcam_torch_btn.set_visible(true);
+        } else {
+            let info = crate::webcam::loopback_device_info();
+            let desc = match info {
+                Some(dev) => format!("Idle · v4l2loopback {dev}"),
+                None => "Idle · PipeWire camera node".to_owned(),
+            };
+            p.webcam_row.set_subtitle(&desc);
+            p.webcam_start_btn.set_label("Start webcam");
+            p.webcam_start_btn.remove_css_class("destructive-action");
+            p.webcam_start_btn.add_css_class("suggested-action");
+            p.webcam_start_btn.set_sensitive(s_connected);
+            p.webcam_flip_btn.set_visible(false);
+            p.webcam_torch_btn.set_visible(false);
+        }
+        self.refresh_tray();
     }
 
     // ── Notifications section (inside Phone page) ───────────────────────────

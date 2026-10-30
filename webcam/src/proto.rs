@@ -20,6 +20,8 @@ pub const CMD_SWITCH_CAMERA: i64 = 4;
 pub const CMD_CAMERA_STATUS: i64 = 5;
 pub const CMD_TOGGLE_TORCH: i64 = 7;
 pub const CMD_ZOOM: i64 = 9;
+pub const CMD_PAUSE: i64 = 11;
+pub const CMD_RESUME: i64 = 12;
 pub const CMD_HEARTBEAT: i64 = 13;
 pub const CMD_WEBRTC_ANSWER: i64 = 17;
 pub const CMD_WEBRTC_CANDIDATE: i64 = 18;
@@ -67,6 +69,14 @@ pub fn start() -> Value {
 
 pub fn stop() -> Value {
     msg(CMD_STOP, None)
+}
+
+pub fn pause() -> Value {
+    msg(CMD_PAUSE, None)
+}
+
+pub fn resume(port: i64) -> Value {
+    msg(CMD_RESUME, Some(json!({ "port": port })))
 }
 
 /// The phone tears the session down when it hears nothing for 30 s.
@@ -351,6 +361,21 @@ impl Quality {
             Self::Max => (2500, 8000, 15000),
         }
     }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::Max => "max",
+        }
+    }
+}
+
+impl std::fmt::Display for Quality {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
 }
 
 /// Our answer with the quality's bitrates for the phone's encoder: `b=AS` (max, kbps) in the video
@@ -487,6 +512,10 @@ a=mid:0\r\na=rtpmap:127 H264/90000\r\na=fmtp:127 packetization-mode=1;profile-le
         assert!(!pc_request().to_string().contains("isReply"));
         assert!(start()["data"]["port"].as_i64().is_some());
         assert_eq!(stop(), json!({"ver":"1","cmd":2}));
+        assert_eq!(pause(), json!({"ver":"1","cmd":11}));
+        let res = resume(PORT);
+        assert_eq!(res["cmd"], 12);
+        assert_eq!(res["data"]["port"], PORT);
         let a = answer(7, "v=0");
         let inner: Value = serde_json::from_str(a["data"]["webRTCData"].as_str().unwrap()).unwrap();
         assert_eq!(inner, json!({"type":"answer","sdp":"v=0"}));

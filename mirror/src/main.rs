@@ -2018,6 +2018,29 @@ fn serve_control(tx: mpsc::Sender<Ev>) -> Result<()> {
     let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
     std::thread::spawn(move || {
         for conn in listener.incoming().map_while(Result::ok) {
+            use std::os::fd::AsRawFd;
+            let fd = conn.as_raw_fd();
+            let mut ucred = libc::ucred {
+                pid: 0,
+                uid: 0,
+                gid: 0,
+            };
+            let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+            let cred_ok = unsafe {
+                libc::getsockopt(
+                    fd,
+                    libc::SOL_SOCKET,
+                    libc::SO_PEERCRED,
+                    &mut ucred as *mut _ as *mut libc::c_void,
+                    &mut len,
+                ) == 0
+                    && ucred.uid == libc::geteuid()
+            };
+            if !cred_ok {
+                eprintln!("mirror-ctl: refusing connection from untrusted UID");
+                continue;
+            }
+
             let tx = tx.clone();
             std::thread::spawn(move || {
                 let Ok(mut w) = conn.try_clone() else { return };

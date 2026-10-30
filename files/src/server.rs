@@ -119,6 +119,37 @@ fn server_config(id: &Identity, pinned: PinnedFps) -> Result<Arc<ServerConfig>> 
     Ok(Arc::new(config))
 }
 
+/// Whether an IP is strictly local/private (IPv4 loopback 127.0.0.0/8, RFC1918 10.0.0.0/8,
+/// 172.16.0.0/12, 192.168.0.0/16, link-local 169.254.0.0/16, IPv6 loopback ::1,
+/// unique-local fc00::/7, or link-local fe80::/10).
+pub fn is_private_or_local(ip: &std::net::IpAddr) -> bool {
+    let canonical = ip.to_canonical();
+    match canonical {
+        std::net::IpAddr::V4(v4) => {
+            let o = v4.octets();
+            // Loopback: 127.0.0.0/8
+            o[0] == 127
+                // RFC1918 10.0.0.0/8
+                || o[0] == 10
+                // RFC1918 172.16.0.0/12 (172.16.0.0 .. 172.31.255.255)
+                || (o[0] == 172 && (16..=31).contains(&o[1]))
+                // RFC1918 192.168.0.0/16
+                || (o[0] == 192 && o[1] == 168)
+                // Link-local: 169.254.0.0/16
+                || (o[0] == 169 && o[1] == 254)
+        }
+        std::net::IpAddr::V6(v6) => {
+            let o = v6.octets();
+            // Loopback ::1
+            v6.is_loopback()
+                // Unique-local: fc00::/7 (0xfc or 0xfd)
+                || (o[0] & 0xfe) == 0xfc
+                // Link-local: fe80::/10 (1111 1110 10xx xxxx)
+                || (o[0] == 0xfe && (o[1] & 0xc0) == 0x80)
+        }
+    }
+}
+
 /// A bound, ready-to-run PC→phone NFS-over-TLS server.
 pub struct NfsServer {
     acceptor: TlsAcceptor,
@@ -128,6 +159,8 @@ pub struct NfsServer {
     export_label: String,
     /// Let the phone move files to the Trash (Lenovo `REMOVEBATCH`); otherwise fully read-only.
     allow_delete: bool,
+    /// Allow connections from public/non-LAN IPs (by default, non-private IPs are dropped).
+    pub allow_public: bool,
 }
 
 impl NfsServer {
@@ -142,6 +175,7 @@ impl NfsServer {
         pinned: PinnedFps,
         show_hidden: bool,
         allow_delete: bool,
+        allow_public: bool,
     ) -> Result<Self> {
         let fs = LocalFs::new(share_dir)
             .context("opening the shared directory")?
@@ -154,6 +188,7 @@ impl NfsServer {
             fs,
             export_label,
             allow_delete,
+            allow_public,
         })
     }
 
@@ -171,6 +206,10 @@ impl NfsServer {
                 .accept()
                 .await
                 .context("accepting a TLS connection")?;
+            if !self.allow_public && !is_private_or_local(&peer.ip()) {
+                warn!(%peer, "rejecting NFS connection from non-LAN address (use --allow-public or SMARTCONNECT_ALLOW_PUBLIC=1 to override)");
+                continue;
+            }
             let _ = tcp.set_nodelay(true);
             let acceptor = self.acceptor.clone();
             let ctx = base.clone();
@@ -443,6 +482,7 @@ mod tests {
             pinned,
             false,
             false,
+            false,
         )
         .unwrap();
         tokio::spawn(srv.serve(listener));
@@ -524,6 +564,7 @@ mod tests {
             pinned,
             false,
             false,
+            false,
         )
         .unwrap();
         tokio::spawn(srv.serve(listener));
@@ -540,5 +581,33 @@ mod tests {
             res.is_err(),
             "an unpinned client certificate must be refused"
         );
+    }
+
+    #[test]
+    fn test_nfs_is_private_or_local() {
+        use super::is_private_or_local;
+        use std::net::IpAddr;
+        use std::str::FromStr;
+
+        assert!(is_private_or_local(&IpAddr::from_str("127.0.0.1").unwrap()));
+        assert!(is_private_or_local(
+            &IpAddr::from_str("192.168.1.1").unwrap()
+        ));
+        assert!(is_private_or_local(&IpAddr::from_str("10.0.0.1").unwrap()));
+        assert!(is_private_or_local(
+            &IpAddr::from_str("172.16.0.1").unwrap()
+        ));
+        assert!(is_private_or_local(
+            &IpAddr::from_str("169.254.1.1").unwrap()
+        ));
+        assert!(is_private_or_local(&IpAddr::from_str("::1").unwrap()));
+        assert!(is_private_or_local(&IpAddr::from_str("fc00::1").unwrap()));
+        assert!(is_private_or_local(&IpAddr::from_str("fe80::1").unwrap()));
+
+        assert!(!is_private_or_local(&IpAddr::from_str("8.8.8.8").unwrap()));
+        assert!(!is_private_or_local(&IpAddr::from_str("1.1.1.1").unwrap()));
+        assert!(!is_private_or_local(
+            &IpAddr::from_str("2001:db8::1").unwrap()
+        ));
     }
 }

@@ -477,19 +477,45 @@ instead of vkms: pass its connector name, as in `--output HDMI-A-1`.
 
 ### v4l2loopback, for the phone as a webcam
 
-Without a loopback device the webcam helper offers a PipeWire camera instead, which only PipeWire-aware apps see. For a camera every app sees:
+Without a loopback device the webcam helper offers a PipeWire camera node instead. While some apps (OBS, Firefox) can consume PipeWire cameras, web browsers (Chromium, Google Chrome) and video meeting services (Google Meet, Zoom, Teams) strictly require a standard V4L2 device node with `exclusive_caps=1` to list the camera in their dropdowns.
+
+You can run the automated setup helper in this repository:
 
 ```sh
-sudo pacman -S --needed v4l2loopback-dkms linux-headers    # or your distribution's v4l2loopback package
-sudo modprobe v4l2loopback devices=1 video_nr=10 card_label="Phone Camera" exclusive_caps=1
+sudo ./packaging/setup-v4l2loopback.sh
+```
 
-# load it at every boot with the same options
+Or configure it manually for your distribution:
+
+**Fedora / RHEL:**
+```sh
+sudo dnf install akmod-v4l2loopback kernel-devel
+sudo modprobe v4l2loopback devices=1 video_nr=10 card_label="Phone Camera" exclusive_caps=1
+```
+
+**Arch Linux:**
+```sh
+sudo pacman -S --needed v4l2loopback-dkms linux-headers
+sudo modprobe v4l2loopback devices=1 video_nr=10 card_label="Phone Camera" exclusive_caps=1
+```
+
+**Debian / Ubuntu:**
+```sh
+sudo apt install v4l2loopback-dkms "linux-headers-$(uname -r)"
+sudo modprobe v4l2loopback devices=1 video_nr=10 card_label="Phone Camera" exclusive_caps=1
+```
+
+**Load at every boot:**
+```sh
 echo v4l2loopback | sudo tee /etc/modules-load.d/v4l2loopback.conf
 echo 'options v4l2loopback devices=1 video_nr=10 card_label="Phone Camera" exclusive_caps=1' \
   | sudo tee /etc/modprobe.d/v4l2loopback.conf
 ```
 
-`smartconnect-webcam --check` shows which output it would use, and prints the same setup hint.
+> [!IMPORTANT]
+> The `exclusive_caps=1` parameter is essential: without it, Chromium/Google Chrome and WebRTC (Google Meet) ignore the virtual device because it advertises both capture and output capabilities. With `exclusive_caps=1`, Chrome detects it as a standard webcam.
+
+`smartconnect-webcam --check` shows which output it would use, and prints the current status.
 
 ## Updating and uninstalling
 

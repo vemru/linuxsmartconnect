@@ -19,7 +19,8 @@ use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Seek, Write};
 use std::net::Ipv4Addr;
 use std::os::fd::AsRawFd;
-use std::os::unix::net::UnixStream;
+use std::os::unix::fs::PermissionsExt;
+use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc;
@@ -28,6 +29,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
 use gst::prelude::*;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use output::Output;
@@ -35,7 +37,9 @@ use proto::Phone;
 
 const USAGE: &str =
     "usage: smartconnect-webcam [--start | --stop | --check | --test-pattern [SECONDS]
-                           | --switch-camera | --torch | --zoom N | --cameras]
+                           | --switch-camera | --torch | --zoom N | --cameras
+                           | --pause | --resume | --mirror [on|off] | --flip-v [on|off]
+                           | --brightness N | --contrast N | --status]
                            [--output auto|v4l2|pipewire|none] [--device /dev/videoN] [--size WxH]
                            [--quality low|medium|high|max]
   --start (default)  ask the phone to start its camera and serve it as a webcam until stopped
@@ -46,6 +50,10 @@ const USAGE: &str =
   --test-pattern [S] feed a test pattern to the output for S seconds (default 10), no phone needed
   --switch-camera    front <-> back camera        --torch     toggle the phone's light
   --zoom N           zoom level (0 = none)        --cameras   ask the phone for its camera state
+  --pause            pause camera stream          --resume    resume camera stream
+  --mirror [on|off]  flip stream horizontally     --flip-v    flip stream vertically
+  --brightness N     brightness (-1.0 to 1.0)     --contrast  contrast (0.0 to 2.0)
+  --status           show live status of webcam session and effects
   --output           auto (default): v4l2loopback when present, else PipeWire; none = decode only
   --quality          encoder bitrate the phone may use: low 1.5, medium 4, high 8 (default),
                      max 15 Mbit/s. The phone always sends 1280x720 at 30 fps in this mode.
@@ -81,6 +89,240 @@ fn runtime_dir() -> PathBuf {
 
 fn daemon_socket() -> PathBuf {
     runtime_dir().join("smartconnectd.sock")
+}
+
+fn ctl_socket_path() -> PathBuf {
+    runtime_dir().join("smartconnect-webcam-ctl.sock")
+}
+
+fn config_dir() -> PathBuf {
+    if let Some(dir) = std::env::var_os("XDG_CONFIG_HOME").filter(|v| !v.is_empty()) {
+        return PathBuf::from(dir).join("smartconnect-linux");
+    }
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_default()
+        .join(".config/smartconnect-linux")
+}
+
+fn webcam_prefs_path() -> PathBuf {
+    config_dir().join("webcam.json")
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct WebcamEffects {
+    pub mirror: bool,
+    pub flip_vertical: bool,
+    pub brightness: f64,
+    pub contrast: f64,
+}
+
+impl Default for WebcamEffects {
+    fn default() -> Self {
+        Self {
+            mirror: false,
+            flip_vertical: false,
+            brightness: 0.0,
+            contrast: 1.0,
+        }
+    }
+}
+
+fn load_prefs() -> (String, WebcamEffects) {
+    let p = webcam_prefs_path();
+    let Ok(data) = std::fs::read_to_string(&p) else {
+        return ("high".into(), WebcamEffects::default());
+    };
+    let val: Value = serde_json::from_str(&data).unwrap_or_default();
+    let quality = val
+        .get("quality")
+        .and_then(|v| v.as_str())
+        .unwrap_or("high")
+        .to_string();
+    let fx: WebcamEffects = serde_json::from_value(val).unwrap_or_default();
+    (quality, fx)
+}
+
+fn save_prefs(quality: &str, fx: WebcamEffects) {
+    let p = webcam_prefs_path();
+    if let Some(parent) = p.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let val = json!({
+        "quality": quality,
+        "mirror": fx.mirror,
+        "flipVertical": fx.flip_vertical,
+        "brightness": fx.brightness,
+        "contrast": fx.contrast,
+    });
+    let _ = std::fs::write(&p, val.to_string());
+}
+
+fn apply_effects(bin: &gst::Bin, fx: WebcamEffects) {
+    if let Some(flip) = bin.by_name("flip") {
+        let dir = match (fx.mirror, fx.flip_vertical) {
+            (false, false) => "identity",
+            (true, false) => "horiz",
+            (false, true) => "vert",
+            (true, true) => "180",
+        };
+        flip.set_property_from_str("video-direction", dir);
+    }
+    if let Some(balance) = bin.by_name("balance") {
+        balance.set_property("brightness", fx.brightness.clamp(-1.0, 1.0));
+        balance.set_property("contrast", fx.contrast.clamp(0.0, 2.0));
+    }
+}
+
+fn send_ctl_cmd(req: Value) -> Result<Value> {
+    let sock = ctl_socket_path();
+    let mut stream = UnixStream::connect(&sock)?;
+    writeln!(stream, "{req}")?;
+    let mut line = String::new();
+    BufReader::new(stream).read_line(&mut line)?;
+    Ok(serde_json::from_str(&line)?)
+}
+
+fn spawn_ctl_server(
+    active_bin: Arc<Mutex<Option<gst::Bin>>>,
+    fx: Arc<Mutex<WebcamEffects>>,
+    quality: Arc<Mutex<String>>,
+    stats: Arc<Stats>,
+    daemon: Arc<Daemon>,
+) -> Result<()> {
+    let sock = ctl_socket_path();
+    let _ = std::fs::remove_file(&sock);
+    if let Some(p) = sock.parent() {
+        let _ = std::fs::create_dir_all(p);
+        let _ = std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o700));
+    }
+    let listener = UnixListener::bind(&sock)?;
+    let _ = std::fs::set_permissions(&sock, std::fs::Permissions::from_mode(0o600));
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            // Verify peer credentials (SO_PEERCRED)
+            let fd = stream.as_raw_fd();
+            let mut ucred = libc::ucred {
+                pid: 0,
+                uid: 0,
+                gid: 0,
+            };
+            let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+            let cred_ok = unsafe {
+                libc::getsockopt(
+                    fd,
+                    libc::SOL_SOCKET,
+                    libc::SO_PEERCRED,
+                    &mut ucred as *mut _ as *mut libc::c_void,
+                    &mut len,
+                ) == 0
+                    && ucred.uid == libc::geteuid()
+            };
+            if !cred_ok {
+                eprintln!("webcam-ctl: refusing connection from untrusted UID");
+                continue;
+            }
+
+            let mut reader = BufReader::new(&stream);
+            let mut line = String::new();
+            if reader.read_line(&mut line).is_ok() {
+                let req: Value = serde_json::from_str(&line).unwrap_or_default();
+                let cmd = req.get("cmd").and_then(Value::as_str).unwrap_or("");
+                let mut reply = json!({ "ok": true });
+                match cmd {
+                    "get_status" => {
+                        let cur_fx = *fx.lock().unwrap();
+                        let cur_q = quality.lock().unwrap().clone();
+                        let size = stats
+                            .size
+                            .lock()
+                            .unwrap()
+                            .map(|(w, h)| format!("{w}x{h}"))
+                            .unwrap_or_else(|| "1280x720".into());
+                        let total = stats.frames.load(Ordering::Relaxed);
+                        reply = json!({
+                            "ok": true,
+                            "active": true,
+                            "quality": cur_q,
+                            "size": size,
+                            "frames": total,
+                            "mirror": cur_fx.mirror,
+                            "flipVertical": cur_fx.flip_vertical,
+                            "brightness": cur_fx.brightness,
+                            "contrast": cur_fx.contrast,
+                        });
+                    }
+                    "set_effects" => {
+                        let mut cur_fx = fx.lock().unwrap();
+                        if let Some(m) = req.get("mirror").and_then(Value::as_bool) {
+                            cur_fx.mirror = m;
+                        }
+                        if let Some(fv) = req.get("flipVertical").and_then(Value::as_bool) {
+                            cur_fx.flip_vertical = fv;
+                        }
+                        if let Some(b) = req
+                            .get("brightness")
+                            .and_then(Value::as_f64)
+                            .filter(|v| v.is_finite())
+                        {
+                            cur_fx.brightness = b.clamp(-1.0, 1.0);
+                        }
+                        if let Some(c) = req
+                            .get("contrast")
+                            .and_then(Value::as_f64)
+                            .filter(|v| v.is_finite())
+                        {
+                            cur_fx.contrast = c.clamp(0.0, 2.0);
+                        }
+                        if let Some(ref bin) = *active_bin.lock().unwrap() {
+                            apply_effects(bin, *cur_fx);
+                        }
+                        let cur_q = quality.lock().unwrap().clone();
+                        save_prefs(&cur_q, *cur_fx);
+                        reply = json!({
+                            "ok": true,
+                            "mirror": cur_fx.mirror,
+                            "flipVertical": cur_fx.flip_vertical,
+                            "brightness": cur_fx.brightness,
+                            "contrast": cur_fx.contrast,
+                        });
+                    }
+                    "set_quality" => {
+                        if let Some(q) = req.get("quality").and_then(Value::as_str) {
+                            if proto::Quality::parse(q).is_some() {
+                                *quality.lock().unwrap() = q.to_string();
+                                let cur_fx = *fx.lock().unwrap();
+                                save_prefs(q, cur_fx);
+                                reply = json!({ "ok": true });
+                            } else {
+                                reply = json!({ "ok": false, "error": "invalid quality" });
+                            }
+                        }
+                    }
+                    "switch_camera" => {
+                        daemon.send(proto::camera_command(proto::CMD_SWITCH_CAMERA, None));
+                        reply = json!({ "ok": true });
+                    }
+                    "toggle_torch" => {
+                        daemon.send(proto::camera_command(proto::CMD_TOGGLE_TORCH, None));
+                        reply = json!({ "ok": true });
+                    }
+                    "stop" => {
+                        STOP.store(true, Ordering::SeqCst);
+                        reply = json!({ "ok": true });
+                    }
+                    _ => {
+                        reply = json!({ "ok": false, "error": "unknown command" });
+                    }
+                }
+                let mut resp_stream = &stream;
+                let _ = writeln!(resp_stream, "{reply}");
+            }
+        }
+        let _ = std::fs::remove_file(ctl_socket_path());
+    });
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -207,30 +449,72 @@ fn running_pid() -> Option<i32> {
 // ---------------------------------------------------------------------------------------------
 // GStreamer output chain (shared by the phone stream and the test pattern)
 
-fn pick_decoder() -> String {
-    if let Ok(d) = std::env::var("SMARTCONNECT_WEBCAM_DECODER") {
-        return d;
+fn pick_decoder_from(override_dec: Option<&str>) -> String {
+    let ok = |n: &str| gst::ElementFactory::make(n).build().is_ok();
+    if let Some(d) = override_dec {
+        match d {
+            "cpu" => return "avdec_h264 thread-type=slice max-threads=4".into(),
+            "nvdec" | "nvidia" => {
+                if ok("nvh264dec") && ok("cudadownload") {
+                    return "nvh264dec ! cudadownload".into();
+                } else {
+                    eprintln!(
+                        "nvdec requested but nvh264dec/cudadownload failed instantiation; falling back to avdec_h264"
+                    );
+                    return "avdec_h264 thread-type=slice max-threads=4".into();
+                }
+            }
+            "vaapi" => {
+                if ok("vah264dec") {
+                    return "vah264dec".into();
+                } else if ok("vaapih264dec") {
+                    return "vaapih264dec".into();
+                } else {
+                    eprintln!(
+                        "vaapi requested but vah264dec/vaapih264dec failed instantiation; falling back to avdec_h264"
+                    );
+                    return "avdec_h264 thread-type=slice max-threads=4".into();
+                }
+            }
+            _ => return d.into(),
+        }
     }
-    if gst::ElementFactory::find("vah264dec").is_some() {
+    if ok("vah264dec") {
         "vah264dec".into()
+    } else if ok("vaapih264dec") {
+        "vaapih264dec".into()
+    } else if ok("nvh264dec") && ok("cudadownload") {
+        "nvh264dec ! cudadownload".into()
     } else {
-        "avdec_h264".into()
+        "avdec_h264 thread-type=slice max-threads=4".into()
     }
+}
+
+fn pick_decoder() -> String {
+    let env_d = std::env::var("SMARTCONNECT_WEBCAM_DECODER").ok();
+    pick_decoder_from(env_d.as_deref())
 }
 
 /// Raw video → fixed size/format/rate (the phone may rotate or change size; a v4l2loopback device
 /// can't change format mid-stream) → leaky queue (a stalled consumer never blocks decoding) → sink.
 fn output_chain(out: &Output, (w, h): (i32, i32)) -> String {
-    let format = std::env::var("SMARTCONNECT_WEBCAM_FORMAT").unwrap_or_else(|_| "YUY2".into());
+    let format = std::env::var("SMARTCONNECT_WEBCAM_FORMAT")
+        .ok()
+        .filter(|s| !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric()))
+        .unwrap_or_else(|| "YUY2".into());
     let sink = match out {
-        Output::V4l2 { device, .. } => format!("v4l2sink name=sink device={} sync=false", device.display()),
+        Output::V4l2 { device, .. } => {
+            format!("v4l2sink name=sink device=\"{}\" sync=false", device.display())
+        }
         // No buffer pool: PipeWire's pool only recycles buffers while some app reads the camera,
         // and an exhausted pool would stall the whole pipeline until then.
-        Output::PipeWire => "pipewiresink name=sink mode=provide use-bufferpool=false sync=false client-name=smartconnect-webcam".into(),
+        Output::PipeWire => {
+            "pipewiresink name=sink mode=provide use-bufferpool=false sync=false client-name=smartconnect-webcam".into()
+        }
         Output::Discard => "fakesink name=sink sync=false".into(),
     };
     format!(
-        "videoconvert ! videoscale add-borders=true ! videorate ! \
+        "videoconvert ! videoflip name=flip video-direction=identity ! videobalance name=balance ! videoscale add-borders=true ! videorate ! \
          video/x-raw,format={format},width={w},height={h},framerate=30/1,pixel-aspect-ratio=1/1 ! \
          queue leaky=downstream max-size-buffers=2 max-size-bytes=0 max-size-time=0 ! {sink}"
     )
@@ -323,15 +607,21 @@ struct Rtc {
     out: Output,
     size: (i32, i32),
     stats: Arc<Stats>,
+    fx: Arc<Mutex<WebcamEffects>>,
+    active_bin: Arc<Mutex<Option<gst::Bin>>>,
 }
 
 impl Rtc {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         d: Arc<Daemon>,
         out: Output,
         size: (i32, i32),
         phone_ip: Option<Ipv4Addr>,
         quality: proto::Quality,
+        stats: Arc<Stats>,
+        fx: Arc<Mutex<WebcamEffects>>,
+        active_bin: Arc<Mutex<Option<gst::Bin>>>,
     ) -> Result<Arc<Self>> {
         let pipeline = gst::Pipeline::with_name("smartconnect-webcam");
         let webrtc = gst::ElementFactory::make("webrtcbin")
@@ -349,7 +639,9 @@ impl Rtc {
             }),
             out,
             size,
-            stats: Arc::default(),
+            stats,
+            fx,
+            active_bin,
         });
         let w = Arc::downgrade(&rtc);
         webrtc.connect("on-ice-candidate", false, move |args| {
@@ -409,12 +701,14 @@ impl Rtc {
         }
         println!("video arriving: {caps}");
         let desc = format!(
-            "queue ! rtph264depay ! h264parse ! {} name=dec ! {}",
+            "queue ! rtph264depay ! h264parse ! {} ! identity name=dec ! {}",
             pick_decoder(),
             output_chain(&self.out, self.size)
         );
         let bin = gst::parse::bin_from_description(&desc, true)?;
         configure_sink(&bin, &self.out);
+        apply_effects(&bin, *self.fx.lock().unwrap());
+        *self.active_bin.lock().unwrap() = Some(bin.clone());
         let dec = bin.by_name("dec").context("no decoder")?;
         self.stats
             .watch(&dec.static_pad("src").context("decoder has no src pad")?);
@@ -518,6 +812,7 @@ impl Rtc {
     }
 
     fn close(&self) {
+        *self.active_bin.lock().unwrap() = None;
         let _ = self.pipeline.set_state(gst::State::Null);
     }
 }
@@ -552,15 +847,22 @@ struct Session {
     /// `o=` session id and version of the offer the current `rtc` answered.
     offer_origin: Option<(String, u64)>,
     quality: proto::Quality,
+    stats: Arc<Stats>,
+    fx: Arc<Mutex<WebcamEffects>>,
+    active_bin: Arc<Mutex<Option<gst::Bin>>>,
 }
 
 impl Session {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         d: Arc<Daemon>,
         out: Output,
         size: (i32, i32),
         phase: Phase,
         quality: proto::Quality,
+        stats: Arc<Stats>,
+        fx: Arc<Mutex<WebcamEffects>>,
+        active_bin: Arc<Mutex<Option<gst::Bin>>>,
     ) -> Self {
         let now = Instant::now();
         Session {
@@ -575,6 +877,9 @@ impl Session {
             early_remote: Vec::new(),
             offer_origin: None,
             quality,
+            stats,
+            fx,
+            active_bin,
         }
     }
 
@@ -642,6 +947,9 @@ impl Session {
                     self.size,
                     ip,
                     self.quality,
+                    self.stats.clone(),
+                    self.fx.clone(),
+                    self.active_bin.clone(),
                 )
                 .and_then(|rtc| {
                     rtc.answer(&sdp)?;
@@ -796,14 +1104,45 @@ fn run_session(
     if out == Output::PipeWire {
         println!("(no v4l2loopback device; run with --check for the setup commands)");
     }
+    let (_saved_quality, saved_fx) = load_prefs();
+    let fx = Arc::new(Mutex::new(saved_fx));
+    let active_bin = Arc::new(Mutex::new(None));
+    let quality_name = Arc::new(Mutex::new(quality.to_string()));
+    let stats = Arc::new(Stats::default());
+    spawn_ctl_server(
+        active_bin.clone(),
+        fx.clone(),
+        quality_name.clone(),
+        stats.clone(),
+        d.clone(),
+    )?;
+
     let mut s = if answer_phone {
         println!("answering the phone's webcam request");
         d.send(proto::handshake_reply());
-        Session::new(d, out, size, Phase::Starting, quality)
+        Session::new(
+            d,
+            out,
+            size,
+            Phase::Starting,
+            quality,
+            stats,
+            fx,
+            active_bin,
+        )
     } else {
         println!("asking the phone to start its camera");
         d.send(proto::pc_request());
-        Session::new(d, out, size, Phase::Requested, quality)
+        Session::new(
+            d,
+            out,
+            size,
+            Phase::Requested,
+            quality,
+            stats,
+            fx,
+            active_bin,
+        )
     };
     loop {
         let flow = if STOP.load(Ordering::SeqCst) {
@@ -892,12 +1231,38 @@ fn check(out: &Output) -> i32 {
     }
     if gst::init().is_ok() {
         let decoder = pick_decoder();
+        println!("  decoder:        {decoder}");
+        let ok = |n: &str| gst::ElementFactory::make(n).build().is_ok();
+        println!(
+            "  vah264dec       {}",
+            if ok("vah264dec") {
+                "ok"
+            } else {
+                "not available"
+            }
+        );
+        println!(
+            "  vaapih264dec    {}",
+            if ok("vaapih264dec") {
+                "ok"
+            } else {
+                "not available"
+            }
+        );
+        println!(
+            "  nvh264dec       {}",
+            if ok("nvh264dec") && ok("cudadownload") {
+                "ok"
+            } else {
+                "not available"
+            }
+        );
         for e in [
             "webrtcbin",
             "nicesrc",
             "rtph264depay",
             "h264parse",
-            decoder.as_str(),
+            "avdec_h264",
             "v4l2sink",
             "pipewiresink",
         ] {
@@ -951,7 +1316,12 @@ fn configured_quality() -> Option<proto::Quality> {
 
 fn parse_size(s: &str) -> Result<(i32, i32)> {
     let (w, h) = s.split_once('x').context("--size needs WxH")?;
-    Ok((w.parse()?, h.parse()?))
+    let w: i32 = w.parse()?;
+    let h: i32 = h.parse()?;
+    if w <= 0 || h <= 0 || w > 8192 || h > 8192 {
+        bail!("dimensions must be positive and <= 8192 (got {w}x{h})");
+    }
+    Ok((w, h))
 }
 
 fn main() -> Result<()> {
@@ -972,6 +1342,58 @@ fn main() -> Result<()> {
                 let q = it.next().context("--quality needs low|medium|high|max")?;
                 quality = proto::Quality::parse(q)
                     .with_context(|| format!("unknown quality {q:?}: use low|medium|high|max"))?;
+            }
+            "--mirror" => {
+                mode = "--mirror".into();
+                if let Some(next) = it.as_slice().first()
+                    && !next.starts_with("--")
+                {
+                    let s = it.next().unwrap();
+                    match s.as_str() {
+                        "on" | "true" | "1" => number = Some(1),
+                        "off" | "false" | "0" => number = Some(0),
+                        _ => bail!("--mirror accepts on|off"),
+                    }
+                }
+            }
+            "--flip-v" => {
+                mode = "--flip-v".into();
+                if let Some(next) = it.as_slice().first()
+                    && !next.starts_with("--")
+                {
+                    let s = it.next().unwrap();
+                    match s.as_str() {
+                        "on" | "true" | "1" => number = Some(1),
+                        "off" | "false" | "0" => number = Some(0),
+                        _ => bail!("--flip-v accepts on|off"),
+                    }
+                }
+            }
+            "--brightness" => {
+                mode = "--brightness".into();
+                let b_str = it
+                    .next()
+                    .context("--brightness needs a number (-1.0 to 1.0 or -100 to 100)")?;
+                let b_val: f64 = b_str.parse().context("invalid brightness number")?;
+                let pct = if b_val.abs() <= 1.0 && b_str.contains('.') {
+                    (b_val * 100.0).round() as i64
+                } else {
+                    b_val.round() as i64
+                };
+                number = Some(pct);
+            }
+            "--contrast" => {
+                mode = "--contrast".into();
+                let c_str = it
+                    .next()
+                    .context("--contrast needs a number (0.0 to 2.0 or 0 to 200)")?;
+                let c_val: f64 = c_str.parse().context("invalid contrast number")?;
+                let pct = if c_val <= 2.0 && c_str.contains('.') {
+                    (c_val * 100.0).round() as i64
+                } else {
+                    c_val.round() as i64
+                };
+                number = Some(pct);
             }
             "-h" | "--help" => {
                 println!("{USAGE}");
@@ -1011,7 +1433,196 @@ fn main() -> Result<()> {
             println!("{}", send_once(msg)?);
             0
         }
+        "--pause" => {
+            println!("{}", send_once(proto::pause())?);
+            0
+        }
+        "--resume" => {
+            println!("{}", send_once(proto::resume(proto::PORT))?);
+            0
+        }
+        "--mirror" => {
+            let (q, mut fx) = load_prefs();
+            let val = match number {
+                Some(1) => true,
+                Some(0) => false,
+                _ => !fx.mirror,
+            };
+            fx.mirror = val;
+            if send_ctl_cmd(json!({ "cmd": "set_effects", "mirror": fx.mirror })).is_ok() {
+                println!("Live webcam mirror set to: {}", fx.mirror);
+            } else {
+                save_prefs(&q, fx);
+                println!("Saved webcam mirror to config: {}", fx.mirror);
+            }
+            0
+        }
+        "--flip-v" => {
+            let (q, mut fx) = load_prefs();
+            let val = match number {
+                Some(1) => true,
+                Some(0) => false,
+                _ => !fx.flip_vertical,
+            };
+            fx.flip_vertical = val;
+            if send_ctl_cmd(json!({ "cmd": "set_effects", "flipVertical": fx.flip_vertical }))
+                .is_ok()
+            {
+                println!("Live webcam vertical flip set to: {}", fx.flip_vertical);
+            } else {
+                save_prefs(&q, fx);
+                println!("Saved webcam vertical flip to config: {}", fx.flip_vertical);
+            }
+            0
+        }
+        "--brightness" => {
+            let (q, mut fx) = load_prefs();
+            let b_val = number.unwrap_or(0) as f64 / 100.0;
+            fx.brightness = b_val.clamp(-1.0, 1.0);
+            if send_ctl_cmd(json!({ "cmd": "set_effects", "brightness": fx.brightness })).is_ok() {
+                println!("Live webcam brightness set to: {:.2}", fx.brightness);
+            } else {
+                save_prefs(&q, fx);
+                println!("Saved webcam brightness to config: {:.2}", fx.brightness);
+            }
+            0
+        }
+        "--contrast" => {
+            let (q, mut fx) = load_prefs();
+            let c_val = number.unwrap_or(100) as f64 / 100.0;
+            fx.contrast = c_val.clamp(0.0, 2.0);
+            if send_ctl_cmd(json!({ "cmd": "set_effects", "contrast": fx.contrast })).is_ok() {
+                println!("Live webcam contrast set to: {:.2}", fx.contrast);
+            } else {
+                save_prefs(&q, fx);
+                println!("Saved webcam contrast to config: {:.2}", fx.contrast);
+            }
+            0
+        }
+        "--status" => {
+            if let Ok(st) = send_ctl_cmd(json!({ "cmd": "get_status" })) {
+                println!("Session:     Active (running)");
+                println!(
+                    "Quality:     {}",
+                    st.get("quality").and_then(Value::as_str).unwrap_or("?")
+                );
+                println!(
+                    "Size:        {}",
+                    st.get("size").and_then(Value::as_str).unwrap_or("?")
+                );
+                println!(
+                    "Frames:      {}",
+                    st.get("frames").and_then(Value::as_u64).unwrap_or(0)
+                );
+                println!(
+                    "Mirror:      {}",
+                    st.get("mirror").and_then(Value::as_bool).unwrap_or(false)
+                );
+                println!(
+                    "Flip V:      {}",
+                    st.get("flipVertical")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false)
+                );
+                println!(
+                    "Brightness:  {:.0}%",
+                    st.get("brightness").and_then(Value::as_f64).unwrap_or(0.0) * 100.0
+                );
+                println!(
+                    "Contrast:    {:.0}%",
+                    st.get("contrast").and_then(Value::as_f64).unwrap_or(1.0) * 100.0
+                );
+            } else {
+                let (q, fx) = load_prefs();
+                println!("Session:     Idle (no webcam session running)");
+                println!("Config:      {}", webcam_prefs_path().display());
+                println!("Quality:     {q}");
+                println!("Mirror:      {}", fx.mirror);
+                println!("Flip V:      {}", fx.flip_vertical);
+                println!("Brightness:  {:.0}%", fx.brightness * 100.0);
+                println!("Contrast:    {:.0}%", fx.contrast * 100.0);
+            }
+            0
+        }
         other => bail!("unknown option {other}\n{USAGE}"),
     };
     std::process::exit(code);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_pick_decoder_instantiable() {
+        let _ = gst::init();
+        let dec = pick_decoder();
+        assert!(!dec.is_empty());
+        assert!(
+            gst::parse::bin_from_description(
+                &format!("queue ! h264parse ! {dec} ! fakesink"),
+                true
+            )
+            .is_ok(),
+            "pick_decoder() '{dec}' failed element construction"
+        );
+    }
+
+    #[test]
+    fn test_pick_decoder_fallback_behavior() {
+        let _ = gst::init();
+        let ok = |n: &str| gst::ElementFactory::make(n).build().is_ok();
+
+        // 1. Explicit cpu requested
+        let cpu_dec = pick_decoder_from(Some("cpu"));
+        assert!(cpu_dec.starts_with("avdec_h264"));
+
+        // 2. Default (None) selection
+        let auto_dec = pick_decoder_from(None);
+        if ok("vah264dec") {
+            assert_eq!(auto_dec, "vah264dec");
+        } else if ok("vaapih264dec") {
+            assert_eq!(auto_dec, "vaapih264dec");
+        } else if ok("nvh264dec") && ok("cudadownload") {
+            assert_eq!(auto_dec, "nvh264dec ! cudadownload");
+        } else {
+            assert!(auto_dec.starts_with("avdec_h264"));
+        }
+
+        // 3. Fallback when nvdec requested but unavailable
+        let nv_dec = pick_decoder_from(Some("nvdec"));
+        if ok("nvh264dec") && ok("cudadownload") {
+            assert_eq!(nv_dec, "nvh264dec ! cudadownload");
+        } else {
+            assert!(
+                nv_dec.starts_with("avdec_h264"),
+                "Unavailable nvdec should fall back to avdec_h264, got: {}",
+                nv_dec
+            );
+        }
+
+        // 4. Fallback when vaapi requested but unavailable
+        let va_dec = pick_decoder_from(Some("vaapi"));
+        if ok("vah264dec") {
+            assert_eq!(va_dec, "vah264dec");
+        } else if ok("vaapih264dec") {
+            assert_eq!(va_dec, "vaapih264dec");
+        } else {
+            assert!(
+                va_dec.starts_with("avdec_h264"),
+                "Unavailable vaapi should fall back to avdec_h264, got: {}",
+                va_dec
+            );
+        }
+    }
+
+    #[test]
+    fn test_parse_size() {
+        assert_eq!(parse_size("1280x720").unwrap(), (1280, 720));
+        assert_eq!(parse_size("1920x1080").unwrap(), (1920, 1080));
+        assert!(parse_size("invalid").is_err());
+        assert!(parse_size("0x0").is_err());
+        assert!(parse_size("-100x100").is_err());
+        assert!(parse_size("99999x99999").is_err());
+    }
 }

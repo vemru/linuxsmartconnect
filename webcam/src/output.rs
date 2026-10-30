@@ -15,7 +15,11 @@ pub const PIPEWIRE_DESCRIPTION: &str = "Phone Camera (Smart Connect)";
 pub const SETUP_HINT: &str = "\
 No v4l2loopback device found, so the phone camera is offered as a PipeWire camera node instead
 (PipeWire-aware apps only: Firefox/Chromium with PipeWire camera support, OBS, the camera portal).
-For a camera that every app sees, load v4l2loopback (needs root):
+For a camera that every app, Google Meet, and Chrome sees, load v4l2loopback (needs root):
+
+  sudo packaging/setup-v4l2loopback.sh
+
+Or manually (Fedora: sudo dnf install akmod-v4l2loopback; Arch: sudo pacman -S v4l2loopback-dkms):
 
   sudo modprobe v4l2loopback devices=1 video_nr=10 card_label=\"Phone Camera\" exclusive_caps=1
 

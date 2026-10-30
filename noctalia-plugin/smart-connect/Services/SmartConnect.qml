@@ -10,7 +10,9 @@ import qs.Commons
 QtObject {
   id: root
 
-  readonly property string socketPath: (Quickshell.env("XDG_RUNTIME_DIR") || "/tmp") + "/smartconnectd.sock"
+  readonly property string socketPath: Quickshell.env("XDG_RUNTIME_DIR")
+    ? (Quickshell.env("XDG_RUNTIME_DIR") + "/smartconnectd.sock")
+    : (Quickshell.env("HOME") + "/.local/state/smartconnect-linux/run/smartconnectd.sock")
 
   property bool daemonAvailable: false
   property var status: ({})
@@ -154,6 +156,69 @@ QtObject {
     stderr: SplitParser {
       onRead: data => { if (data.trim() !== "") root.crossLastStderr = data.trim().substring(0, 200); }
     }
+  }
+
+  // ── Phone as webcam: runs smartconnect-webcam (svc 3) ──
+  readonly property string defaultWebcamBinary: "smartconnect-webcam"
+  property bool webcamRunning: false
+  property string webcamStatus: ""
+  property bool webcamStopRequested: false
+  property string webcamLastStderr: ""
+
+  function startWebcam(binary: string): void {
+    if (webcamRunning) return;
+    if (!connected) {
+      webcamStatus = "Connect the phone first";
+      return;
+    }
+    webcamStatus = "";
+    webcamLastStderr = "";
+    webcamStopRequested = false;
+    const bin = expandHome((binary || "").trim() || defaultWebcamBinary);
+    Quickshell.execDetached([bin, "--start"]);
+    probeWebcam();
+  }
+
+  function stopWebcam(binary: string): void {
+    webcamStopRequested = true;
+    const bin = expandHome((binary || "").trim() || defaultWebcamBinary);
+    Quickshell.execDetached([bin, "--stop"]);
+    probeWebcam();
+  }
+
+  function toggleWebcam(binary: string): void {
+    if (webcamRunning) stopWebcam(binary);
+    else startWebcam(binary);
+  }
+
+  function switchWebcam(binary: string): void {
+    const bin = expandHome((binary || "").trim() || defaultWebcamBinary);
+    Quickshell.execDetached([bin, "--switch-camera"]);
+  }
+
+  function toggleWebcamTorch(binary: string): void {
+    const bin = expandHome((binary || "").trim() || defaultWebcamBinary);
+    Quickshell.execDetached([bin, "--torch"]);
+  }
+
+  function probeWebcam(): void {
+    webcamProbe.command = ["sh", "-c", 'if pgrep -x smartconnect-webcam >/dev/null 2>&1; then echo "running"; else echo "stopped"; fi'];
+    webcamProbe.running = true;
+  }
+
+  property Process webcamProbe: Process {
+    stdout: SplitParser {
+      onRead: data => {
+        root.webcamRunning = data.trim() === "running";
+      }
+    }
+  }
+
+  property Timer webcamTimer: Timer {
+    interval: 2000
+    repeat: true
+    running: true
+    onTriggered: root.probeWebcam()
   }
 
   // ── Phone as display: smartconnect-display shows this PC's screen on the phone ──

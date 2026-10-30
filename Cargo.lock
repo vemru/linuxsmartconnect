@@ -3003,6 +3003,7 @@ dependencies = [
  "gstreamer-sdp",
  "gstreamer-video",
  "gstreamer-webrtc",
+ "libc",
  "serde_json",
  "x11rb",
 ]
@@ -3016,6 +3017,7 @@ dependencies = [
  "gstreamer-sdp",
  "gstreamer-webrtc",
  "libc",
+ "serde",
  "serde_json",
 ]
 

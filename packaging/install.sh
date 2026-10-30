@@ -342,9 +342,19 @@ ${C_SAY}Optional setup that needs root (not done by this script):${C_OFF}
         off
     }
 
-  Phone as a webcam: v4l2loopback.
-    sudo pacman -S --needed v4l2loopback-dkms linux-headers   # or your distribution's package
+  Phone as a webcam (for Google Meet, Chrome, Zoom, all browsers & apps): v4l2loopback.
+    # Run the automated setup helper:
+    sudo ./packaging/setup-v4l2loopback.sh
+    # Or manually on Fedora:
+    sudo dnf install akmod-v4l2loopback
     sudo modprobe v4l2loopback devices=1 video_nr=10 card_label="Phone Camera" exclusive_caps=1
+    # On Arch Linux:
+    sudo pacman -S --needed v4l2loopback-dkms linux-headers
+    sudo modprobe v4l2loopback devices=1 video_nr=10 card_label="Phone Camera" exclusive_caps=1
+    # On Ubuntu/Debian:
+    sudo apt install v4l2loopback-dkms
+    sudo modprobe v4l2loopback devices=1 video_nr=10 card_label="Phone Camera" exclusive_caps=1
+    # Make persistent across reboots:
     echo v4l2loopback | sudo tee /etc/modules-load.d/v4l2loopback.conf
     echo 'options v4l2loopback devices=1 video_nr=10 card_label="Phone Camera" exclusive_caps=1' | sudo tee /etc/modprobe.d/v4l2loopback.conf
 

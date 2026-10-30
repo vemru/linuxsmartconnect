@@ -17,3 +17,4 @@ gst-video = { package = "gstreamer-video", version = "0.24", features = ["v1_22"
 serde_json = "1"
 gst-gl = { package = "gstreamer-gl", version = "0.24" }
 x11rb = "0.13"
+libc = "0.2"

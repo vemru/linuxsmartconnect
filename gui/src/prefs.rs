@@ -21,6 +21,35 @@ pub struct Prefs {
     pub display: DisplayPrefs,
     pub files: FilesPrefs,
     pub apps: AppsPrefs,
+    pub webcam: WebcamPrefs,
+}
+
+/// Choices for the phone-as-webcam feature.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct WebcamPrefs {
+    /// Encoder bitrate quality: "low", "medium", "high", or "max".
+    pub quality: String,
+    /// Mirror stream (horizontal flip).
+    pub mirror: bool,
+    /// Flip stream vertically.
+    pub flip_vertical: bool,
+    /// Brightness adjustment: -1.0 to 1.0 (0.0 is normal).
+    pub brightness: f64,
+    /// Contrast adjustment: 0.0 to 2.0 (1.0 is normal).
+    pub contrast: f64,
+}
+
+impl Default for WebcamPrefs {
+    fn default() -> Self {
+        Self {
+            quality: "high".into(),
+            mirror: false,
+            flip_vertical: false,
+            brightness: 0.0,
+            contrast: 1.0,
+        }
+    }
 }
 
 /// Choices on the Files page (the phone's storage as a FUSE mount).
@@ -298,12 +327,17 @@ pub fn display_path() -> PathBuf {
     config_dir().join("display.json")
 }
 
+pub fn webcam_path() -> PathBuf {
+    config_dir().join("webcam.json")
+}
+
 pub fn load() -> Prefs {
     let mut prefs: Prefs = std::fs::read_to_string(path())
         .ok()
         .and_then(|t| serde_json::from_str(&t).ok())
         .unwrap_or_default();
     reload_shared(&mut prefs.display);
+    reload_webcam(&mut prefs.webcam);
     prefs
 }
 
@@ -320,6 +354,23 @@ pub fn reload_shared(display: &mut DisplayPrefs) -> bool {
     *display != before
 }
 
+/// Re-reads `webcam.json` (shared with the helper and other front-ends).
+pub fn reload_webcam(webcam: &mut WebcamPrefs) -> bool {
+    let before = webcam.clone();
+    if let Some(v) = std::fs::read_to_string(webcam_path())
+        .ok()
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+    {
+        if let Some(q) = v.get("quality").and_then(Value::as_str) {
+            let lower = q.to_lowercase();
+            if ["low", "medium", "high", "max"].contains(&lower.as_str()) {
+                webcam.quality = lower;
+            }
+        }
+    }
+    *webcam != before
+}
+
 fn write_atomic(path: &Path, text: String) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
@@ -329,19 +380,28 @@ fn write_atomic(path: &Path, text: String) -> std::io::Result<()> {
     std::fs::rename(tmp, path)
 }
 
-/// Writes `gui.json` and the shared `display.json`.
+/// Writes `gui.json`, `display.json`, and `webcam.json`.
 pub fn save(prefs: &Prefs) -> std::io::Result<()> {
     write_atomic(
         &path(),
         serde_json::to_string_pretty(prefs).map_err(std::io::Error::other)?,
     )?;
-    save_shared(&prefs.display)
+    save_shared(&prefs.display)?;
+    save_webcam(&prefs.webcam)
 }
 
 pub fn save_shared(display: &DisplayPrefs) -> std::io::Result<()> {
     write_atomic(
         &display_path(),
         serde_json::to_string_pretty(&display.shared()).map_err(std::io::Error::other)?,
+    )
+}
+
+pub fn save_webcam(webcam: &WebcamPrefs) -> std::io::Result<()> {
+    write_atomic(
+        &webcam_path(),
+        serde_json::to_string_pretty(&json!({ "quality": webcam.quality }))
+            .map_err(std::io::Error::other)?,
     )
 }
 

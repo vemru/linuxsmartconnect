@@ -13,6 +13,7 @@ mod prefs;
 mod setup;
 mod share;
 mod tray;
+mod webcam;
 mod window;
 
 use std::cell::{Cell, RefCell};

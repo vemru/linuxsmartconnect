@@ -114,6 +114,9 @@ fn main() -> Result<()> {
             let ip_override = flag(&args, "--ip");
             let include_hidden = args.iter().any(|a| a == "--include-hidden");
             let read_only = args.iter().any(|a| a == "--read-only");
+            let allow_public = args.iter().any(|a| a == "--allow-public")
+                || std::env::var("SMARTCONNECT_ALLOW_PUBLIC")
+                    .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
             let rt = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .build()?;
@@ -124,6 +127,7 @@ fn main() -> Result<()> {
                 ip_override,
                 include_hidden,
                 allow_delete: !read_only,
+                allow_public,
             };
             rt.block_on(serve(id, dir, opts))
         }
@@ -172,6 +176,7 @@ struct ServeOptions {
     ip_override: Option<String>,
     include_hidden: bool,
     allow_delete: bool,
+    allow_public: bool,
 }
 
 async fn serve(id: Identity, state_dir: PathBuf, opts: ServeOptions) -> Result<()> {
@@ -182,6 +187,7 @@ async fn serve(id: Identity, state_dir: PathBuf, opts: ServeOptions) -> Result<(
         ip_override,
         include_hidden,
         allow_delete,
+        allow_public,
     } = opts;
     // Ensure a process-default crypto provider exists (some rustls paths look it up).
     let _ = rustls::crypto::ring::default_provider().install_default();
@@ -196,6 +202,7 @@ async fn serve(id: Identity, state_dir: PathBuf, opts: ServeOptions) -> Result<(
         pinned.clone(),
         include_hidden,
         allow_delete,
+        allow_public,
     )
     .context("building the NFS-over-TLS server")?;
     let params = responder::ReplyParams {

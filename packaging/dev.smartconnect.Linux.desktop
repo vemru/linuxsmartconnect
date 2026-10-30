@@ -12,3 +12,12 @@ StartupNotify=true
 StartupWMClass=dev.smartconnect.Linux
 DBusActivatable=false
 X-GNOME-UsesNotifications=true
+Actions=Webcam;Mirror;
+
+[Desktop Action Webcam]
+Name=Start Webcam
+Exec=smartconnect-webcam --start
+
+[Desktop Action Mirror]
+Name=Mirror Phone Screen
+Exec=smartconnect-mirror

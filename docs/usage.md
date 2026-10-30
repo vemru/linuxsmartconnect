@@ -680,13 +680,17 @@ PipeWire camera node named "Phone Camera (Smart Connect)".
 
 - **From the phone:** tap the **Webcam** tile. The daemon starts `smartconnect-webcam --answer`,
   which logs to `$XDG_RUNTIME_DIR/smartconnectd/smartconnect-webcam.log`.
-- **From the PC:**
+- **From the desktop (GTK App & Noctalia Panel):**
+  - **GTK App (`smartconnect-gui`):** The Phone page includes a **Phone as webcam** row. Click **Start webcam** to begin streaming. Once active, quick action buttons appear to **Switch camera** (front/back) and **Toggle torch**. Stream quality can be configured in Preferences.
+  - **Noctalia Panel:** Includes a **Webcam** quick-settings action tile. Click to toggle the webcam stream, or tap the chip option to flip the camera.
+  - **App launcher action:** Right-click the Smart Connect launcher icon to select **Start Webcam**.
+- **From the CLI:**
 
   ```sh
   smartconnect-webcam --check            # where frames would go, and a GStreamer element check
   smartconnect-webcam --test-pattern 10  # 10 s of test pattern into the output, no phone needed
   smartconnect-webcam                    # start the phone camera; Ctrl+C or --stop ends it
-  smartconnect-webcam --switch-camera    # also: --torch, --zoom N, --cameras
+  smartconnect-webcam --switch-camera    # also: --torch, --zoom N, --cameras, --pause, --resume
   ```
 
 - **Quality:** the phone always sends 1280x720 at 30 fps in this mode; no command changes the
@@ -1062,6 +1066,7 @@ smartconnect-webcam [--start | --stop | --check | --test-pattern [SECONDS]
 | `--check` | Show where frames would go and how to set up v4l2loopback. |
 | `--test-pattern [S]` | Feed a test pattern to the output for S seconds (default 10), no phone needed. |
 | `--switch-camera`, `--torch`, `--zoom N`, `--cameras` | Front/back camera, the phone's light, zoom level (0 = none), and the phone's camera state. |
+| `--pause`, `--resume` | Pause camera stream, or resume camera stream. |
 | `--output` | `auto` (default): v4l2loopback when present, else PipeWire. `none` decodes only. |
 | `--device /dev/videoN` | A specific loopback device. Real cameras are refused. |
 | `--size WxH` | Output size (default 1280x720). |

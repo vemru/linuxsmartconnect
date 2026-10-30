@@ -21,6 +21,7 @@ Item {
   readonly property string displayBinary: pluginApi?.pluginSettings?.displayBinary ?? ""
   readonly property string filesBinary: pluginApi?.pluginSettings?.filesBinary ?? ""
   readonly property string filesDir: pluginApi?.pluginSettings?.filesDir ?? ""
+  readonly property string webcamBinary: pluginApi?.pluginSettings?.webcamBinary ?? ""
   // User-facing folder (keeps a leading ~); blank settings fall back to ~/Phone.
   readonly property string filesDirLabel: (filesDir || "").trim() || "~/Phone"
 
@@ -29,6 +30,7 @@ Item {
     SmartConnect.displayWatch = true;
     SmartConnect.refreshDisplayConfig();
     SmartConnect.loadMuted();
+    SmartConnect.probeWebcam();
     // Adopt a live mount at the files folder, or clear a stale one, before showing the tile.
     SmartConnect.syncFiles(root.filesBinary, root.filesDirLabel);
   }
@@ -429,22 +431,23 @@ Item {
           Layout.fillWidth: true
           Layout.preferredWidth: actionsGrid.tileWidth
           Layout.fillHeight: true
-          icon: SmartConnect.connected ? "plug-connected-x" : "plug-connected"
-          title: SmartConnect.busy ? "Working…" : (SmartConnect.connected ? "Disconnect" : "Connect")
-          option: SmartConnect.connected ? "Wi-Fi" : "Wi-Fi or Bluetooth"
-          optionAvailable: false
-          available: !SmartConnect.busy
-          tooltipText: SmartConnect.connected ? "Disconnect the phone (it stays paired)" : "Reconnect to the phone"
-          onActivated: SmartConnect.connected ? SmartConnect.disconnectPhone() : SmartConnect.connectPhone()
+          icon: SmartConnect.webcamRunning ? "video-off" : "video"
+          title: SmartConnect.webcamRunning ? "Stop webcam" : "Webcam"
+          option: SmartConnect.webcamRunning ? "Flip camera" : "Phone camera"
+          optionIcon: SmartConnect.webcamRunning ? "switch-horizontal" : "camera"
+          optionAvailable: SmartConnect.webcamRunning
+          optionTooltip: "Switch front and back camera"
+          active: SmartConnect.webcamRunning
+          available: SmartConnect.connected || SmartConnect.webcamRunning
+          tooltipText: SmartConnect.webcamRunning ? "Stop the phone webcam stream" : "Use the phone camera as a PC webcam"
+          onActivated: SmartConnect.toggleWebcam(root.webcamBinary)
+          onOptionActivated: SmartConnect.switchWebcam(root.webcamBinary)
         }
 
-        // Full-width third row: mount the phone's storage as a read-only folder. The chip shows the
-        // target folder while unmounted, "Mounting…" while it handshakes, and a clickable "Open"
-        // once mounted (the tile itself then unmounts). Available while the phone is connected, and
-        // while a mount is live so it can still be unmounted after the phone drops.
         ActionTile {
           Layout.fillWidth: true
-          Layout.columnSpan: 2
+          Layout.preferredWidth: actionsGrid.tileWidth
+          Layout.fillHeight: true
           icon: SmartConnect.filesMounted ? "folder-open" : "folder"
           title: SmartConnect.filesMounted ? "Unmount files" : "Phone files"
           option: SmartConnect.filesMounted ? "Open"
@@ -460,6 +463,19 @@ Item {
           onActivated: SmartConnect.toggleFiles(root.filesBinary, root.filesDirLabel)
           onOptionActivated: SmartConnect.openFiles(root.filesBinary, root.filesDirLabel)
         }
+
+        ActionTile {
+          Layout.fillWidth: true
+          Layout.preferredWidth: actionsGrid.tileWidth
+          Layout.fillHeight: true
+          icon: SmartConnect.connected ? "plug-connected-x" : "plug-connected"
+          title: SmartConnect.busy ? "Working…" : (SmartConnect.connected ? "Disconnect" : "Connect")
+          option: SmartConnect.connected ? "Wi-Fi" : "Wi-Fi or Bluetooth"
+          optionAvailable: false
+          available: !SmartConnect.busy
+          tooltipText: SmartConnect.connected ? "Disconnect the phone (it stays paired)" : "Reconnect to the phone"
+          onActivated: SmartConnect.connected ? SmartConnect.disconnectPhone() : SmartConnect.connectPhone()
+        }
       }
 
       // Status and errors from the helpers, one line each.
@@ -473,6 +489,7 @@ Item {
             { text: SmartConnect.lastMessage, error: false },
             { text: SmartConnect.mirrorStatus, error: true },
             { text: SmartConnect.crossStatus, error: true },
+            { text: SmartConnect.webcamStatus, error: true },
             { text: SmartConnect.filesStatus, error: SmartConnect.filesStatusError },
             { text: SmartConnect.paired ? SmartConnect.displayStatus : "", error: SmartConnect.displayStatusIsError }
           ]

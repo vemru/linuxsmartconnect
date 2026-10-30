@@ -10,6 +10,7 @@ ColumnLayout {
   property bool hideWhenDisconnected: pluginApi?.pluginSettings?.hideWhenDisconnected ?? false
   property string mirrorBinary: pluginApi?.pluginSettings?.mirrorBinary ?? SmartConnect.defaultMirrorBinary
   property string displayBinary: pluginApi?.pluginSettings?.displayBinary ?? SmartConnect.defaultDisplayBinary
+  property string webcamBinary: pluginApi?.pluginSettings?.webcamBinary ?? SmartConnect.defaultWebcamBinary
   property string filesBinary: pluginApi?.pluginSettings?.filesBinary ?? SmartConnect.defaultFilesBinary
   property string filesDir: pluginApi?.pluginSettings?.filesDir ?? SmartConnect.defaultFilesDir
 
@@ -143,6 +144,19 @@ ColumnLayout {
   }
 
   NHeader {
+    label: "Phone as webcam"
+    description: "Use your phone's camera as a Linux webcam (smartconnect-webcam)."
+  }
+
+  NTextInput {
+    Layout.fillWidth: true
+    label: "Webcam helper"
+    description: "smartconnect-webcam, looked up on PATH, or a full path to it (~ is expanded)"
+    text: root.webcamBinary
+    onTextChanged: root.webcamBinary = text
+  }
+
+  NHeader {
     label: "Muted apps"
     description: "Phone apps whose notifications don't pop up on this PC. Mute one with the bell next to its notification in the panel."
   }
@@ -191,6 +205,7 @@ ColumnLayout {
     pluginApi.pluginSettings.hideWhenDisconnected = root.hideWhenDisconnected;
     pluginApi.pluginSettings.mirrorBinary = root.mirrorBinary;
     pluginApi.pluginSettings.displayBinary = root.displayBinary;
+    pluginApi.pluginSettings.webcamBinary = root.webcamBinary;
     pluginApi.pluginSettings.filesBinary = root.filesBinary;
     pluginApi.pluginSettings.filesDir = root.filesDir;
     pluginApi.saveSettings();

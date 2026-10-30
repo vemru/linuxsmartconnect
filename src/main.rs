@@ -60,6 +60,9 @@ struct Args {
     /// the graphical session (GNOME under GDM, KDE, and lockers started by swayidle/hypridle).
     #[arg(long, value_name = "CMD")]
     lock_command: Option<String>,
+    /// Allow connections from public/non-LAN IPs (by default, non-private IPs are dropped).
+    #[arg(long)]
+    allow_public: bool,
     #[command(subcommand)]
     command: Option<Cmd>,
 }
@@ -168,6 +171,10 @@ async fn main() -> Result<()> {
         state_dir.join("sessions"),
         ble_address,
     ));
+    let allow_public = args.allow_public
+        || std::env::var("SMARTCONNECT_ALLOW_PUBLIC")
+            .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
+    daemon.set_allow_public(allow_public);
     daemon.set_ble_wake(!args.no_ble_wake);
     // Clipboard images to the phone are served over fex on this same port and certificate.
     daemon

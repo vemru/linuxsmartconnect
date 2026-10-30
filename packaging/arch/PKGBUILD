@@ -63,6 +63,7 @@ package() {
   for b in "${_bins[@]}"; do
     install -Dm755 "$rel/$b" "$pkgdir/usr/bin/$b"
   done
+  install -Dm755 "$_root/packaging/smartconnect-share" "$pkgdir/usr/bin/smartconnect-share"
 
   # The unit in the repository runs ~/.local/bin/smartconnectd; here it is /usr/bin.
   install -d "$pkgdir/usr/lib/systemd/user"
@@ -72,6 +73,10 @@ package() {
 
   install -Dm644 "$_root/packaging/dev.smartconnect.Linux.desktop" \
     "$pkgdir/usr/share/applications/dev.smartconnect.Linux.desktop"
+  install -Dm644 "$_root/packaging/dev.smartconnect.Share.desktop" \
+    "$pkgdir/usr/share/applications/dev.smartconnect.Share.desktop"
+  install -Dm644 "$_root/packaging/dev.smartconnect.Display.desktop" \
+    "$pkgdir/usr/share/applications/dev.smartconnect.Display.desktop"
   install -Dm644 "$_root/packaging/dev.smartconnect.Linux.svg" \
     "$pkgdir/usr/share/icons/hicolor/scalable/apps/dev.smartconnect.Linux.svg"
   install -Dm644 "$_root/packaging/README.md" "$pkgdir/usr/share/doc/$pkgname/README.md"
