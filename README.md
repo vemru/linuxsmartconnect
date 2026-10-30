@@ -13,10 +13,13 @@ The phone connects using the stock, unmodified Motorola/Lenovo Smart Connect app
 
 ## 📸 Preview
 
-| **GTK4 Dashboard & Device Pairing** | **Phone as Webcam (`v4l2loopback`)** |
+| **Dashboard & Phone Status** | **Individual App Streaming** |
 | :---: | :---: |
-| ![Dashboard](docs/assets/dashboard.png) | ![Webcam Controls](docs/assets/webcam.png) |
-| *QR pairing, mDNS auto-discovery, and connection state* | *Live V4L2 camera stream, resolution & brightness controls* |
+| ![Dashboard](docs/assets/dashboard.png) | ![Apps](docs/assets/apps.png) |
+| *Phone connection, battery, live mirror & webcam controls* | *Launch single Android apps into native Linux windows* |
+| **Cross Control & External Display** | **Wireless File Sharing (NFS / FUSE)** |
+| ![Display](docs/assets/display.png) | ![Files](docs/assets/files.png) |
+| *Mouse/keyboard edge traversal and duplicate/extend modes* | *Mount phone storage locally and share PC folders to Android* |
 
 ---
 
