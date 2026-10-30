@@ -194,6 +194,18 @@ struct SessState {
     last_adapted_rotation: Option<u32>,
 }
 
+impl SessState {
+    /// Checks whether rotation adaptation is needed and updates last_adapted_rotation.
+    /// Returns true if orientation adaptation should proceed (prevents oscillation loops).
+    fn check_and_mark_adapted_rotation(&mut self, rot: u32) -> bool {
+        if self.last_adapted_rotation == Some(rot) {
+            return false;
+        }
+        self.last_adapted_rotation = Some(rot);
+        true
+    }
+}
+
 struct Session {
     sid: i64,
     pkg: String,
@@ -330,12 +342,12 @@ impl Session {
         };
         let tag = bin.by_name("tag").context("no taginject")?;
         tag.set_property("tags", title_tags(&self.title.lock().unwrap()));
-        *self.tag.lock().unwrap() = Some(tag);
+        *self.tag.lock().unwrap() = Some(tag.clone());
         *self.sink.lock().unwrap() = bin.by_name("sink");
         if let Some(flip) = bin.by_name("flip") {
             let rot = self.st.lock().unwrap().current_rotation;
             let dir = rotation_to_direction(rot);
-            let _ = flip.set_property_from_str("video-direction", dir);
+            flip.set_property_from_str("video-direction", dir);
             *self.flip.lock().unwrap() = Some(flip);
         }
         self.pipeline.add(&bin)?;
@@ -343,9 +355,10 @@ impl Session {
         pad.link(&bin.static_pad("sink").context("decoder bin has no sink pad")?)?;
         bin.sync_state_with_parent()?;
         // The video sink sends pointer/keyboard navigation events upstream; turn them into input.
-        let conv = bin.by_name("conv").context("no videoconvert")?;
+        // Listen on tag's sink pad (downstream of videoflip) so coordinates match the rendered
+        // window display in both portrait and landscape without inverted transforms by videoflip.
         let w = Arc::downgrade(self);
-        conv.static_pad("src").context("no src pad")?.add_probe(gst::PadProbeType::EVENT_UPSTREAM, move |_, info| {
+        tag.static_pad("sink").context("no tag sink pad")?.add_probe(gst::PadProbeType::EVENT_UPSTREAM, move |_, info| {
             if let (Some(s), Some(gst::PadProbeData::Event(ev))) = (w.upgrade(), &info.data) {
                 if ev.type_() == gst::EventType::Navigation {
                     s.on_navigation(ev);
@@ -741,12 +754,29 @@ fn rotation_to_direction(rot: u32) -> &'static str {
     }
 }
 
+/// Calculates target window dimensions based on orientation transition and phone aspect ratio (600:1336).
+fn calculate_adapted_window_size(curr_w: u32, curr_h: u32, target_landscape: bool) -> (u32, u32) {
+    if target_landscape {
+        let h = curr_h.clamp(400, 600);
+        let w = ((h as f64) * (1336.0 / 600.0)) as u32;
+        (w, h)
+    } else {
+        let h = curr_h.max(curr_w).clamp(600, 960);
+        let w = ((h as f64) * (600.0 / 1336.0)) as u32;
+        (w, h)
+    }
+}
+
+fn create_keyframe_request_event() -> gst::Event {
+    gst_video::UpstreamForceKeyUnitEvent::builder()
+        .all_headers(true)
+        .build()
+}
+
 impl Session {
     fn request_keyframe(&self) {
         if let Some(sink) = self.sink.lock().unwrap().as_ref() {
-            let ev = gst_video::UpstreamForceKeyUnitEvent::builder()
-                .all_headers(true)
-                .build();
+            let ev = create_keyframe_request_event();
             let _ = sink.send_event(ev);
         }
     }
@@ -762,7 +792,7 @@ impl Session {
         };
         if let Some(flip) = self.flip.lock().unwrap().as_ref() {
             let dir = rotation_to_direction(rot);
-            let _ = flip.set_property_from_str("video-direction", dir);
+            flip.set_property_from_str("video-direction", dir);
             println!("[{}] stream rotation → {rot} ({dir})", self.sid);
         }
         if changed {
@@ -780,22 +810,13 @@ impl Session {
             .or_else(|| self.sink.lock().unwrap().as_ref().map(gl_window_handle).filter(|w| *w != 0));
         let Some(win) = win else { return };
         let rot = self.st.lock().unwrap().current_rotation;
-        if self.st.lock().unwrap().last_adapted_rotation == Some(rot) {
+        if !self.st.lock().unwrap().check_and_mark_adapted_rotation(rot) {
             return;
         }
-        self.st.lock().unwrap().last_adapted_rotation = Some(rot);
         if let Some((curr_w, curr_h)) = x.window_size(win) {
             let curr_landscape = curr_w > curr_h;
             if curr_landscape != target_landscape {
-                let (new_w, new_h) = if target_landscape {
-                    let h = curr_h.min(600).max(400);
-                    let w = ((h as f64) * (1336.0 / 600.0)) as u32;
-                    (w, h)
-                } else {
-                    let h = curr_h.max(curr_w).min(960).max(600);
-                    let w = ((h as f64) * (600.0 / 1336.0)) as u32;
-                    (w, h)
-                };
+                let (new_w, new_h) = calculate_adapted_window_size(curr_w, curr_h, target_landscape);
                 x.resize_window(win, new_w, new_h);
                 println!("[{}] rotation changed: resized window from {curr_w}x{curr_h} to {new_w}x{new_h}", self.sid);
             }
@@ -1477,19 +1498,33 @@ environment:
 /// else slice-threaded libav. Supports integrated, discrete, and hybrid dual-GPU systems.
 /// Override: MIRROR_DECODER=… (or "cpu", "vaapi", "nvdec")
 fn pick_decoder() -> String {
-    let ok = |n: &str| gst::ElementFactory::find(n).is_some();
-    if let Ok(d) = std::env::var("MIRROR_DECODER") {
-        match d.as_str() {
+    pick_decoder_from(std::env::var("MIRROR_DECODER").ok().as_deref())
+}
+
+fn pick_decoder_from(override_dec: Option<&str>) -> String {
+    let ok = |n: &str| gst::ElementFactory::make(n).build().is_ok();
+    if let Some(d) = override_dec {
+        match d {
             "cpu" => return "avdec_h264 thread-type=slice max-threads=4".into(),
-            "nvdec" | "nvidia" => return "nvh264dec max-display-delay=0 ! cudadownload ! video/x-raw".into(),
+            "nvdec" | "nvidia" => {
+                if ok("nvh264dec") && ok("cudadownload") {
+                    return "nvh264dec ! cudadownload ! video/x-raw".into();
+                } else {
+                    eprintln!("nvdec requested but nvh264dec/cudadownload failed instantiation; falling back to avdec_h264");
+                    return "avdec_h264 thread-type=slice max-threads=4".into();
+                }
+            }
             "vaapi" => {
                 if ok("vah264dec") {
                     return "vah264dec".into();
                 } else if ok("vaapih264dec") {
                     return "vaapih264dec".into();
+                } else {
+                    eprintln!("vaapi requested but vah264dec/vaapih264dec failed instantiation; falling back to avdec_h264");
+                    return "avdec_h264 thread-type=slice max-threads=4".into();
                 }
             }
-            _ => return d,
+            _ => return d.into(),
         }
     }
     if ok("vah264dec") {
@@ -1499,7 +1534,7 @@ fn pick_decoder() -> String {
     } else if ok("nvh264dec") && ok("cudadownload") {
         // Dedicated NVIDIA GPU: decode via NVDEC, then download to system RAM (video/x-raw)
         // so it renders universally across all display configurations (single dGPU or hybrid iGPU/dGPU).
-        "nvh264dec max-display-delay=0 ! cudadownload ! video/x-raw".into()
+        "nvh264dec ! cudadownload ! video/x-raw".into()
     } else {
         "avdec_h264 thread-type=slice max-threads=4".into()
     }
@@ -1510,7 +1545,8 @@ fn pick_sink() -> String {
     if let Ok(s) = std::env::var("MIRROR_SINK") {
         return s;
     }
-    if gst::ElementFactory::find("glimagesink").is_some() { "glimagesink".into() } else { "autovideosink".into() }
+    let ok = |n: &str| gst::ElementFactory::make(n).build().is_ok();
+    if ok("glimagesink") { "glimagesink".into() } else { "autovideosink".into() }
 }
 
 /// One request/reply on the host's control socket; None when no host is running.
@@ -1922,16 +1958,211 @@ mod tests {
     }
 
     #[test]
-    fn test_pick_decoder() {
+    fn test_rotation_to_direction_mapping() {
+        assert_eq!(rotation_to_direction(0), "identity");
+        assert_eq!(rotation_to_direction(1), "90l");
+        assert_eq!(rotation_to_direction(2), "180");
+        assert_eq!(rotation_to_direction(3), "90r");
+        // Unknown or out-of-bounds rotation should default to identity
+        assert_eq!(rotation_to_direction(4), "identity");
+        assert_eq!(rotation_to_direction(99), "identity");
+    }
+
+    #[test]
+    fn test_rotation_aspect_ratio_calculations() {
+        // Portrait (e.g. 400x890) -> Landscape transition (target_landscape = true)
+        // h clamped to [400, 600]: 890.min(600).max(400) = 600
+        // w = 600 * (1336.0 / 600.0) = 1336
+        let (w, h) = calculate_adapted_window_size(400, 890, true);
+        assert_eq!((w, h), (1336, 600));
+        assert!(w > h, "Landscape target width must exceed height");
+
+        // Smaller portrait (e.g. 200x300) -> Landscape transition
+        // h clamped to [400, 600]: 300.min(600).max(400) = 400
+        // w = 400 * (1336.0 / 600.0) = 890
+        let (w_small, h_small) = calculate_adapted_window_size(200, 300, true);
+        assert_eq!((w_small, h_small), (890, 400));
+        assert!(w_small > h_small);
+
+        // Landscape (e.g. 1336x600) -> Portrait transition (target_landscape = false)
+        // h clamped to [600, 960]: 600.max(1336).min(960).max(600) = 960
+        // w = 960 * (600.0 / 1336.0) = 431
+        let (w_port, h_port) = calculate_adapted_window_size(1336, 600, false);
+        assert_eq!((w_port, h_port), (431, 960));
+        assert!(h_port > w_port, "Portrait target height must exceed width");
+
+        // Small landscape (e.g. 800x400) -> Portrait transition
+        // h clamped to [600, 960]: 400.max(800).min(960).max(600) = 800
+        // w = 800 * (600.0 / 1336.0) = 359
+        let (w_port_small, h_port_small) = calculate_adapted_window_size(800, 400, false);
+        assert_eq!((w_port_small, h_port_small), (359, 800));
+        assert!(h_port_small > w_port_small);
+    }
+
+    #[test]
+    fn test_last_adapted_rotation_prevents_oscillation() {
+        let mut st = SessState::default();
+        assert_eq!(st.last_adapted_rotation, None);
+
+        // First transition to rotation 1 (landscape) triggers adaptation
+        assert!(st.check_and_mark_adapted_rotation(1));
+        assert_eq!(st.last_adapted_rotation, Some(1));
+
+        // Duplicate rotation 1 notification (or resize echo) must NOT re-adapt
+        assert!(!st.check_and_mark_adapted_rotation(1));
+        assert_eq!(st.last_adapted_rotation, Some(1));
+
+        // Rotation 2 (180 deg) triggers adaptation
+        assert!(st.check_and_mark_adapted_rotation(2));
+        assert_eq!(st.last_adapted_rotation, Some(2));
+        assert!(!st.check_and_mark_adapted_rotation(2));
+
+        // Rotation 3 (270 deg) triggers adaptation
+        assert!(st.check_and_mark_adapted_rotation(3));
+        assert_eq!(st.last_adapted_rotation, Some(3));
+        assert!(!st.check_and_mark_adapted_rotation(3));
+
+        // Transition back to 0 (portrait) triggers adaptation
+        assert!(st.check_and_mark_adapted_rotation(0));
+        assert_eq!(st.last_adapted_rotation, Some(0));
+
+        // Immediate duplicate of 0 is suppressed
+        assert!(!st.check_and_mark_adapted_rotation(0));
+    }
+
+    #[test]
+    fn test_keyframe_request_generation() {
+        let _ = gst::init();
+        let ev = create_keyframe_request_event();
+        assert_eq!(ev.type_(), gst::EventType::CustomUpstream);
+        let s = ev.structure().expect("ForceKeyUnit event must have structure");
+        assert_eq!(s.name(), "GstForceKeyUnit");
+        assert_eq!(s.get::<bool>("all-headers"), Ok(true));
+    }
+
+    #[test]
+    fn test_session_request_keyframe_sends_upstream() {
+        let _ = gst::init();
+        let (ours, _theirs) = UnixStream::pair().unwrap();
+        let pipeline = gst::Pipeline::with_name("test-keyframe");
+        let src = gst::ElementFactory::make("fakesrc").build().unwrap();
+        let sink = gst::ElementFactory::make("fakesink").build().unwrap();
+        pipeline.add(&src).unwrap();
+        pipeline.add(&sink).unwrap();
+        src.link(&sink).unwrap();
+
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let received_clone = received.clone();
+        src.static_pad("src").unwrap().add_probe(
+            gst::PadProbeType::EVENT_UPSTREAM,
+            move |_pad, info| {
+                if let Some(gst::PadProbeData::Event(ref ev)) = info.data {
+                    if let Some(s) = ev.structure() {
+                        received_clone.lock().unwrap().push(s.name().to_string());
+                    }
+                }
+                gst::PadProbeReturn::Ok
+            },
+        );
+
+        pipeline.set_state(gst::State::Paused).unwrap();
+
+        let s = Arc::new(Session {
+            sid: 12345,
+            pkg: "com.test".into(),
+            user_id: json!(0),
+            cmp: Value::Null,
+            shortcut_id: Value::Null,
+            headless: false,
+            d: Arc::new(Daemon { cmd: Mutex::new(ours) }),
+            st: Mutex::default(),
+            pipeline: gst::Pipeline::with_name("test-kf-session"),
+            webrtc: gst::ElementFactory::make("identity").build().unwrap(),
+            title: Mutex::new("Test".into()),
+            tag: Mutex::new(None),
+            sink: Mutex::new(Some(sink)),
+            flip: Mutex::new(None),
+            xwin: Mutex::new(None),
+        });
+
+        s.request_keyframe();
+
+        let captured = received.lock().unwrap().clone();
+        assert!(
+            captured.contains(&"GstForceKeyUnit".to_string()),
+            "Upstream pad probe should have captured GstForceKeyUnit event, got: {:?}",
+            captured
+        );
+
+        let _ = pipeline.set_state(gst::State::Null);
+    }
+
+    #[test]
+    fn test_pick_decoder_returns_constructible_decoder() {
         let _ = gst::init();
         let dec = pick_decoder();
         assert!(!dec.is_empty());
-        if gst::ElementFactory::find("vah264dec").is_none() && gst::ElementFactory::find("vaapih264dec").is_none() {
-            if gst::ElementFactory::find("nvh264dec").is_some() && gst::ElementFactory::find("cudadownload").is_some() {
-                assert!(dec.contains("nvh264dec") && dec.contains("cudadownload"));
-            } else {
-                assert!(dec.starts_with("avdec_h264"));
-            }
+
+        // Validate that the returned decoder element (or element bin) can actually be instantiated
+        let sink = pick_sink();
+        let desc = format!(
+            "queue ! rtph264depay ! h264parse ! {} ! videoconvert name=conv n-threads=2 ! videoflip name=flip ! videoconvert n-threads=2 ! queue max-size-buffers=1 max-size-time=0 max-size-bytes=0 leaky=downstream ! taginject name=tag ! {} name=sink sync=false",
+            dec, sink
+        );
+        let bin = gst::parse::bin_from_description(&desc, true);
+        assert!(
+            bin.is_ok(),
+            "pick_decoder() produced '{}', which failed pipeline construction: {:?}",
+            dec,
+            bin.err()
+        );
+    }
+
+    #[test]
+    fn test_pick_decoder_fallback_behavior() {
+        let _ = gst::init();
+        let ok = |n: &str| gst::ElementFactory::make(n).build().is_ok();
+
+        // 1. Explicit cpu requested
+        let cpu_dec = pick_decoder_from(Some("cpu"));
+        assert!(cpu_dec.starts_with("avdec_h264"));
+
+        // 2. Default (None) selection
+        let auto_dec = pick_decoder_from(None);
+        if ok("vah264dec") {
+            assert_eq!(auto_dec, "vah264dec");
+        } else if ok("vaapih264dec") {
+            assert_eq!(auto_dec, "vaapih264dec");
+        } else if ok("nvh264dec") && ok("cudadownload") {
+            assert_eq!(auto_dec, "nvh264dec ! cudadownload ! video/x-raw");
+        } else {
+            assert!(auto_dec.starts_with("avdec_h264"));
+        }
+
+        // 3. Fallback when nvdec requested but unavailable
+        let nv_dec = pick_decoder_from(Some("nvdec"));
+        if ok("nvh264dec") && ok("cudadownload") {
+            assert_eq!(nv_dec, "nvh264dec ! cudadownload ! video/x-raw");
+        } else {
+            assert!(
+                nv_dec.starts_with("avdec_h264"),
+                "Unavailable nvdec should fall back to avdec_h264, got: {}",
+                nv_dec
+            );
+        }
+
+        // 4. Fallback when vaapi requested but unavailable
+        let va_dec = pick_decoder_from(Some("vaapi"));
+        if ok("vah264dec") {
+            assert_eq!(va_dec, "vah264dec");
+        } else if ok("vaapih264dec") {
+            assert_eq!(va_dec, "vaapih264dec");
+        } else {
+            assert!(
+                va_dec.starts_with("avdec_h264"),
+                "Unavailable vaapi should fall back to avdec_h264, got: {}",
+                va_dec
+            );
         }
     }
 
@@ -1958,11 +2189,14 @@ mod tests {
             xwin: Mutex::new(None),
         });
         assert_eq!(s.st.lock().unwrap().current_rotation, 0);
+        assert_eq!(s.st.lock().unwrap().last_adapted_rotation, None);
+
         s.set_rotation(1, None);
         assert_eq!(s.st.lock().unwrap().current_rotation, 1);
         assert_eq!(rotation_to_direction(1), "90l");
         assert_eq!(rotation_to_direction(2), "180");
         assert_eq!(rotation_to_direction(3), "90r");
+
         s.set_rotation(0, None);
         assert_eq!(s.st.lock().unwrap().current_rotation, 0);
         assert_eq!(rotation_to_direction(0), "identity");
