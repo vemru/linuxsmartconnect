@@ -30,6 +30,7 @@ jobs:
             gst-plugins-good \
             gst-plugins-bad \
             gst-plugins-bad-libs \
+            gst-libav \
             libnice \
             wayland \
             fuse3
