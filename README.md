@@ -13,12 +13,12 @@ The phone connects using the stock, unmodified Motorola/Lenovo Smart Connect app
 
 ## 📸 Preview
 
-| **Dashboard & Phone Status** | **Individual App Streaming** |
+| **Main Page & Device Status** | **Apps Page (App Streaming)** |
 | :---: | :---: |
-| ![Dashboard](docs/assets/dashboard.png) | ![Apps](docs/assets/apps.png) |
+| ![Main Page](docs/assets/main-page.png) | ![Apps Page](docs/assets/apps-page.png) |
 | *Phone connection, battery, live mirror & webcam controls* | *Launch single Android apps into native Linux windows* |
-| **Cross Control & External Display** | **Wireless File Sharing (NFS / FUSE)** |
-| ![Display](docs/assets/display.png) | ![Files](docs/assets/files.png) |
+| **Display Page (Cross Control)** | **Files Page (Wireless Storage)** |
+| ![Display Page](docs/assets/display-page.png) | ![Files Page](docs/assets/files-page.png) |
 | *Mouse/keyboard edge traversal and duplicate/extend modes* | *Mount phone storage locally and share PC folders to Android* |
 
 ---
