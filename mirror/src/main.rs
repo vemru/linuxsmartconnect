@@ -38,6 +38,7 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::mpsc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -224,6 +225,10 @@ struct Session {
     flip: Mutex<Option<gst::Element>>,
     /// The video window's X11 id once known, and the title last written to it.
     xwin: Mutex<Option<(u32, String)>>,
+    /// Flag set when the window close button is pressed or window close is requested.
+    closed_by_user: Arc<AtomicBool>,
+    /// Whether the GL close hook has been installed on this session's window.
+    close_hook_installed: AtomicBool,
 }
 
 /// What a new session is: the phone's ids for it plus how we show it.
@@ -235,6 +240,31 @@ struct SessionInfo {
     shortcut_id: Value,
     title: String,
     headless: bool,
+}
+
+struct CloseHookData {
+    closed: Arc<AtomicBool>,
+    orig_cb: gst_gl::ffi::GstGLWindowCB,
+    orig_data: glib::ffi::gpointer,
+}
+
+unsafe extern "C" fn on_gl_window_close(data: glib::ffi::gpointer) {
+    if data.is_null() {
+        return;
+    }
+    let hook_data = unsafe { &*(data as *mut CloseHookData) };
+    hook_data.closed.store(true, Ordering::SeqCst);
+    if let Some(orig) = hook_data.orig_cb {
+        unsafe { orig(hook_data.orig_data) };
+    }
+}
+
+unsafe extern "C" fn destroy_close_hook(data: glib::ffi::gpointer) {
+    if !data.is_null() {
+        unsafe {
+            drop(Box::from_raw(data as *mut CloseHookData));
+        }
+    }
 }
 
 impl Session {
@@ -266,6 +296,8 @@ impl Session {
             sink: Mutex::new(None),
             flip: Mutex::new(None),
             xwin: Mutex::new(None),
+            closed_by_user: Arc::new(AtomicBool::new(false)),
+            close_hook_installed: AtomicBool::new(false),
         });
         {
             let w = Arc::downgrade(&s);
@@ -358,6 +390,32 @@ impl Session {
         // Listen on tag's sink pad (downstream of videoflip) so coordinates match the rendered
         // window display in both portrait and landscape without inverted transforms by videoflip.
         let w = Arc::downgrade(self);
+                if let Some(conv) = bin.by_name("conv") {
+            let sid = self.sid;
+            if let Some(sp) = conv.static_pad("sink") {
+                sp.add_probe(gst::PadProbeType::EVENT_DOWNSTREAM, move |_pad, info| {
+                    if let Some(gst::PadProbeData::Event(ev)) = &info.data {
+                        if let gst::EventView::Caps(c) = ev.view() {
+                            println!("[{sid}] DECODER OUTPUT CAPS: {}", c.caps());
+                        }
+                    }
+                    gst::PadProbeReturn::Ok
+                });
+            }
+        }
+        if let Some(tag_el) = bin.by_name("tag") {
+            let sid = self.sid;
+            if let Some(sp) = tag_el.static_pad("src") {
+                sp.add_probe(gst::PadProbeType::EVENT_DOWNSTREAM, move |pad, info| {
+                    if let Some(gst::PadProbeData::Event(ev)) = &info.data {
+                        if ev.type_() == gst::EventType::Caps {
+                            println!("[{sid}] SINK INPUT CAPS (after flip): {:?}", pad.current_caps().map(|c| c.to_string()));
+                        }
+                    }
+                    gst::PadProbeReturn::Ok
+                });
+            }
+        }
         tag.static_pad("sink").context("no tag sink pad")?.add_probe(gst::PadProbeType::EVENT_UPSTREAM, move |_, info| {
             if let (Some(s), Some(gst::PadProbeData::Event(ev))) = (w.upgrade(), &info.data) {
                 if ev.type_() == gst::EventType::Navigation {
@@ -663,14 +721,61 @@ impl Session {
         true
     }
 
-    /// Window closed (the sink posts an error), stream ended, or ICE down for > 5 s.
-    fn poll_dead(&self) -> Option<String> {
+    fn install_close_hook(&self) {
+        if self.close_hook_installed.load(Ordering::SeqCst) {
+            return;
+        }
+        let Some(sink) = self.sink.lock().unwrap().clone() else { return };
+        if sink.find_property("context").is_none() {
+            return;
+        }
+        use gst_gl::prelude::*;
+        let Some(ctx) = sink.property::<Option<gst_gl::GLContext>>("context") else { return };
+        let Some(win) = ctx.window() else { return };
+
+        if self.close_hook_installed.swap(true, Ordering::SeqCst) {
+            return;
+        }
+
+        use glib::translate::ToGlibPtr;
+        let raw_win: *mut gst_gl::ffi::GstGLWindow = win.to_glib_none().0;
+        unsafe {
+            let orig_cb = (*raw_win).close;
+            let orig_data = (*raw_win).close_data;
+            let hook_data = Box::into_raw(Box::new(CloseHookData {
+                closed: self.closed_by_user.clone(),
+                orig_cb,
+                orig_data,
+            }));
+            gst_gl::ffi::gst_gl_window_set_close_callback(
+                raw_win,
+                Some(on_gl_window_close),
+                hook_data as glib::ffi::gpointer,
+                Some(destroy_close_hook),
+            );
+        }
+        println!("[{}] window close hook installed", self.sid);
+    }
+
+    /// Window closed (the sink posts an error, close callback fired, or X11 window destroyed), stream ended, or ICE down for > 5 s.
+    fn poll_dead(&self, x11: Option<&X11>) -> Option<String> {
+        if self.closed_by_user.load(Ordering::Relaxed) {
+            return Some("window closed by user".into());
+        }
         if let Some(bus) = self.pipeline.bus() {
             while let Some(msg) = bus.pop() {
                 match msg.view() {
                     gst::MessageView::Error(e) => return Some(format!("window closed or failed: {}", e.error())),
                     gst::MessageView::Eos(_) => return Some("end of stream".into()),
                     _ => {}
+                }
+            }
+        }
+        if let Some(x) = x11 {
+            let xw = self.xwin.lock().unwrap();
+            if let Some((win, _)) = *xw {
+                if x.window_size(win).is_none() {
+                    return Some("window closed by user (window destroyed)".into());
                 }
             }
         }
@@ -746,6 +851,15 @@ fn gl_window_handle(sink: &gst::Element) -> u32 {
 /// Maps Android display rotation (0 = natural, 1 = 90° CCW / landscape, 2 = 180°, 3 = 270°)
 /// to GStreamer videoflip direction string.
 fn rotation_to_direction(rot: u32) -> &'static str {
+    if let Ok(dir) = std::env::var("SMARTCONNECT_ROTATION_DIR") {
+        return match dir.as_str() {
+            "90r" => "90r",
+            "90l" => "90l",
+            "180" => "180",
+            "identity" => "identity",
+            _ => "identity",
+        };
+    }
     match rot {
         1 => "90l",
         2 => "180",
@@ -824,6 +938,7 @@ impl Session {
     }
 
     fn sync_x11_title(&self, x: &X11) {
+        self.install_close_hook();
         let title = self.title.lock().unwrap().clone();
         let mut xw = self.xwin.lock().unwrap();
         match &mut *xw {
@@ -1193,12 +1308,18 @@ impl Host {
                     }
                 }
             }
-            16 | 23 => {
+            16 => {
                 if let Some(s) = mine {
                     let rot = body.get("rotation").and_then(Value::as_u64).unwrap_or(0) as u32;
-                    println!("[{}] cmd {cmd}: rotation {rot} display {}", s.sid, body["displayId"]);
+                    println!("[{}] cmd 16: rotation {rot} display {}", s.sid, body["displayId"]);
                     s.learn_display(&body);
                     s.set_rotation(rot, self.x11.as_ref());
+                }
+            }
+            23 => {
+                if let Some(s) = mine {
+                    println!("[{}] cmd 23 display state: state {} display {}", s.sid, body["state"], body["displayId"]);
+                    s.learn_display(&body);
                 }
             }
             26 => {
@@ -1324,10 +1445,14 @@ impl Host {
     fn tick(&mut self) {
         for s in self.sessions.values() {
             s.flush_pending_mouse();
+            s.install_close_hook();
         }
         let now = Instant::now();
-        let dead: Vec<(i64, String)> =
-            self.sessions.values().filter_map(|s| s.poll_dead().map(|w| (s.sid, w))).collect();
+        let dead: Vec<(i64, String)> = self
+            .sessions
+            .values()
+            .filter_map(|s| s.poll_dead(self.x11.as_ref()).map(|w| (s.sid, w)))
+            .collect();
         for (sid, why) in dead {
             self.close_session(sid, &why, true);
         }
@@ -2083,6 +2208,8 @@ mod tests {
             sink: Mutex::new(Some(sink)),
             flip: Mutex::new(None),
             xwin: Mutex::new(None),
+            closed_by_user: Arc::new(AtomicBool::new(false)),
+            close_hook_installed: AtomicBool::new(false),
         });
 
         s.request_keyframe();
@@ -2167,6 +2294,37 @@ mod tests {
     }
 
     #[test]
+    fn test_window_close_detection() {
+        let (ours, _theirs) = UnixStream::pair().unwrap();
+        let s = Arc::new(Session {
+            sid: 99999,
+            pkg: "com.close.test".into(),
+            user_id: json!(0),
+            cmp: Value::Null,
+            shortcut_id: Value::Null,
+            headless: false,
+            d: Arc::new(Daemon { cmd: Mutex::new(ours) }),
+            st: Mutex::default(),
+            pipeline: gst::Pipeline::with_name("test-close"),
+            webrtc: gst::ElementFactory::make("identity").build().unwrap(),
+            title: Mutex::new("Test Close".into()),
+            tag: Mutex::new(None),
+            sink: Mutex::new(None),
+            flip: Mutex::new(None),
+            xwin: Mutex::new(None),
+            closed_by_user: Arc::new(AtomicBool::new(false)),
+            close_hook_installed: AtomicBool::new(false),
+        });
+
+        // Initially not dead
+        assert!(s.poll_dead(None).is_none());
+
+        // When closed_by_user is signaled (e.g. from glimagesink close callback or WM_DELETE_WINDOW):
+        s.closed_by_user.store(true, Ordering::SeqCst);
+        assert_eq!(s.poll_dead(None), Some("window closed by user".into()));
+    }
+
+    #[test]
     fn test_rotation_tracking() {
         let _ = gst::init();
         let (ours, _theirs) = UnixStream::pair().unwrap();
@@ -2187,6 +2345,8 @@ mod tests {
             sink: Mutex::new(None),
             flip: Mutex::new(Some(flip)),
             xwin: Mutex::new(None),
+            closed_by_user: Arc::new(AtomicBool::new(false)),
+            close_hook_installed: AtomicBool::new(false),
         });
         assert_eq!(s.st.lock().unwrap().current_rotation, 0);
         assert_eq!(s.st.lock().unwrap().last_adapted_rotation, None);
