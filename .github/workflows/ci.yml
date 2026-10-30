@@ -19,9 +19,6 @@ jobs:
             git \
             base-devel \
             rust \
-            cargo \
-            clippy \
-            rustfmt \
             pkgconf \
             dbus \
             glib2 \
