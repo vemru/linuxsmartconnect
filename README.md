@@ -11,6 +11,15 @@ The phone connects using the stock, unmodified Motorola/Lenovo Smart Connect app
 
 ---
 
+## 📸 Preview
+
+| **GTK4 Dashboard & Device Pairing** | **Phone as Webcam (`v4l2loopback`)** |
+| :---: | :---: |
+| ![Dashboard](docs/assets/dashboard.png) | ![Webcam Controls](docs/assets/webcam.png) |
+| *QR pairing, mDNS auto-discovery, and connection state* | *Live V4L2 camera stream, resolution & brightness controls* |
+
+---
+
 ## Key Features
 
 - **Phone as Webcam:** Feed high-definition front/back camera streams into Linux desktop apps (Google Meet, Zoom, OBS, browsers) via `v4l2loopback` or PipeWire, with live bitrate, exposure, and orientation controls.
