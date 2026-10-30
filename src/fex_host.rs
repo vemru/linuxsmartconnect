@@ -155,11 +155,11 @@ mod tests {
 
     #[test]
     fn only_the_connected_phones_exact_address_is_allowed() {
-        let phone: SocketAddr = "192.168.0.141:45000".parse().unwrap();
-        assert!(peer_allowed(Some("192.168.0.141".parse().unwrap()), phone));
+        let phone: SocketAddr = "192.168.1.30:45000".parse().unwrap();
+        assert!(peer_allowed(Some("192.168.1.30".parse().unwrap()), phone));
         // A different host in the exact same /24 subnet is refused:
-        assert!(!peer_allowed(Some("192.168.0.142".parse().unwrap()), phone));
-        assert!(!peer_allowed(Some("192.168.0.1".parse().unwrap()), phone));
+        assert!(!peer_allowed(Some("192.168.1.35".parse().unwrap()), phone));
+        assert!(!peer_allowed(Some("192.168.1.1".parse().unwrap()), phone));
         assert!(!peer_allowed(None, phone), "with no session there is no phone to serve");
     }
 
@@ -167,10 +167,10 @@ mod tests {
     async fn a_stranger_in_the_same_subnet_gets_no_websocket_and_no_offer_is_claimed() {
         let registry = Registry::default();
         let t = registry.offer(&[png()], "", "");
-        // 192.168.0.142 is a neighbor in the same /24 as phone 192.168.0.141:
-        let peer: SocketAddr = "192.168.0.142:5555".parse().unwrap();
+        // 192.168.1.35 is a neighbor in the same /24 as phone 192.168.1.30:
+        let peer: SocketAddr = "192.168.1.35:5555".parse().unwrap();
         let (mut client, server) = tokio::io::duplex(4096);
-        serve(&registry, Prefixed::new(Vec::new(), server), "/websocket", peer, Some("192.168.0.141".parse().unwrap())).await.unwrap();
+        serve(&registry, Prefixed::new(Vec::new(), server), "/websocket", peer, Some("192.168.1.30".parse().unwrap())).await.unwrap();
         let mut out = Vec::new();
         client.read_to_end(&mut out).await.unwrap();
         assert!(String::from_utf8_lossy(&out).starts_with("HTTP/1.1 403 Forbidden\r\n"), "{}", String::from_utf8_lossy(&out));
@@ -184,19 +184,19 @@ mod tests {
         let t = registry.offer(&[png()], "", "");
         let download = format!("/download?taskId={}&token={}", t.task_id, t.token);
 
-        // 192.168.0.142 is a neighbor in the same /24 as phone 192.168.0.141:
-        let peer: SocketAddr = "192.168.0.142:5555".parse().unwrap();
+        // 192.168.1.35 is a neighbor in the same /24 as phone 192.168.1.30:
+        let peer: SocketAddr = "192.168.1.35:5555".parse().unwrap();
         let (mut client, server) = tokio::io::duplex(4096);
-        serve(&registry, Prefixed::new(Vec::new(), server), &download, peer, Some("192.168.0.141".parse().unwrap())).await.unwrap();
+        serve(&registry, Prefixed::new(Vec::new(), server), &download, peer, Some("192.168.1.30".parse().unwrap())).await.unwrap();
         let mut out = Vec::new();
         client.read_to_end(&mut out).await.unwrap();
         assert!(String::from_utf8_lossy(&out).starts_with("HTTP/1.1 403 Forbidden\r\n"), "{}", String::from_utf8_lossy(&out));
         assert!(!out.ends_with(&t.zip), "the zip must not reach a stranger in the same /24");
 
-        // The phone itself at 192.168.0.141:
-        let peer: SocketAddr = "192.168.0.141:45000".parse().unwrap();
+        // The phone itself at 192.168.1.30:
+        let peer: SocketAddr = "192.168.1.30:45000".parse().unwrap();
         let (mut client, server) = tokio::io::duplex(4096);
-        serve(&registry, Prefixed::new(Vec::new(), server), &download, peer, Some("192.168.0.141".parse().unwrap())).await.unwrap();
+        serve(&registry, Prefixed::new(Vec::new(), server), &download, peer, Some("192.168.1.30".parse().unwrap())).await.unwrap();
         let mut out = Vec::new();
         client.read_to_end(&mut out).await.unwrap();
         assert!(out.ends_with(&t.zip), "the phone still gets its download");
