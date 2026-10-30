@@ -1,6 +1,6 @@
 [package]
 name = "smartconnect-crosscontrol"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 license = "MIT"
 description = "Cross Control (svc 26): glide the PC mouse+keyboard onto a Smart Connect phone (Wayland layer-shell + pointer lock, or the InputCapture portal)"
