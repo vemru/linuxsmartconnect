@@ -1,8 +1,9 @@
 # Usage
 
-Status keys used on this page, the same as in the [README](../README.md#feature-status):
+Status keys used on this page:
 ✅ verified on a real phone · 🟡 implemented, not verified on a phone yet · ❌ not supported
 
+- [Feature status matrix](#feature-status-matrix)
 - [Ways to drive it](#ways-to-drive-it)
 - [Running the daemon](#running-the-daemon)
 - [Pairing](#pairing)
@@ -20,6 +21,81 @@ Status keys used on this page, the same as in the [README](../README.md#feature-
   [`smartconnect-display`](#smartconnect-display) · [`smartconnect-webcam`](#smartconnect-webcam) ·
   [`smartconnect-files`](#smartconnect-files) · [`smartconnect-fex`](#smartconnect-fex) · [`smartconnect-gui`](#smartconnect-gui) · [Noctalia IPC](#noctalia-ipc) ·
   [environment variables](#environment-variables) · [files](#files)
+
+## Feature status matrix
+
+Tested with a motorola edge 60 stylus running Smart Connect 09.0.3.013, against niri 26.04 with
+Noctalia Shell on Arch Linux. Other phones, app versions and desktops may behave differently.
+
+### Connection
+| Feature | Status | Notes |
+|---|---|---|
+| Pairing by QR code | ✅ | Scan a QR from the Smart Connect app; the PC then appears in the phone's device list. |
+| Reconnect over Wi-Fi and Bluetooth LE | ✅ | The phone's Connect button, the daemon dialing the phone back over Wi-Fi (mDNS), and a Bluetooth LE wake that reaches the phone while Smart Connect is in the background. |
+| Automatic reconnect | ✅ | After drops, at startup and after a failed Connect, with Smart Connect in the background on the phone (Bluetooth LE wake, about 5 to 6 s). Early retries (phone back on Wi-Fi, resume, network change, Bluetooth switched on) and dropping a dead session after 70 s of silence are unit-tested. A Disconnect from either side is respected. |
+| Feature tiles for this PC on the phone | ✅ | App streaming, Cross Control, PC lock, Hotspot and Webcam. |
+| PC lock tile | 🟡 | Locks through Noctalia's lock screen when it runs, else logind (GNOME under GDM, KDE, swayidle/hypridle lockers), or `--lock-command`. |
+| Hotspot tile | 🟡 | Connects or disconnects using NetworkManager (`nmcli`). |
+
+### Notifications, clipboard and messages
+| Feature | Status | Notes |
+|---|---|---|
+| Phone notifications, quick reply, multi-line messages | ✅ | Through your desktop's notification daemon. Reply from a small window, the GTK app or the Noctalia panel. Chats show their recent messages, with sender names in groups. |
+| Notification action buttons and "Open" | 🟡 | Action buttons (e.g. "Mark as read") run on the phone through a short background app-streaming session, without a window. |
+| Notification dedupe, coalescing and themed icons | 🟡 | Prevents notification spam and shows native app/themed icons. |
+| Per-app notification mute | 🟡 | A mute toggle on each notification and a *Muted apps* list, in the GTK app and the Noctalia plugin. |
+| Clipboard text, both ways | ✅ | Password-manager copies are never sent to the phone. |
+| Clipboard images and files | ❌ | Protocol reconstructed ([file-exchange.md](protocol/file-exchange.md), [clipboard.md](protocol/clipboard.md)). |
+| SMS (read threads, send, mark read) | 🟡 | Control socket only, no UI yet. Needs enabling on the phone. |
+
+### Mirroring and app streaming
+| Feature | Status | Notes |
+|---|---|---|
+| Phone screen mirroring with mouse input | ✅ | Low-latency WebRTC mirroring. |
+| Keyboard, phone keys and scrolling in the mirror window | 🟡 | Esc = Back, Ctrl+Alt+H = Home, Ctrl+Alt+R = Recents. |
+| App streaming started from the PC | ✅ | Each phone app in its own Linux window (`smartconnect-mirror --app`). |
+| App streaming from the phone's tile and the GTK app's *Apps* page | 🟡 | Select and launch apps directly from the desktop. |
+| Real app icons for the *Apps* page | ✅ | Downloaded from the phone on every connection into `~/.cache/smartconnect-linux/app-icons/`. |
+| App window resize | 🟡 | Opt-in (`SMARTCONNECT_MIRROR_RESIZE=1`): the phone resizes the app's virtual display to the window. |
+| Screen share and Mobile desktop tiles | 🟡 | Shown by default. Mobile desktop has been started from the phone; Screen share is less tested. |
+
+### Cross Control
+| Feature | Status | Notes |
+|---|---|---|
+| Cross Control started from the PC | ✅ | The PC's mouse and keyboard glide onto the phone across a screen edge. |
+| Cross Control started from the phone's tile | ✅ | Verified on GNOME. The tile arms shared mouse and keyboard. |
+| Cross Control on GNOME | ✅ | Uses the InputCapture portal (asks for permission once) instead of wlr-layer-shell. Verified on GNOME 51. |
+| Cross Control modes and a phone position editor | 🟡 | Shared mouse and keyboard, Duplicate display, Extend display; drag the phone to any side of the screen. |
+
+### Phone as a display
+| Feature | Status | Notes |
+|---|---|---|
+| Extend | ✅ | The phone becomes a second monitor at the phone's resolution, placed to the right of your screens (`smartconnect-display --mode extend`). Verified with the phone on niri (vkms output), GNOME (Mutter virtual monitor), and Hyprland. |
+| Duplicate | ✅ | Shows the focused screen on the phone (niri, GNOME, Hyprland verified; KDE, sway untested). |
+| Display scale | ✅ | 200 % by default, the value Windows uses (`--display-scale`). |
+| Keyboard button on the phone display | ✅ | Shows an on-screen keyboard ([wvkbd](https://git.sr.ht/~proycon/wvkbd)) on the shared screen. |
+| Touch input | 🟡 | Tap = click, drag, long-press = right click, two-finger scroll. |
+| Following the phone's rotation | 🟡 | Opt-in: `--follow-rotation`. |
+| The PC's audio on the phone | 🟡 | Opt-in: `--audio`. |
+
+### Webcam
+| Feature | Status | Notes |
+|---|---|---|
+| Phone as a webcam | ✅ | `smartconnect-webcam`: the phone camera as a v4l2loopback device or a PipeWire camera. Switching between the front and back camera keeps the stream. 1280×720 at 30 fps, set by the phone. |
+| Webcam quality and controls | ✅ | Configurable bitrate, mirror, flip, brightness, contrast, and quality via GTK GUI and tray menu. |
+
+### Files
+| Feature | Status | Notes |
+|---|---|---|
+| Browse the phone's files (mount `/sdcard`) | ✅ | `smartconnect-files mount`: the phone's storage as a read-only FUSE folder over File Station (NFSv3 on mutual TLS). |
+| Phone files in the GTK app & Noctalia panel | 🟡 | The *Files* page: Mount, Open in Files, Unmount, quick folders (Camera, Screenshots, Downloads, Documents). |
+| Share a PC folder to the phone | ✅ | `smartconnect-files serve`, or *Share with the phone* on the GTK app's Files page: the phone browses a folder in Smart Connect's Files tab and Android's file browser. |
+| Writing to the phone | 🟡 | Reverse-engineered; the NFS write path is not implemented yet. |
+
+### Desktop app
+| Feature | Status | Notes |
+|---|---|---|
+| GTK app tray icon and background running | ✅ | A StatusNotifierItem with live status, webcam controls, window visibility, and connection state. |
 
 ## Ways to drive it
 

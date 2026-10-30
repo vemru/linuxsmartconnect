@@ -454,6 +454,30 @@ jq -c 'select(.frame | type == "object") | select(.frame.serviceId == 15)' "$f" 
 The live equivalent is the control socket's `watch` command
 (see [Control socket API](control-socket-api.md#watch)).
 
+## Known Limitations
+
+- **Only one phone at a time:** The daemon pairs and connects a single phone. While one phone is
+  connected you cannot pair or connect a second one; disconnect the first, and later reconnect it
+  only after disconnecting the other.
+- **Reconnecting while Smart Connect is in the background needs Bluetooth on the PC:** A
+  backgrounded phone app has no Wi-Fi listener and never reconnects to a PC by itself, so the daemon
+  wakes it over Bluetooth LE, as the Windows app does.
+- **Messaging notifications show the app icon, not the sender's picture:** With WhatsApp-style chat
+  notifications the phone sends only its owner's own picture, never the sender's
+  ([details](protocol/notifications.md#whose-picture-is-person_icon)).
+- **Browsing the phone's files can be slow:** Every directory and file read is an NFS round-trip over
+  TLS to the phone, so large folders and big files feel sluggish without caching.
+- **Writing to the phone and the image/file clipboard aren't implemented yet:** Sharing a PC folder
+  *to* the phone is supported via `smartconnect-files serve`, but NFS write path to `/sdcard` is not yet available.
+- **The webcam is 1280×720 at 30 fps:** The phone app fixes this in this mode. Without
+  `v4l2loopback` the camera is PipeWire-only (OBS, Firefox with `media.webrtc.camera.allow-pipewire`).
+- **Extend on niri needs a virtual output:** niri can't create one, so use the `vkms` module or an
+  HDMI dummy plug.
+- **KDE Plasma needs the installed `.desktop` file** for the phone display (KWin only offers screen
+  casting and input injection to trusted programs).
+- **The PC lock tile can't lock GNOME started from SDDM or LightDM:** GNOME Shell only has a lock
+  screen under GDM. Other lockers that ignore logind need `--lock-command`.
+
 ## Starting over
 
 - **Pair again:** remove the PC in the Smart Connect app, then scan a fresh QR.
