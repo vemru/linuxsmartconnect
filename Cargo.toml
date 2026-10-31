@@ -1,6 +1,6 @@
 [package]
 name = "smartconnect-linux"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2024"
 license = "MIT"
 description = "smartconnectd: unofficial Linux peer for the Motorola Smart Connect phone app (pairing, sessions, notifications, clipboard, SMS, control socket for the helpers)"

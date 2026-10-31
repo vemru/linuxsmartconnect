@@ -261,11 +261,16 @@ For GStreamer-level detail, run the viewer by hand with
   fusermount3 -uz ~/Phone
   ```
 
-  The helper and the front-ends clear it themselves: the helper before mounting, the GTK app at startup and when
-  you press Open, the Noctalia panel when it opens and on Open.
+  Normally you don't have to: the helper runs a tiny watchdog child that unmounts as soon as the
+  helper's pipe closes, so even `kill -9` releases the mount. The front-ends also clear a stale mount
+  themselves: the helper before mounting, the GTK app at startup and when you press Open, the
+  Noctalia panel when it opens and on Open.
 - **Files say "Input/output error" for a while, then work again**: the phone went away (Wi-Fi drop,
-  sleep, `smartconnectd` restarting). The mount stays up and reconnects by itself once the phone is
-  connected again; nothing to do. After 10 minutes without the phone the helper unmounts.
+  sleep, `smartconnectd` restarting). File contents and directory listings fail while it is away; the
+  mount stays up and reconnects by itself once the phone is connected again. Metadata for entries it
+  has already seen (including the mount folder itself) keeps answering from the last known values,
+  so your home folder still opens in a file manager. Nothing to do. After 10 minutes without the
+  phone the helper unmounts.
 - **Unmount says "Device or resource busy"**: a shell or file manager is still inside the folder.
   `fusermount3 -uz ~/Phone` detaches it lazily (the helper and the apps fall back to that on their own).
 - The helper's output: `$XDG_RUNTIME_DIR/smartconnect-files.log` when the GTK app started it; run

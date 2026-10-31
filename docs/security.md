@@ -89,8 +89,11 @@ These are the kinds of things the Windows app allows too. A paired phone can:
 - **send a link, text or a file to your desktop** (phone share sheet / File explorer). It cannot
   open or run anything by itself: you get a notification with the content and must choose **Open**
   (which still asks the portal and app picker) or **Save as…**. Only `http`/`https` links offer
-  Open; other text is shown but never launched. Received files wait in a private runtime directory
-  and are deleted on Dismiss, after Open/Save, when replaced, or after 30 minutes;
+  Open; other text is shown but never launched. Received files are unpacked in a private runtime
+  directory first, then saved under a sanitized, non-overwriting name in your download folder
+  (`~/Downloads`, or the XDG download folder); the notification's staging copy is deleted on
+  Dismiss, after Open/Save, when replaced, or after 30 minutes, while the download copy stays
+  until you delete it;
 - **start a phone-display session by itself** (when the PC's screen is started from the phone), as
   it can with the Windows app: the daemon then starts `smartconnect-display`, and the phone sees the
   duplicated or extended screen, can move the pointer and type on the PC, and hears the PC's audio
@@ -145,7 +148,7 @@ Elsewhere:
 | Location | Contents | Lifetime |
 |---|---|---|
 | `$XDG_RUNTIME_DIR/smartconnectd/icons/` | App icons, contact photos and pictures from notifications (JPEG) | tmpfs, cleared at logout/reboot |
-| `$XDG_RUNTIME_DIR/smartconnectd/shares/` | Files the phone shared, each in a 0700 directory until you Open, Save as…, Dismiss, replace it, or 30 minutes pass | tmpfs, cleared at logout/reboot |
+| `$XDG_RUNTIME_DIR/smartconnectd/shares/` | Files the phone shared, each in a 0700 directory until you Open, Save as…, Dismiss, replace it, or 30 minutes pass (the saved copy in the download folder stays) | tmpfs, cleared at logout/reboot |
 | `$XDG_RUNTIME_DIR/smartconnectd/phone-wallpaper.*` | The phone's wallpaper | same |
 | `$XDG_RUNTIME_DIR/smartconnectd/*.log` | Output of helpers the daemon started | same |
 | `$XDG_RUNTIME_DIR/smartconnect-display.log` | Output of the phone display session the GTK app or the plugin started | same |
@@ -225,7 +228,9 @@ These are open issues, listed so you can judge the risk:
    the phone sends. Mitigation: firewall port 52020 to your LAN, and remove phones you no longer
    use from `paired.json`.
 2. **The daemon listens on every interface**, VPN and container networks included. Mitigation: the
-   firewall.
+   firewall. Do not expose port 52020 or 2049 via reverse proxies or public tunnels (e.g. Cloudflare
+   Tunnel) without authenticating the tunnel ingress (Cloudflare Zero Trust Access / email PIN / SSO),
+   as localhost ingress bypasses LAN-isolation checks and exposes the reconnect endpoint publicly.
 3. **No authentication on the local sockets** beyond file permissions. This is by design; see
    [Local exposure](#local-exposure).
 4. **A Hotspot profile can be left behind** in NetworkManager if the daemon stops while you are on

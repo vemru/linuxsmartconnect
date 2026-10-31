@@ -3,17 +3,18 @@
 //! The phone has no push channel for this: a shared link/text arrives as the `text` field of a
 //! service 2 `FileExSendData` (or a service 24 drag-and-drop `cmd 1`), and shared files arrive as a
 //! service 2 offer with a fex `port` + certificate `fingerprint` that we pull with
-//! [`smartconnect_fex::client::pull`]. We never open or run anything on arrival: the desktop gets a
-//! notification with **Open** and **Dismiss** (and **Save as…** for files), and every launch goes
-//! through the user's own choice in the xdg-desktop-portal.
+//! [`smartconnect_fex::client::pull`]. Received files are saved in the user's download folder
+//! (`~/Downloads`, or the XDG download folder) under a sanitized, non-overwriting name, and the
+//! desktop gets a notification with **Open**, **Save as…** and **Dismiss**. We never open or run
+//! anything on arrival: every launch goes through the user's own choice in the xdg-desktop-portal.
 //!
 //! Security rules (see `docs/protocol/file-exchange.md`):
 //! - Only `http`/`https` links get an Open action; other text is shown, never launched.
-//! - Received names are sanitised (no separators, `..`, control characters or leading dots) and
-//!   extracted into a private `$XDG_RUNTIME_DIR/smartconnectd/shares/<random>` directory.
-//! - Nothing is auto-opened, and staged files are deleted on Dismiss, after a successful Open/Save,
-//!   when replaced by a newer share, or after [`SHARE_TTL`]. (A folder you Open stays for a day: the
-//!   file manager is browsing it.)
+//! - Received names are sanitised (no separators, `..`, control characters or leading dots),
+//!   extracted into a private `$XDG_RUNTIME_DIR/smartconnectd/shares/<random>` directory, then
+//!   copied to the download folder.
+//! - Nothing is auto-opened. The staging copy is deleted on Dismiss, after a successful Open/Save,
+//!   when replaced by a newer share, or after [`SHARE_TTL`]; the download copy is the user's.
 //! - Spawned commands receive argv only (never a shell), and notification actions are rate-limited.
 
 use std::collections::{HashMap, VecDeque};
@@ -117,11 +118,16 @@ enum Content {
         text: String,
     },
     File {
+        /// The private staging directory (always removed when the share is finished).
         dir: PathBuf,
+        /// The file/folder to open or save: the copy in Downloads, or the staged copy if saving
+        /// there failed.
         path: PathBuf,
         name: String,
         size: u64,
         is_dir: bool,
+        /// `path` is a persistent copy in the user's download folder, not staging.
+        saved: bool,
     },
 }
 
@@ -136,11 +142,21 @@ impl Content {
     }
 
     fn summary(&self) -> &'static str {
-        match self.kind() {
-            PopupKind::Link => "Shared link",
-            PopupKind::Text => "Shared text",
-            PopupKind::File => "Shared file",
-            PopupKind::Folder => "Shared folder",
+        match self {
+            Self::Link { .. } => "Shared link",
+            Self::Text { .. } => "Shared text",
+            Self::File {
+                is_dir: false,
+                saved: true,
+                ..
+            } => "Shared file saved",
+            Self::File {
+                is_dir: true,
+                saved: true,
+                ..
+            } => "Shared folder saved",
+            Self::File { is_dir: false, .. } => "Shared file",
+            Self::File { .. } => "Shared folder",
         }
     }
 
@@ -149,10 +165,19 @@ impl Content {
             Self::Link { uri } => uri.clone(),
             Self::Text { text } => text.chars().take(TEXT_MAX_CHARS).collect(),
             Self::File {
-                name, size, is_dir, ..
+                name,
+                size,
+                is_dir,
+                path,
+                saved,
+                ..
             } => {
                 let what = if *is_dir { "folder" } else { "file" };
-                format!("{name}\n{} • {what}", format_size(*size))
+                let mut body = format!("{name}\n{} • {what}", format_size(*size));
+                if *saved {
+                    body.push_str(&format!("\nSaved to {}", path.display()));
+                }
+                body
             }
         }
     }
@@ -360,12 +385,22 @@ impl<D: Desktop> ShareManager<D> {
         match result {
             Ok(staged) => {
                 info!(name = %staged.name, bytes = staged.size, path = %staged.path.display(), "sharing: file received");
+                // Save it where the user expects downloads to land, so dismissing the notification
+                // (or missing it) doesn't lose the file. `Save as…` still copies it elsewhere.
+                let (path, saved) = match downloads_dir() {
+                    Some(downloads) => match auto_save(&staged, &downloads).await {
+                        Some(saved) => (saved, true),
+                        None => (staged.path.clone(), false),
+                    },
+                    None => (staged.path.clone(), false),
+                };
                 let content = Content::File {
                     dir: staged.dir,
-                    path: staged.path,
+                    path,
                     name: staged.name,
                     size: staged.size,
                     is_dir: staged.is_dir,
+                    saved,
                 };
                 self.present(content).await;
             }
@@ -508,8 +543,17 @@ impl<D: Desktop> ShareManager<D> {
                     Err(e) => warn!(%uri, "sharing: opening the link failed: {e:#}"),
                 },
                 Content::File {
-                    dir, path, is_dir, ..
+                    dir,
+                    path,
+                    is_dir,
+                    saved,
+                    ..
                 } => match self.desktop.open_path(path.clone()).await {
+                    Ok(()) if *is_dir && *saved => {
+                        // The folder opened is the persistent copy in Downloads; staging is no
+                        // longer needed.
+                        self.finish(p.token).await;
+                    }
                     Ok(()) if *is_dir => {
                         // The file manager is browsing the staged folder now; deleting it would
                         // empty the window. Keep it for a day (the runtime dir is tmpfs).
@@ -848,8 +892,9 @@ fn safe_relative_path(name: &str) -> Option<PathBuf> {
 
 /// Never overwrite: `report.pdf`, then `report (2).pdf`, in the same directory.
 fn unique_path(root: &Path, rel: &Path) -> PathBuf {
+    let exists = |p: &Path| std::fs::symlink_metadata(p).is_ok();
     let candidate = root.join(rel);
-    if !candidate.exists() {
+    if !exists(&candidate) {
         return candidate;
     }
     let parent = candidate.parent().unwrap_or(root);
@@ -864,7 +909,7 @@ fn unique_path(root: &Path, rel: &Path) -> PathBuf {
         .unwrap_or_default();
     for i in 2..1000 {
         let candidate = parent.join(format!("{stem} ({i}){ext}"));
-        if !candidate.exists() {
+        if !exists(&candidate) {
             return candidate;
         }
     }
@@ -879,6 +924,23 @@ async fn cleanup(content: &Content) {
         Ok(()) => debug!(path = %dir.display(), "sharing: staging removed"),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => warn!(path = %dir.display(), "sharing: removing staging failed: {e}"),
+    }
+}
+
+/// Copies a received file/folder into the user's download folder (the default destination for a
+/// shared file), never overwriting. Returns the saved path, or `None` when there is no download
+/// folder or the copy failed; the staged copy is then still offered with **Save as…**.
+async fn auto_save(staged: &Staged, downloads: &Path) -> Option<PathBuf> {
+    let dest = unique_path(downloads, Path::new(&staged.name));
+    match save_content(&staged.path, &dest, staged.is_dir).await {
+        Ok(saved) => {
+            info!(path = %saved.display(), "sharing: saved to the download folder");
+            Some(saved)
+        }
+        Err(e) => {
+            warn!(path = %dest.display(), "sharing: saving to the download folder failed: {e:#}");
+            None
+        }
     }
 }
 
@@ -985,15 +1047,53 @@ fn hex_digit(b: u8) -> Option<u8> {
 }
 
 fn downloads_dir() -> Option<PathBuf> {
+    // The desktop's configured download folder. `XDG_DOWNLOAD_DIR` is usually *not* exported to
+    // services, so also read the `user-dirs.dirs` file the desktop writes.
+    let from_file = || {
+        let config = std::env::var_os("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
+        let text = std::fs::read_to_string(config.join("user-dirs.dirs")).ok()?;
+        user_dir_from(&text, "XDG_DOWNLOAD_DIR")
+    };
     if let Some(dir) = std::env::var_os("XDG_DOWNLOAD_DIR")
         .map(PathBuf::from)
         .filter(|p| p.is_dir())
+        .or_else(|| from_file().filter(|p| p.is_dir()))
     {
         return Some(dir);
     }
     let home = std::env::var_os("HOME").map(PathBuf::from)?;
     let downloads = home.join("Downloads");
     Some(if downloads.is_dir() { downloads } else { home })
+}
+
+/// `XDG_DOWNLOAD_DIR="$HOME/Downloads"` (or a plain path) from `user-dirs.dirs`.
+fn user_dir_from(text: &str, key: &str) -> Option<PathBuf> {
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_default();
+    for line in text.lines() {
+        let line = line.trim();
+        let Some(rest) = line.strip_prefix(key) else {
+            continue;
+        };
+        let Some(value) = rest.strip_prefix('=') else {
+            continue;
+        };
+        let value = value.trim().trim_matches('"');
+        if value.is_empty() {
+            continue;
+        }
+        if let Some(rest) = value.strip_prefix("$HOME/") {
+            return Some(home.join(rest));
+        }
+        if value == "$HOME" {
+            return Some(home);
+        }
+        return Some(PathBuf::from(value));
+    }
+    None
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1705,6 +1805,83 @@ mod tests {
     }
 
     #[test]
+    fn user_dirs_files_name_the_download_folder() {
+        let home = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_default();
+        assert_eq!(
+            user_dir_from("XDG_DOWNLOAD_DIR=\"$HOME/Downloads\"\n", "XDG_DOWNLOAD_DIR"),
+            Some(home.join("Downloads"))
+        );
+        assert_eq!(
+            user_dir_from(
+                "# written by xdg-user-dirs\nXDG_DOWNLOAD_DIR=\"/srv/dl\"\n",
+                "XDG_DOWNLOAD_DIR"
+            ),
+            Some(PathBuf::from("/srv/dl"))
+        );
+        assert_eq!(
+            user_dir_from("XDG_DESKTOP_DIR=\"$HOME/Desktop\"\n", "XDG_DOWNLOAD_DIR"),
+            None
+        );
+    }
+
+    #[test]
+    fn a_saved_share_body_names_the_download_path() {
+        let content = Content::File {
+            dir: PathBuf::from("/tmp/stage"),
+            path: PathBuf::from("/home/a/Downloads/report.pdf"),
+            name: "report.pdf".into(),
+            size: 6,
+            is_dir: false,
+            saved: true,
+        };
+        assert_eq!(content.summary(), "Shared file saved");
+        assert!(
+            content
+                .body()
+                .contains("Saved to /home/a/Downloads/report.pdf"),
+            "{}",
+            content.body()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_received_file_is_saved_to_downloads_without_overwriting() {
+        let dir = TestDir::new("autosave");
+        let staged_dir = dir.0.join("shares/staged");
+        create_private_dir(&staged_dir).unwrap();
+        let source = staged_dir.join("report.pdf");
+        std::fs::write(&source, b"new").unwrap();
+        let downloads = dir.0.join("Downloads");
+        create_private_dir(&downloads).unwrap();
+        std::fs::write(downloads.join("report.pdf"), b"old").unwrap();
+        let staged = Staged {
+            dir: staged_dir,
+            path: source,
+            name: "report.pdf".into(),
+            size: 3,
+            is_dir: false,
+        };
+        let saved = auto_save(&staged, &downloads)
+            .await
+            .expect("the file is saved");
+        assert_eq!(saved, downloads.join("report (2).pdf"));
+        assert_eq!(std::fs::read(&saved).unwrap(), b"new");
+        assert_eq!(std::fs::read(downloads.join("report.pdf")).unwrap(), b"old");
+    }
+
+    #[test]
+    fn unique_path_does_not_overwrite_broken_symlinks() {
+        let dir = TestDir::new("symlink-unique");
+        let symlink = dir.0.join("target.txt");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(dir.0.join("nonexistent.txt"), &symlink).unwrap();
+        let unique = unique_path(&dir.0, Path::new("target.txt"));
+        assert_eq!(unique, dir.0.join("target (2).txt"));
+    }
+
+    #[test]
     fn portal_uris_become_paths() {
         assert_eq!(
             uri_to_path("file:///home/a/report%20one.pdf"),
@@ -1845,6 +2022,7 @@ mod tests {
                     name: "folder".into(),
                     size: 1,
                     is_dir: true,
+                    saved: false,
                 },
             });
         }
@@ -1879,6 +2057,7 @@ mod tests {
                     name: "a.txt".into(),
                     size: 6,
                     is_dir: false,
+                    saved: false,
                 },
             });
         }
@@ -1908,6 +2087,7 @@ mod tests {
                     name: "a.txt".into(),
                     size: 7,
                     is_dir: false,
+                    saved: false,
                 },
             });
         }
@@ -1937,6 +2117,7 @@ mod tests {
                     name: "a.txt".into(),
                     size: 1,
                     is_dir: false,
+                    saved: false,
                 },
             });
         }
@@ -2165,6 +2346,7 @@ mod tests {
                 name: "a.txt".into(),
                 size: 0,
                 is_dir: false,
+                saved: false,
             })
             .await;
         assert!(!staged_dir.exists());

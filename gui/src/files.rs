@@ -919,8 +919,18 @@ impl FilesPage {
             }
         }
         if let Ok(pid) = libc::pid_t::try_from(child.id()) {
-            // SAFETY: SIGTERM to our own, not-yet-reaped child.
+            // SAFETY: SIGTERM/SIGKILL to our own, not-yet-reaped child.
             unsafe { libc::kill(pid, libc::SIGTERM) };
+            for _ in 0..25 {
+                match child.try_wait() {
+                    Ok(Some(_)) => return,
+                    Ok(None) => std::thread::sleep(Duration::from_millis(20)),
+                    Err(_) => break,
+                }
+            }
+            // A helper whose FUSE thread is wedged never gets to handle SIGTERM; the mount is
+            // already released (its watchdog does that), so don't block the UI waiting for it.
+            unsafe { libc::kill(pid, libc::SIGKILL) };
         }
         let _ = child.wait();
     }

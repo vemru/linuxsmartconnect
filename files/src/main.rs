@@ -88,6 +88,13 @@ fn main() -> Result<()> {
             };
             fuse::mount(id, source, &target, &mountpoint)
         }
+        // Internal: the mount helper's crash watchdog (see `fuse::watchdog`). It unmounts when
+        // its stdin closes, which happens even if the helper is killed with SIGKILL.
+        Some("mount-watchdog") => {
+            let mountpoint = PathBuf::from(req(&args, "--mountpoint")?);
+            fuse::watchdog(&mountpoint);
+            Ok(())
+        }
         Some("serve") => {
             let dir = flag(&args, "--state-dir")
                 .map(PathBuf::from)

@@ -6,7 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). The README's
 [feature matrix](README.md#feature-status) shows what is verified on a real phone.
 
-## [Unreleased]
+## [0.2.2] - 2026-10-31
+
+### Fixed
+
+- **Shared files are saved to the download folder.** A file or folder sent from the phone is now copied to `~/Downloads` (or the desktop's XDG download folder) under a sanitized, non-overwriting name (`report.pdf` → `report (2).pdf`) before the notification appears; **Save as…** still lets you pick another location. The notification names the saved path, and dismissing it no longer loses the file.
+- **A phone disconnect can no longer break the home folder in a file manager.** While the phone is away, the FUSE mount answers `stat`/metadata from the last seen attributes instead of `EIO`, so browsing `/home/<user>` does not fail on the mount folder. File contents and directory listings still report the phone as offline until it reconnects.
+- **No stale FUSE mount after a helper crash.** `smartconnect-files mount` now runs a tiny watchdog child holding a pipe; if the helper dies (including `SIGKILL` or a panic), the pipe closes and the mount is lazily released, so "Transport endpoint is not connected" is not left at the mount folder. The watchdog also probes the mount every few seconds and releases it when the helper is alive but the mount stopped answering, so a wedged helper cannot hang a file manager showing the folder.
+
+### Security
+
+- **FUSE Mount Hardening:** Enforced `nosuid` and `nodev` mount flags on phone FUSE mounts (`smartconnect-files mount`).
+- **Symlink Collision Protection:** Hardened `unique_path` with `symlink_metadata` checks to prevent following dangling symlinks when saving received files.
 
 ## [0.2.1] - 2026-10-30
 

@@ -6,7 +6,7 @@
 # Set CARGO_TARGET_DIR to reuse an existing build directory.
 
 pkgname=smartconnect-linux
-pkgver=0.2.1
+pkgver=0.2.2
 pkgrel=1
 pkgdesc='Unofficial Linux peer for the Motorola Smart Connect phone app'
 url='https://github.com/vemru/linuxsmartconnect'

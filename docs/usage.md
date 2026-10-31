@@ -820,11 +820,18 @@ installed. (For offline testing you can pass `--ip`/`--mount-port`/`--nfs-port`/
 handshake.)
 
 **Phone away, daemon restarted** (🟡): the mount stays up. When the phone disconnects (Wi-Fi drop,
-sleep, the daemon restarting), files calls fail at once with an I/O error instead of hanging, and the
-helper waits for the daemon to report the phone connected again, redoes the handshake (the phone's
-NFS ports change every session) and carries on — open folders keep working. It only gives up, and
-unmounts, after 10 minutes without the phone or when the phone is unpaired. A stale mount left at the
-folder by a helper that was killed ("Transport endpoint is not connected") is cleared before mounting.
+sleep, the daemon restarting), file *contents* fail at once with an I/O error instead of hanging, and
+the helper waits for the daemon to report the phone connected again, redoes the handshake (the
+phone's NFS ports change every session) and carries on — open folders keep working. Metadata
+(`stat`) for entries it has already seen — including the mount folder itself — keeps answering from
+the last known attributes while the phone is away, so a file manager showing your home folder does
+not report an error just because the phone disconnected. It only gives up, and unmounts, after 10
+minutes without the phone or when the phone is unpaired. A mount left by a helper that was killed is
+released by the helper's tiny watchdog child: it holds a pipe to the helper and unmounts the moment
+that pipe closes, so even `kill -9` cannot leave a "Transport endpoint is not connected" mount
+behind. The same watchdog checks the mount every few seconds and releases it if it stops answering
+(a helper that is alive but wedged), so the folder can hang a file manager for no more than about
+half a minute. A stale mount found at startup is cleared before mounting.
 
 ### From the GTK app
 
@@ -959,22 +966,25 @@ native chooser and app picker every other app uses).
   `http://` and `https://` links get an Open button; anything else (`file:`, `javascript:`,
   `smb://`, …) is shown as text and can never be launched. Open asks the portal which app to use
   (`Open With` dialog, no default-app guessing) and never opens anything by itself.
-- **File or folder:** the notification shows the name and size with **Open**, **Save as…** and
-  **Dismiss**. *Open* on a file hands the staged copy to the portal so you pick the app; *Open* on a
-  folder opens it in your file manager (the portal has no app picker for folders) and keeps the
-  staged copy for a day so the window doesn't go empty. *Save as…* opens the native save dialog with
-  the received name (sanitized) preselected under `~/Downloads`; a folder is saved as a folder
-  (`FileChooser.SelectFolder` when the portal has it, otherwise a `SaveFile` dialog whose chosen
-  name becomes the folder).
+- **File or folder:** the daemon first saves it in your download folder — `~/Downloads`, or the
+  folder your desktop configured (`XDG_DOWNLOAD_DIR` in `user-dirs.dirs`) — and the notification
+  shows the name, size and saved path with **Open**, **Save as…** and **Dismiss**. A name already
+  there is never overwritten (`report.pdf` becomes `report (2).pdf`). *Open* on a file hands the
+  saved copy to the portal so you pick the app; *Open* on a folder opens it in your file manager.
+  *Save as…* opens the native save dialog with the received name (sanitized) preselected under
+  `~/Downloads`; a folder is saved as a folder (`FileChooser.SelectFolder` when the portal has it,
+  otherwise a `SaveFile` dialog whose chosen name becomes the folder).
 
-While a share is pending the copy lives in a private directory under
-`$XDG_RUNTIME_DIR/smartconnectd/shares/` (mode 0700). It is deleted on **Dismiss**, after a
-successful **Open**/**Save as…** (except a folder you opened, kept for a day), when a newer share
-replaces it, or after 30 minutes without an action. Files are capped at 256 MiB. The notification
-stays in GNOME's message tray until you act on it.
+While a share is pending, a second copy lives in a private staging directory under
+`$XDG_RUNTIME_DIR/smartconnectd/shares/` (mode 0700). That staging copy is deleted on **Dismiss**,
+after a successful **Open**/**Save as…**, when a newer share replaces it, or after 30 minutes
+without an action. The copy in your download folder is yours and is not deleted by the
+notification. Files are capped at 256 MiB. The notification stays in GNOME's message tray until
+you act on it.
 
-Received files arrive in the phone's zip transport and are unpacked only into the staging
-directory, with traversal and symlink protection, never directly into `~/Downloads`.
+Received files arrive in the phone's zip transport and are unpacked into the staging directory
+first, with traversal and symlink protection, then copied to the download folder under a
+sanitized, non-overwriting name.
 
 This needs `xdg-desktop-portal`; on GNOME that is `xdg-desktop-portal-gnome` (usually installed).
 Without a portal, Open falls back to `xdg-open`/`gio open` and Save to `zenity`, and the daemon

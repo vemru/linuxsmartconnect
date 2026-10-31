@@ -24,13 +24,18 @@
 //!   its parent, so inode numbers the kernel holds stay valid.
 //! - SIGINT/SIGTERM/SIGHUP unmount cleanly (see [`install_signal_handler`]); a stale FUSE mount left
 //!   at the mountpoint by a crashed run is lazily unmounted before mounting ([`prepare_mountpoint`]).
+//!   A tiny watchdog child holds a pipe from this process and unmounts if it closes without a clean
+//!   goodbye, so even `SIGKILL` or a panic cannot leave a stale mount behind.
+//! - While the phone is away, `getattr` serves the last known attributes (seeded for the root) with
+//!   a short TTL instead of `EIO`. File managers stat every entry of the folder they show, so this
+//!   keeps the user's home folder readable while the mount waits to reconnect.
 
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::io;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -53,6 +58,8 @@ use crate::nfs::{MountTarget, NfsConn, connect};
 
 /// How long the kernel may cache attributes and directory entries.
 const TTL: Duration = Duration::from_secs(30);
+/// While the phone is away, attributes come from the last seen values; refresh them quickly.
+const OFFLINE_TTL: Duration = Duration::from_secs(1);
 /// Fail an NFS call (and drop the connection) rather than hang if the phone stops answering.
 const OP_TIMEOUT: Duration = Duration::from_secs(20);
 /// The keep-alive probe's timeout (it should notice a dead link well before a user does).
@@ -117,6 +124,114 @@ fn fusermount_unmount(dir: &Path) {
     if !ok {
         let _ = Command::new("fusermount3").arg("-uz").arg(dir).output();
     }
+}
+
+/// How often the watchdog checks that the mount still answers.
+const HEALTH_INTERVAL: Duration = Duration::from_secs(5);
+/// How long a check may take. One FUSE call may legitimately take up to [`OP_TIMEOUT`] (a read, or
+/// a directory page), so a mount that has not answered within this long is really wedged.
+const HEALTH_TIMEOUT: Duration = Duration::from_secs(25);
+
+/// Why the watchdog stopped watching.
+#[derive(Debug, PartialEq)]
+enum WatchEnd {
+    /// The helper wrote `done` and closed the pipe: it unmounted on purpose.
+    Clean,
+    /// The pipe closed without `done`: the helper died (killed, crashed, panicked).
+    Crashed,
+    /// The helper is alive but the mount stopped answering.
+    Wedged,
+}
+
+/// Watches the mount helper and lazily unmounts `dir` if the mount stops working.
+///
+/// The mount helper spawns this as a tiny child and keeps its stdin open for as long as it lives.
+/// If the helper is killed (even with SIGKILL), crashes or panics, the pipe closes without the
+/// `done` marker and the mount is released — so no "Transport endpoint is not connected" FUSE mount
+/// is left in the user's home. A clean exit writes `done` first, so a mount that was already
+/// replaced by a new helper at the same path is not touched.
+///
+/// A helper can also stay alive while its FUSE thread is wedged (a stuck RPC, a deadlock): the mount
+/// then answers nothing, and every program that stats the folder — a file manager showing the home
+/// folder, for one — hangs. So while the helper is alive this also probes the mount with `statfs`
+/// and releases it when it stops answering.
+pub fn watchdog(dir: &Path) {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        use std::io::Read;
+        let mut stdin = std::io::stdin().lock();
+        let mut seen = Vec::new();
+        let _ = stdin.read_to_end(&mut seen);
+        let _ = tx.send(seen);
+    });
+    match watch(&rx, HEALTH_INTERVAL, || answers(dir, HEALTH_TIMEOUT)) {
+        WatchEnd::Clean => {}
+        WatchEnd::Crashed => fusermount_unmount(dir),
+        WatchEnd::Wedged => {
+            tracing::warn!(
+                "the mount at {} stopped answering; unmounting it",
+                dir.display()
+            );
+            fusermount_unmount(dir);
+        }
+    }
+}
+
+/// The watchdog loop: wait for the helper's pipe to close, checking `healthy` on every tick.
+fn watch(
+    rx: &std::sync::mpsc::Receiver<Vec<u8>>,
+    interval: Duration,
+    mut healthy: impl FnMut() -> bool,
+) -> WatchEnd {
+    loop {
+        match rx.recv_timeout(interval) {
+            Ok(seen) if seen.ends_with(b"done") => return WatchEnd::Clean,
+            Ok(_) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                return WatchEnd::Crashed;
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                if !healthy() {
+                    return WatchEnd::Wedged;
+                }
+            }
+        }
+    }
+}
+
+/// Whether `statfs` on `dir` answers within `timeout`. The call runs on its own thread so a wedged
+/// FUSE request cannot block the watchdog too (that thread is abandoned when it times out).
+fn answers(dir: &Path, timeout: Duration) -> bool {
+    let dir = dir.to_path_buf();
+    within(timeout, move || statfs(&dir).is_ok()).unwrap_or(false)
+}
+
+/// Runs `f` on a thread and waits up to `timeout`; `None` if it did not finish in time.
+fn within<T: Send + 'static>(
+    timeout: Duration,
+    f: impl FnOnce() -> T + Send + 'static,
+) -> Option<T> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(f());
+    });
+    rx.recv_timeout(timeout).ok()
+}
+
+/// Starts the [`watchdog`] child for `mountpoint`; dropping the returned pipe ends it.
+fn spawn_watchdog(mountpoint: &Path) -> Option<std::process::ChildStdin> {
+    let exe = std::env::current_exe().ok()?;
+    let mut child = Command::new(exe)
+        .arg("mount-watchdog")
+        .arg("--mountpoint")
+        .arg(mountpoint)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        // The helper's stderr is the mount log; a warning about a released mount belongs there.
+        .stderr(Stdio::inherit())
+        .spawn()
+        .map_err(|e| tracing::warn!("could not start the mount watchdog: {e}"))
+        .ok()?;
+    child.stdin.take()
 }
 
 /// Clears a stale FUSE mount a crashed run left at `dir` (lazy unmount), then creates `dir`.
@@ -193,6 +308,9 @@ struct Node {
     epoch: u64,
     parent: u64,
     name: Vec<u8>,
+    /// Last attributes seen for this inode. Served while the phone is away so metadata calls from
+    /// the parent directory (e.g. a file manager listing the home folder) don't fail with `EIO`.
+    attr: Option<FileAttr>,
 }
 
 /// Inode numbers by (parent, name), so they survive a reconnect that hands out new file handles.
@@ -224,6 +342,7 @@ impl Inodes {
                 epoch,
                 parent: 1,
                 name: Vec::new(),
+                attr: None,
             },
         );
         Self {
@@ -264,9 +383,22 @@ impl Inodes {
                 epoch,
                 parent,
                 name: name.to_vec(),
+                attr: None,
             },
         );
         ino
+    }
+
+    /// Remembers the latest attributes for `ino` (used while the phone is unreachable).
+    fn remember(&mut self, ino: u64, attr: FileAttr) {
+        if let Some(n) = self.nodes.get_mut(&ino) {
+            n.attr = Some(attr);
+        }
+    }
+
+    /// The last attributes seen for `ino`, if any.
+    fn attr(&self, ino: u64) -> Option<FileAttr> {
+        self.nodes.get(&ino).and_then(|n| n.attr)
     }
 
     fn set(&mut self, ino: u64, fh: nfs_fh3, epoch: u64) {
@@ -531,20 +663,38 @@ pub struct PhoneFs {
 /// Mounts the phone's export at `mountpoint` (read-only) and runs until unmounted (by the user, a
 /// signal, or the supervisor giving up — the latter is an error).
 pub fn mount(id: Identity, source: Source, target: &MountTarget, mountpoint: &Path) -> Result<()> {
+    mount_impl(id, source, target, mountpoint, true)
+}
+
+/// [`mount`], with the watchdog child optional (tests run in the test binary, not this helper).
+fn mount_impl(
+    id: Identity,
+    source: Source,
+    target: &MountTarget,
+    mountpoint: &Path,
+    watchdog: bool,
+) -> Result<()> {
     let rt = Runtime::new().context("starting the async runtime")?;
     let conn = rt.block_on(connect(&id, target))?;
     let root = conn.root_nfs_fh3();
+    // SAFETY: getuid/getgid cannot fail.
+    let uid = unsafe { libc::getuid() };
+    let gid = unsafe { libc::getgid() };
+    let mut inodes = Inodes::new(root, 1);
+    // Seed the root's attributes: while the phone is away, `getattr` serves them from this cache
+    // instead of failing, so file managers browsing the parent (e.g. the home folder) don't show
+    // "Input/output error".
+    inodes.remember(1, dir_placeholder(1, uid, gid));
     let core = Arc::new(Core {
         rt,
         conn: Mutex::new(Some(conn)),
-        inodes: Mutex::new(Inodes::new(root, 1)),
+        inodes: Mutex::new(inodes),
         epoch: AtomicU64::new(1),
         down: Mutex::new(None),
         wake: Condvar::new(),
         give_up: Mutex::new(None),
-        // SAFETY: getuid/getgid cannot fail.
-        uid: unsafe { libc::getuid() },
-        gid: unsafe { libc::getgid() },
+        uid,
+        gid,
     });
     let fs = PhoneFs {
         core: core.clone(),
@@ -552,10 +702,12 @@ pub fn mount(id: Identity, source: Source, target: &MountTarget, mountpoint: &Pa
         next_handle: AtomicU64::new(1),
     };
     // AutoUnmount would need AllowOther/AllowRoot (system `user_allow_other`); instead we unmount
-    // ourselves on a signal or when giving up.
+    // ourselves on a signal or when giving up, and the watchdog below covers a crash or SIGKILL.
     let mut config = Config::default();
     config.mount_options = vec![
         MountOption::RO,
+        MountOption::NoSuid,
+        MountOption::NoDev,
         MountOption::FSName("smartconnect-phone".into()),
         MountOption::Subtype("smartconnect".into()),
         MountOption::DefaultPermissions,
@@ -564,6 +716,13 @@ pub fn mount(id: Identity, source: Source, target: &MountTarget, mountpoint: &Pa
         .with_context(|| format!("mounting at {}", mountpoint.display()))?;
     *ACTIVE.lock().unwrap() = Some((mountpoint.to_path_buf(), session.unmount_callable()));
     tracing::info!("mounted the phone's storage at {}", mountpoint.display());
+    // Held until this function returns: if the helper dies first (SIGKILL, panic, OOM), the pipe
+    // closes without the `done` marker and the watchdog unmounts, so no stale FUSE mount is left.
+    let mut watchdog_pipe = if watchdog {
+        spawn_watchdog(mountpoint)
+    } else {
+        None
+    };
 
     let sup = core.clone();
     std::thread::Builder::new()
@@ -573,6 +732,13 @@ pub fn mount(id: Identity, source: Source, target: &MountTarget, mountpoint: &Pa
 
     let result = session.run();
     ACTIVE.lock().unwrap().take();
+    // The session is over: make sure the mount is really released before telling the watchdog this
+    // was a clean exit. (`-uz` is harmless when it is already gone.)
+    fusermount_unmount(mountpoint);
+    if let Some(mut pipe) = watchdog_pipe.take() {
+        use std::io::Write;
+        let _ = pipe.write_all(b"done");
+    }
     if let Some(why) = core.give_up.lock().unwrap().clone() {
         return Err(anyhow!("unmounted: {why}"));
     }
@@ -647,15 +813,14 @@ impl PhoneFs {
                 let Nfs3Option::Some(fh) = e.name_handle else {
                     continue; // no handle → we can't address it; skip
                 };
-                let ino = core
-                    .inodes
-                    .lock()
-                    .unwrap()
-                    .intern(dir_ino, &name, fh, epoch);
+                let mut inodes = core.inodes.lock().unwrap();
+                let ino = inodes.intern(dir_ino, &name, fh, epoch);
                 let attr = match e.name_attributes {
                     Nfs3Option::Some(a) => attr_of(ino, &a, core.uid, core.gid),
                     Nfs3Option::None => reg_placeholder(ino, core.uid, core.gid),
                 };
+                inodes.remember(ino, attr);
+                drop(inodes);
                 out.push(DirEntry { ino, name, attr });
             }
             if eof || last == cookie {
@@ -703,12 +868,12 @@ impl Filesystem for PhoneFs {
                     reply.error(Errno::EIO);
                     return;
                 };
-                let ino = core
-                    .inodes
-                    .lock()
-                    .unwrap()
-                    .intern(parent.0, &name, ok.object, epoch);
-                reply.entry(&TTL, &attr_of(ino, &a, core.uid, core.gid), Generation(0));
+                let mut inodes = core.inodes.lock().unwrap();
+                let ino = inodes.intern(parent.0, &name, ok.object, epoch);
+                let attr = attr_of(ino, &a, core.uid, core.gid);
+                inodes.remember(ino, attr);
+                drop(inodes);
+                reply.entry(&TTL, &attr, Generation(0));
             }
             Ok(Nfs3Result::Err(_)) => reply.error(Errno::ENOENT),
             Err(e) => reply.error(e),
@@ -717,18 +882,36 @@ impl Filesystem for PhoneFs {
 
     fn getattr(&self, _req: &Request, ino: INodeNo, _fh: Option<FileHandle>, reply: ReplyAttr) {
         let core = &self.core;
+        // Disconnected: serve the last known attributes instead of EIO. File managers stat every
+        // entry of the folder they show, so failing here made the whole home folder unreadable
+        // while the phone was away (and the mount was still up waiting to reconnect).
+        if core.conn.lock().unwrap().is_none() {
+            return match core.inodes.lock().unwrap().attr(ino.0) {
+                Some(attr) => reply.attr(&OFFLINE_TTL, &attr),
+                None => reply.error(Errno::EIO),
+            };
+        }
         let res = core.with_fh(ino.0, |object| {
             core.rpc(OP_TIMEOUT, async move |c: &mut NfsConn| {
                 c.getattr(&GETATTR3args { object }).await
             })
         });
         match res {
-            Ok(Nfs3Result::Ok(ok)) => reply.attr(
-                &TTL,
-                &attr_of(ino.0, &ok.obj_attributes, core.uid, core.gid),
-            ),
+            Ok(Nfs3Result::Ok(ok)) => {
+                let attr = attr_of(ino.0, &ok.obj_attributes, core.uid, core.gid);
+                core.inodes.lock().unwrap().remember(ino.0, attr);
+                reply.attr(&TTL, &attr);
+            }
             Ok(Nfs3Result::Err(_)) => reply.error(Errno::EIO),
-            Err(e) => reply.error(e),
+            Err(e) => {
+                // The connection dropped during this call: fall back to the cached attributes.
+                if e == Errno::EIO
+                    && let Some(attr) = core.inodes.lock().unwrap().attr(ino.0)
+                {
+                    return reply.attr(&OFFLINE_TTL, &attr);
+                }
+                reply.error(e);
+            }
         }
     }
 
@@ -931,6 +1114,65 @@ mod tests {
     }
 
     #[test]
+    fn a_wedged_health_check_times_out_instead_of_blocking() {
+        let start = Instant::now();
+        let hung = within(Duration::from_millis(100), || {
+            std::thread::sleep(Duration::from_secs(5));
+            true
+        });
+        assert_eq!(hung, None);
+        assert!(start.elapsed() < Duration::from_secs(1));
+        assert_eq!(within(Duration::from_secs(5), || true), Some(true));
+    }
+
+    #[test]
+    fn a_working_folder_answers_the_health_check() {
+        let dir = std::env::temp_dir();
+        assert!(answers(&dir, Duration::from_secs(5)));
+        assert!(!answers(
+            &dir.join("sc-files-no-such-dir"),
+            Duration::from_secs(5)
+        ));
+    }
+
+    #[test]
+    fn the_watchdog_tells_a_clean_exit_from_a_crash() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        tx.send(b"done".to_vec()).unwrap();
+        assert_eq!(
+            watch(&rx, Duration::from_millis(10), || true),
+            WatchEnd::Clean
+        );
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        tx.send(b"bye".to_vec()).unwrap();
+        assert_eq!(
+            watch(&rx, Duration::from_millis(10), || true),
+            WatchEnd::Crashed
+        );
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        drop(tx);
+        assert_eq!(
+            watch(&rx, Duration::from_millis(10), || true),
+            WatchEnd::Crashed
+        );
+    }
+
+    #[test]
+    fn a_helper_that_stays_alive_but_stops_answering_is_released() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut checks = 0;
+        let end = watch(&rx, Duration::from_millis(10), || {
+            checks += 1;
+            checks < 3
+        });
+        assert_eq!(end, WatchEnd::Wedged);
+        assert_eq!(checks, 3, "the health check runs while the pipe is open");
+        drop(tx);
+    }
+
+    #[test]
     fn inodes_survive_a_reconnect() {
         let mut ino = Inodes::new(fh(b"root1"), 1);
         let dcim = ino.intern(1, b"DCIM", fh(b"dcim1"), 1);
@@ -1017,8 +1259,9 @@ mod tests {
         let mp = base.join("mnt");
         prepare_mountpoint(&mp).unwrap();
         let (t2, mp2) = (target.clone(), mp.clone());
-        let mounted =
-            std::thread::spawn(move || mount(client_id, Source::Fixed(t2), &target, &mp2));
+        let mounted = std::thread::spawn(move || {
+            mount_impl(client_id, Source::Fixed(t2), &target, &mp2, false)
+        });
         let wait_for = |what: &str, f: &dyn Fn() -> bool| {
             let deadline = Instant::now() + Duration::from_secs(45);
             while !f() {

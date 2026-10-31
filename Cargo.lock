@@ -2865,7 +2865,7 @@ checksum = "5b3dc8af474f516a851ff4bd12db780f948b9250ad37211e4eec0bccea54e01b"
 
 [[package]]
 name = "smartconnect-crosscontrol"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "ashpd",
@@ -2882,7 +2882,7 @@ dependencies = [
 
 [[package]]
 name = "smartconnect-display"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "ashpd",
@@ -2903,7 +2903,7 @@ dependencies = [
 
 [[package]]
 name = "smartconnect-fex"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "clap",
@@ -2925,7 +2925,7 @@ dependencies = [
 
 [[package]]
 name = "smartconnect-files"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "fuser",
@@ -2950,7 +2950,7 @@ dependencies = [
 
 [[package]]
 name = "smartconnect-gui"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "async-channel",
  "gtk4",
@@ -2963,7 +2963,7 @@ dependencies = [
 
 [[package]]
 name = "smartconnect-linux"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -2994,7 +2994,7 @@ dependencies = [
 
 [[package]]
 name = "smartconnect-mirror"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "base64",
@@ -3010,7 +3010,7 @@ dependencies = [
 
 [[package]]
 name = "smartconnect-webcam"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "gstreamer",
