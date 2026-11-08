@@ -113,6 +113,8 @@ struct State {
     error: Option<String>,
     /// A restart is scheduled.
     restart_pending: bool,
+    /// Availability of folder share.
+    cap: Option<crate::daemon::FeatureStatus>,
 }
 
 pub struct ShareSection {
@@ -186,6 +188,7 @@ impl ShareSection {
                 offered_at: None,
                 error: None,
                 restart_pending: false,
+                cap: None,
             }),
             syncing: std::cell::Cell::new(false),
             watching: std::cell::Cell::new(false),
@@ -245,6 +248,11 @@ impl ShareSection {
         if changed && connected {
             self.start_if_wanted();
         }
+        self.refresh();
+    }
+
+    pub fn set_capability(self: &Rc<Self>, cap: Option<crate::daemon::FeatureStatus>) {
+        self.st.borrow_mut().cap = cap;
         self.refresh();
     }
 
@@ -420,6 +428,14 @@ impl ShareSection {
 
     fn refresh(&self) {
         let p = prefs::load().files;
+        let (cap_ok, tooltip) = match &self.st.borrow().cap {
+            Some(crate::daemon::FeatureStatus::Unavailable { reason, fix_hint }) => {
+                (false, Some(format!("{reason}\nFix: {fix_hint}")))
+            }
+            _ => (true, None),
+        };
+        self.switch.set_sensitive(cap_ok);
+        self.switch.set_tooltip_text(tooltip.as_deref());
         let text = {
             let mut st = self.st.borrow_mut();
             if st.child.is_some() {

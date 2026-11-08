@@ -21,7 +21,7 @@ use tokio_rustls::rustls::{self, ServerConfig};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
 use tokio_tungstenite::tungstenite::http::StatusCode;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 use crate::clipboard::{self, LocalClipboard};
 use crate::discovery;
@@ -151,6 +151,10 @@ pub struct Daemon {
     /// Per-service svc 25 `cap` flags set by helpers (e.g. cross control's in-use bit), merged over
     /// `proto::device_status_caps()` so the phone always gets the full tile map.
     pub cap_overrides: Mutex<serde_json::Map<String, Value>>,
+    /// Per-device feature switches.
+    pub features: Mutex<crate::features::FeatureStore>,
+    /// Searchable history of events, transfers, and sessions.
+    pub timeline: Arc<crate::timeline::TimelineStore>,
     /// Allow connections from public/non-LAN IPs (by default, non-private IPs are dropped).
     pub allow_public: std::sync::atomic::AtomicBool,
     /// Rate-limiting state for failed authentication and reconnect attempts per IP.
@@ -169,6 +173,37 @@ impl Daemon {
         session_dir: PathBuf,
         ble_address: Option<String>,
     ) -> Self {
+        let state_dir = session_dir.parent().unwrap_or(&session_dir);
+        let features = crate::features::FeatureStore::load(state_dir).unwrap_or_else(|e| {
+            warn!(
+                "features: failed to load from {}: {e:#}; falling back to current directory",
+                state_dir.display()
+            );
+            crate::features::FeatureStore::load(std::path::Path::new(".")).unwrap_or_else(|e2| {
+                warn!(
+                    "features: failed to load from current directory: {e2:#}; using in-memory defaults"
+                );
+                crate::features::FeatureStore::in_memory()
+            })
+        });
+        let timeline = Arc::new(
+            crate::timeline::TimelineStore::open(state_dir).unwrap_or_else(|e| {
+                warn!(
+                    "timeline: failed to open database at {}: {e:#}; falling back to current directory",
+                    state_dir.display()
+                );
+                crate::timeline::TimelineStore::open(std::path::Path::new(".")).unwrap_or_else(|e2| {
+                    warn!(
+                        "timeline: failed to open database in current directory: {e2:#}; using in-memory timeline"
+                    );
+                    crate::timeline::TimelineStore::open_in_memory().unwrap_or_else(|e3| {
+                        error!("timeline: failed to initialize in-memory database: {e3:#}; exiting");
+                        std::process::exit(1);
+                    })
+                })
+            }),
+        );
+        let _ = timeline.prune(30);
         // Last known /readyfor/mdns endpoint per phone, kept across restarts.
         let endpoints_path = session_dir.with_file_name("phone-endpoints.json");
         let endpoints: HashMap<String, SocketAddr> = std::fs::read(&endpoints_path)
@@ -205,9 +240,36 @@ impl Daemon {
             notifier: std::sync::OnceLock::new(),
             share: std::sync::OnceLock::new(),
             cap_overrides: Mutex::default(),
+            features: Mutex::new(features),
+            timeline,
             allow_public: std::sync::atomic::AtomicBool::new(false),
             failed_auth: Mutex::default(),
         }
+    }
+
+    pub fn is_feature_enabled(&self, phone_id: Option<&str>, feature: &str) -> bool {
+        self.features.lock().unwrap().is_enabled(phone_id, feature)
+    }
+
+    pub fn current_features(&self) -> crate::features::DeviceFeatures {
+        let phone_id = self.status.device_id();
+        self.features
+            .lock()
+            .unwrap()
+            .get_for_optional_device(phone_id.as_deref())
+    }
+
+    pub fn evaluate_current_capabilities(&self) -> crate::capabilities::Capabilities {
+        let feats = self.current_features();
+        crate::capabilities::evaluate_capabilities_with_features(
+            &crate::capabilities::LiveProber::new(self.is_connected()),
+            Some(&feats),
+        )
+    }
+
+    pub fn refresh_capabilities(&self) {
+        let caps = self.evaluate_current_capabilities();
+        self.status.update(|s| s.capabilities = Some(caps));
     }
 
     pub fn set_allow_public(&self, allow: bool) {
@@ -304,6 +366,73 @@ impl Daemon {
         self.user_disconnected.store(true, Ordering::SeqCst);
         self.kick.notify_waiters();
         true
+    }
+
+    /// Offers file(s) on the PC to the phone over fex and sends the service 2 download request.
+    pub fn send_files(&self, paths: &[std::path::PathBuf]) -> anyhow::Result<(String, usize)> {
+        if !self.is_connected() {
+            anyhow::bail!("phone not connected");
+        }
+        let Some((port, fingerprint)) = self.clipboard.fex_endpoint() else {
+            anyhow::bail!("fex transfer endpoint not available");
+        };
+        let mut out_files = Vec::new();
+        for p in paths {
+            if !p.exists() {
+                anyhow::bail!("file not found: {}", p.display());
+            }
+            let name = p
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
+            let data = std::fs::read(p).with_context(|| format!("reading {}", p.display()))?;
+            let mime = guess_mime(p);
+            out_files.push(smartconnect_fex::server::OutFile {
+                name,
+                mime_type: mime.to_string(),
+                data,
+            });
+        }
+        if out_files.is_empty() {
+            anyhow::bail!("no files to send");
+        }
+        let count = out_files.len();
+        let offer = self.clipboard.fex().offer(
+            &out_files,
+            &self.identity.device_id,
+            &self.identity.device_name,
+        );
+        let phone_id = self
+            .status
+            .device_id()
+            .unwrap_or_else(|| "phone".to_string());
+
+        for f in &out_files {
+            let _ = self.timeline.append(
+                &phone_id,
+                "file",
+                &f.name,
+                &format!("Sent file ({} bytes)", f.data.len()),
+                None,
+                "outgoing",
+            );
+        }
+
+        let frame = json!({
+            "ver": "1.0",
+            "cmd": 1,
+            "serviceId": 2,
+            "requestId": offer.task_id,
+            "port": port,
+            "fingerprint": fingerprint,
+            "token": offer.token,
+            "fexId": 0,
+            "autoDownload": true,
+        });
+
+        let _ = self.to_phone.send((2, frame));
+        Ok((offer.task_id.clone(), count))
     }
 
     /// Keeps the link up: after an unexpected drop (or at startup) retry Connect — Wi-Fi, then
@@ -662,20 +791,53 @@ async fn handle(
 
     daemon.active_sessions.fetch_add(1, Ordering::SeqCst);
     let name = hello.device_name.map(str::to_owned);
+    let feats = daemon.features.lock().unwrap().get_or_default(&stable_id);
+    let caps = crate::capabilities::evaluate_capabilities_with_features(
+        &crate::capabilities::LiveProber::new(true),
+        Some(&feats),
+    );
     daemon.status.update(|s| {
         s.connected = true;
         s.paired = true;
-        s.name = name.or(s.name.take());
+        s.device_id = Some(stable_id.clone());
+        s.name = name.clone().or(s.name.take());
         s.pc_address = local_ip.or(s.pc_address.take());
         s.phone_address = Some(peer.ip().to_canonical().to_string());
+        s.capabilities = Some(caps);
     });
+    let phone_label = name.as_deref().unwrap_or("Phone");
+    let _ = daemon.timeline.append(
+        &stable_id,
+        "session",
+        "Phone Connected",
+        &format!("{phone_label} connected ({peer})"),
+        None,
+        "incoming",
+    );
     daemon.remember_phone_ip(&stable_id, peer.ip().to_canonical());
     // A verified session (phone- or desktop-initiated) means the user wants to be connected.
     daemon.clear_phone_close();
     daemon.phone_said_bye.store(false, Ordering::SeqCst);
     let result = session_loop(&mut tx, &mut rx, &mut log, peer, &daemon, &stable_id).await;
     if daemon.active_sessions.fetch_sub(1, Ordering::SeqCst) == 1 {
-        daemon.status.update(|s| s.connected = false);
+        let feats = daemon.features.lock().unwrap().get_or_default(&stable_id);
+        let caps = crate::capabilities::evaluate_capabilities_with_features(
+            &crate::capabilities::LiveProber::new(false),
+            Some(&feats),
+        );
+        daemon.status.update(|s| {
+            s.connected = false;
+            s.device_id = None;
+            s.capabilities = Some(caps);
+        });
+        let _ = daemon.timeline.append(
+            &stable_id,
+            "session",
+            "Phone Disconnected",
+            "Session closed",
+            None,
+            "incoming",
+        );
         if daemon.phone_said_bye.load(Ordering::SeqCst) {
             // svc 0 cmd 6: the user tapped Disconnect on the phone.
             daemon.user_disconnected.store(true, Ordering::SeqCst);
@@ -730,15 +892,24 @@ where
                             if msg.service_id == crate::app_icons::SERVICE_APP_LIST {
                                 crate::app_icons::on_app_list(peer.ip().to_canonical(), d);
                             }
-                            if msg.service_id == clipboard::SERVICE_FILE_EX {
+                            if msg.service_id == clipboard::SERVICE_FILE_EX
+                                && daemon.is_feature_enabled(Some(phone_id), "clipboard")
+                            {
                                 clipboard::on_file_ex(peer.ip().to_canonical(), d, daemon.clipboard.clone());
                             }
                             if let Some(share) = daemon.share.get() {
                                 share.on_frame(msg.service_id, d, peer.ip().to_canonical()).await;
                             }
                             if matches!(msg.service_id, notifications::SERVICE_NOTIFY | notifications::SERVICE_NOTIFY_WIDGET) {
-                                if let Some(n) = daemon.notifier.get() {
+                                if daemon.is_feature_enabled(Some(phone_id), "notifications")
+                                    && let Some(n) = daemon.notifier.get()
+                                {
                                     n.handle(msg.service_id, d).await;
+                                    let title = d.get("title").and_then(Value::as_str).unwrap_or("Notification");
+                                    let body = d.get("text").or_else(|| d.get("body")).and_then(Value::as_str).unwrap_or_default();
+                                    if !body.is_empty() || title != "Notification" {
+                                        let _ = daemon.timeline.append(phone_id, "notification", title, body, None, "incoming");
+                                    }
                                 }
                                 continue;
                             }
@@ -748,9 +919,18 @@ where
                                 key_exchanged = true;
                                 exchange_key(daemon, phone_id, d, true).map(|d| WsMsg::outgoing(device_id, SERVICE_MANAGER, d))
                             }
-                            (clipboard::SERVICE_CLIPBOARD, Some(d)) => clip
-                                .handle(d, clipboard)
-                                .map(|(svc, d)| WsMsg::outgoing(device_id, svc, d)),
+                            (clipboard::SERVICE_CLIPBOARD, Some(d)) => {
+                                if daemon.is_feature_enabled(Some(phone_id), "clipboard") {
+                                    if let Some(text) = d.get("text").and_then(Value::as_str) {
+                                        let preview = if text.len() > 80 { &text[..80] } else { text };
+                                        let _ = daemon.timeline.append(phone_id, "clipboard", "Clipboard Received", preview, None, "incoming");
+                                    }
+                                    clip.handle(d, clipboard)
+                                        .map(|(svc, d)| WsMsg::outgoing(device_id, svc, d))
+                                } else {
+                                    None
+                                }
+                            }
                             _ => respond(&msg, device_id),
                         };
                         if let Some(resp) = resp {
@@ -776,7 +956,13 @@ where
             },
             local = local_clips.recv() => match local {
                 Ok(c) => {
-                    if let Some(d) = clip.outgoing(&c) {
+                    if daemon.is_feature_enabled(Some(phone_id), "clipboard")
+                        && let Some(d) = clip.outgoing(&c)
+                    {
+                        if let Some(text) = d.get("text").and_then(Value::as_str) {
+                            let preview = if text.len() > 80 { &text[..80] } else { text };
+                            let _ = daemon.timeline.append(phone_id, "clipboard", "Clipboard Sent", preview, None, "outgoing");
+                        }
                         send(tx, log, peer, &WsMsg::outgoing(device_id, clipboard::SERVICE_CLIPBOARD, d)).await?;
                     }
                 }
@@ -1094,6 +1280,29 @@ fn pc_battery() -> i64 {
                 .ok()
         })
         .unwrap_or(100)
+}
+
+fn guess_mime(path: &std::path::Path) -> &'static str {
+    match path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "jpg" | "jpeg" => "image/jpeg",
+        "png" => "image/png",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "heic" => "image/heic",
+        "pdf" => "application/pdf",
+        "txt" => "text/plain",
+        "zip" => "application/zip",
+        "mp4" => "video/mp4",
+        "mkv" => "video/x-matroska",
+        "mp3" => "audio/mpeg",
+        _ => "application/octet-stream",
+    }
 }
 
 #[cfg(test)]

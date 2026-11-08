@@ -54,6 +54,8 @@ pub struct Ui {
     display: Rc<DisplayPage>,
     cross: Rc<CrossControlPage>,
     files: Rc<FilesPage>,
+    diagnostics: Rc<crate::diagnostics::DiagnosticsPage>,
+    settings: Rc<crate::settings::SettingsPage>,
     /// The system-tray item, when the desktop has a StatusNotifierHost.
     tray: RefCell<Option<tray::Tray>>,
     /// Tracks how the daemon is running, so Quit stops the right thing.
@@ -843,6 +845,10 @@ impl Ui {
             .child(&display_clamp)
             .build();
         let (files, files_w) = FilesPage::build(&toasts);
+        let (_photos, photos_w) = crate::photos::PhotosPage::build(&toasts);
+        let (_timeline, timeline_w) = crate::timeline::TimelinePage::build(&toasts);
+        let (diagnostics, diagnostics_w) = crate::diagnostics::DiagnosticsPage::build(&toasts);
+        let (settings, settings_w) = crate::settings::SettingsPage::build(&toasts);
         views.add_titled_with_icon(&phone_w, Some("phone"), "Phone", "phone-symbolic");
         views.add_titled_with_icon(&apps_w, Some("apps"), "Apps", "view-app-grid-symbolic");
         views.add_titled_with_icon(
@@ -852,6 +858,25 @@ impl Ui {
             "video-display-symbolic",
         );
         views.add_titled_with_icon(&files_w, Some("files"), "Files", "folder-symbolic");
+        views.add_titled_with_icon(&photos_w, Some("photos"), "Photos", "camera-photo-symbolic");
+        views.add_titled_with_icon(
+            &timeline_w,
+            Some("timeline"),
+            "Timeline",
+            "document-open-recent-symbolic",
+        );
+        views.add_titled_with_icon(
+            &diagnostics_w,
+            Some("diagnostics"),
+            "Diagnostics",
+            "utilities-system-monitor-symbolic",
+        );
+        views.add_titled_with_icon(
+            &settings_w,
+            Some("settings"),
+            "Settings",
+            "emblem-system-symbolic",
+        );
 
         let (down_page, down) = DownPage::build();
         let spinner = adw::Spinner::builder()
@@ -930,6 +955,8 @@ impl Ui {
             display,
             cross,
             files,
+            diagnostics,
+            settings,
             tray: RefCell::default(),
             daemon_ctl: RefCell::default(),
             state: RefCell::new(State {
@@ -951,6 +978,8 @@ impl Ui {
                 Some("phone") => ui.load_muted(),
                 Some("apps") => ui.apps.shown(),
                 Some("display") => ui.cross.refresh(),
+                Some("diagnostics") => ui.diagnostics.run_checks(),
+                Some("settings") => ui.settings.load_features(),
                 _ => {}
             }
         });
@@ -966,6 +995,23 @@ impl Ui {
     pub fn present(&self) {
         self.window.present();
         self.refresh_tray();
+    }
+
+    pub fn views(&self) -> &adw::ViewStack {
+        &self.views
+    }
+
+    pub fn current_capabilities(&self) -> crate::daemon::Capabilities {
+        self.state
+            .borrow()
+            .status
+            .as_ref()
+            .and_then(|s| s.capabilities.clone())
+            .unwrap_or_default()
+    }
+
+    pub fn show_palette(self: &Rc<Self>) {
+        crate::palette::CommandPalette::show(self);
     }
 
     /// Stops the mirror viewer and Cross Control (if any) when the app quits, and unmounts the
@@ -1505,8 +1551,11 @@ impl Ui {
         }
         self.apps.set_connected(false);
         self.display.set_connected(false);
+        self.display.set_capability(None);
         self.cross.set_connected(false);
+        self.cross.set_capabilities(None, None);
         self.files.set_connected(false);
+        self.files.set_capabilities(None, None);
         {
             let mut st = self.state.borrow_mut();
             st.status = None;
@@ -1545,22 +1594,36 @@ impl Ui {
                 }
             }
             st.starting = false; // the socket answered
+            if let Some(dev) = status.device_id.as_deref() {
+                self.settings.set_device(Some(dev));
+            }
             st.status = Some(status);
         }
         self.remember_device();
         self.root.set_visible_child_name("main");
         self.show_switcher(true);
-        let (connected, muted_known) = {
+        let (connected, muted_known, caps) = {
             let st = self.state.borrow();
             (
                 st.status.as_ref().is_some_and(|s| s.connected),
                 st.muted.is_some(),
+                st.status.as_ref().and_then(|s| s.capabilities.clone()),
             )
         };
         self.apps.set_connected(connected);
         self.display.set_connected(connected);
+        self.display
+            .set_capability(caps.as_ref().map(|c| c.phone_display.clone()));
         self.cross.set_connected(connected);
+        self.cross.set_capabilities(
+            caps.as_ref().map(|c| c.cross_control.clone()),
+            caps.as_ref().map(|c| c.phone_display.clone()),
+        );
         self.files.set_connected(connected);
+        self.files.set_capabilities(
+            caps.as_ref().map(|c| c.storage_mount.clone()),
+            caps.as_ref().map(|c| c.folder_share.clone()),
+        );
         self.refresh_phone();
         self.refresh_notifications();
         self.refresh_pair();
@@ -1699,10 +1762,22 @@ impl Ui {
 
         // The card's action: Mirror screen (connected, or a mirror still open), Connect (phone
         // away), or Pair a phone (none paired).
+        let mirror_cap = s.capabilities.as_ref().map(|c| &c.mirror);
+        let (mirror_cap_ok, mirror_tooltip) = match mirror_cap {
+            Some(crate::daemon::FeatureStatus::Unavailable { reason, fix_hint }) => {
+                (false, Some(format!("{reason}\nFix: {fix_hint}")))
+            }
+            _ => (true, None),
+        };
         p.mirror
             .set_visible(state == PhoneState::Connected || mirroring);
         p.mirror
-            .set_sensitive(!pending && (s.connected || mirroring));
+            .set_sensitive(!pending && (mirroring || (s.connected && mirror_cap_ok)));
+        p.mirror.set_tooltip_text(if mirroring {
+            None
+        } else {
+            mirror_tooltip.as_deref()
+        });
         p.mirror.set_label(if pending {
             "Starting…"
         } else if mirroring {
@@ -1727,6 +1802,15 @@ impl Ui {
 
         // Cross Control stays visible for a paired phone (its page says when to connect).
         p.cross_group.set_visible(s.paired);
+        let cross_cap = s.capabilities.as_ref().map(|c| &c.cross_control);
+        let (cross_cap_ok, cross_tooltip) = match cross_cap {
+            Some(crate::daemon::FeatureStatus::Unavailable { reason, fix_hint }) => {
+                (false, Some(format!("{reason}\nFix: {fix_hint}")))
+            }
+            _ => (true, None),
+        };
+        p.cross.set_sensitive(cross_cap_ok);
+        p.cross.set_tooltip_text(cross_tooltip.as_deref());
 
         self.refresh_webcam_status();
 
@@ -1896,7 +1980,7 @@ impl Ui {
         }
     }
 
-    fn toggle_connection(self: &Rc<Self>) {
+    pub(crate) fn toggle_connection(self: &Rc<Self>) {
         let connected = {
             let mut st = self.state.borrow_mut();
             if st.busy {
@@ -1929,7 +2013,7 @@ impl Ui {
     /// one more session window; a standalone viewer child is only the fallback when the host cannot
     /// start. (A viewer spawned while a host runs just hands off and exits, which used to look like
     /// a failed/stopped mirror.)
-    fn toggle_mirror(self: &Rc<Self>) {
+    pub(crate) fn toggle_mirror(self: &Rc<Self>) {
         if let Some(sid) = self.apps.mirror_session() {
             let weak = Rc::downgrade(self);
             glib::spawn_future_local(async move {
@@ -2021,7 +2105,7 @@ impl Ui {
         });
     }
 
-    fn toggle_webcam(self: &Rc<Self>) {
+    pub(crate) fn toggle_webcam(self: &Rc<Self>) {
         let is_running = crate::webcam::is_running();
         let weak = Rc::downgrade(self);
         if is_running {
@@ -2159,12 +2243,18 @@ impl Ui {
     }
 
     fn refresh_webcam_status(&self) {
-        let s_connected = self
+        let (s_connected, webcam_cap) = self
             .state
             .borrow()
             .status
             .as_ref()
-            .is_some_and(|s| s.connected);
+            .map(|s| {
+                (
+                    s.connected,
+                    s.capabilities.as_ref().map(|c| c.webcam.clone()),
+                )
+            })
+            .unwrap_or((false, None));
         let p = &self.phone;
         p.webcam_group.set_visible(true);
         let running = crate::webcam::is_running();
@@ -2174,19 +2264,37 @@ impl Ui {
             p.webcam_start_btn.remove_css_class("suggested-action");
             p.webcam_start_btn.add_css_class("destructive-action");
             p.webcam_start_btn.set_sensitive(true);
+            p.webcam_start_btn
+                .set_tooltip_text(Some("Stop webcam stream"));
+            p.webcam_row.set_tooltip_text(None);
             p.webcam_flip_btn.set_visible(true);
             p.webcam_torch_btn.set_visible(true);
         } else {
-            let info = crate::webcam::loopback_device_info();
-            let desc = match info {
-                Some(dev) => format!("Idle · v4l2loopback {dev}"),
-                None => "Idle · PipeWire camera node".to_owned(),
+            let (cap_ok, tooltip, unavailable_reason) = match webcam_cap {
+                Some(crate::daemon::FeatureStatus::Unavailable { reason, fix_hint }) => (
+                    false,
+                    Some(format!("{reason}\nFix: {fix_hint}")),
+                    Some(reason),
+                ),
+                _ => (true, None, None),
             };
-            p.webcam_row.set_subtitle(&desc);
+            if let Some(reason) = unavailable_reason {
+                p.webcam_row
+                    .set_subtitle(&format!("Unavailable · {reason}"));
+            } else {
+                let info = crate::webcam::loopback_device_info();
+                let desc = match info {
+                    Some(dev) => format!("Idle · v4l2loopback {dev}"),
+                    None => "Idle · PipeWire camera node".to_owned(),
+                };
+                p.webcam_row.set_subtitle(&desc);
+            }
             p.webcam_start_btn.set_label("Start webcam");
             p.webcam_start_btn.remove_css_class("destructive-action");
             p.webcam_start_btn.add_css_class("suggested-action");
-            p.webcam_start_btn.set_sensitive(s_connected);
+            p.webcam_start_btn.set_sensitive(s_connected && cap_ok);
+            p.webcam_start_btn.set_tooltip_text(tooltip.as_deref());
+            p.webcam_row.set_tooltip_text(tooltip.as_deref());
             p.webcam_flip_btn.set_visible(false);
             p.webcam_torch_btn.set_visible(false);
         }

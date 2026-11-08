@@ -1,0 +1,14 @@
+<action>
+    <icon>phone-symbolic</icon>
+    <name>Send to phone</name>
+    <unique-id>smartconnect-send-phone</unique-id>
+    <command>smartconnect-send %F</command>
+    <description>Send selected file(s) to connected phone via Smart Connect</description>
+    <patterns>*</patterns>
+    <directories/>
+    <audio-files/>
+    <image-files/>
+    <other-files/>
+    <text-files/>
+    <video-files/>
+</action>

@@ -3,15 +3,20 @@
 mod apps;
 mod crosscontrol;
 mod daemon;
+mod diagnostics;
 mod display;
 mod files;
 mod icons;
 mod lastdevice;
 mod lifecycle;
 mod mirror;
+mod palette;
+mod photos;
 mod prefs;
+mod settings;
 mod setup;
 mod share;
+mod timeline;
 mod tray;
 mod webcam;
 mod window;
@@ -20,7 +25,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use adw::prelude::*;
-use gtk::{gdk, glib};
+use gtk::{gdk, gio, glib};
 
 const APP_ID: &str = "dev.smartconnect.Linux";
 
@@ -40,19 +45,10 @@ picture.qr { background: white; border-radius: 12px; padding: 12px; }
 ";
 
 fn main() -> glib::ExitCode {
-    // `--background` starts the app hidden (tray only), for the autostart entry. GApplication never
-    // sees the flag: we strip it and forward the rest of argv.
-    let mut forwarded: Vec<String> = Vec::new();
-    let mut background = false;
-    for arg in std::env::args() {
-        if arg == "--background" {
-            background = true;
-        } else {
-            forwarded.push(arg);
-        }
-    }
-
-    let app = adw::Application::builder().application_id(APP_ID).build();
+    let app = adw::Application::builder()
+        .application_id(APP_ID)
+        .flags(gio::ApplicationFlags::HANDLES_COMMAND_LINE)
+        .build();
     let ui: Rc<RefCell<Option<Rc<window::Ui>>>> = Rc::default();
     // Only the first activation honours `--background`; launching the app again always shows it.
     let first_activation = Rc::new(Cell::new(true));
@@ -70,23 +66,35 @@ fn main() -> glib::ExitCode {
     });
 
     let slot = ui.clone();
-    app.connect_activate(move |app| {
+    app.connect_command_line(move |app, cmdline| {
+        let args: Vec<String> = cmdline
+            .arguments()
+            .into_iter()
+            .map(|s| s.to_string_lossy().to_string())
+            .collect();
+        let is_palette = args.iter().any(|a| a == "--palette");
+        let is_background = args.iter().any(|a| a == "--background");
+
         let is_first = first_activation.replace(false);
         // Started from the AppImage file: set it up first (or open the installed copy).
         if is_first && slot.borrow().is_none() {
             if setup::installed_same_build() {
                 setup::open_installed_and_quit(app);
-                return;
+                return 0.into();
             }
             if let Some((appimage, update)) = setup::pending_install() {
                 let (slot, app_c) = (slot.clone(), app.clone());
                 setup::welcome(app, appimage, update, move || {
                     let ui = window::Ui::new(&app_c);
                     ui.start();
-                    ui.present();
+                    if is_palette {
+                        ui.show_palette();
+                    } else if !is_background {
+                        ui.present();
+                    }
                     *slot.borrow_mut() = Some(ui);
                 });
-                return;
+                return 0.into();
             }
         }
         let mut slot = slot.borrow_mut();
@@ -95,11 +103,12 @@ fn main() -> glib::ExitCode {
             ui.start();
             ui
         });
-        // Stay hidden to the tray only when launched with `--background` on the very first
-        // activation; any later launch (or a normal launch) presents the window.
-        if !(is_first && background) {
+        if is_palette {
+            ui.show_palette();
+        } else if !(is_first && is_background) {
             ui.present();
         }
+        0.into()
     });
 
     let slot = ui.clone();
@@ -109,5 +118,5 @@ fn main() -> glib::ExitCode {
         }
     });
 
-    app.run_with_args(&forwarded)
+    app.run()
 }

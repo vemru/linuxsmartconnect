@@ -264,6 +264,7 @@ pub struct ShareManager<D: Desktop> {
     rate: Mutex<RateLimiter>,
     last_offer: Mutex<Option<(String, Instant)>>,
     next_token: AtomicU64,
+    timeline: std::sync::OnceLock<Arc<crate::timeline::TimelineStore>>,
 }
 
 impl<D: Desktop> ShareManager<D> {
@@ -280,7 +281,13 @@ impl<D: Desktop> ShareManager<D> {
             rate: Mutex::default(),
             last_offer: Mutex::default(),
             next_token: AtomicU64::new(1),
+            timeline: std::sync::OnceLock::new(),
         })
+    }
+
+    /// Attaches a timeline store for recording transfers.
+    pub fn set_timeline(&self, timeline: Arc<crate::timeline::TimelineStore>) {
+        let _ = self.timeline.set(timeline);
     }
 
     /// Starts the desktop-event loop. Call once, after the desktop connection is ready.
@@ -431,6 +438,33 @@ impl<D: Desktop> ShareManager<D> {
 
     /// Shows one popup, replacing the previous share (same notification id) and cleaning its staging.
     async fn present(self: &Arc<Self>, content: Content) {
+        if let Some(tl) = self.timeline.get() {
+            match &content {
+                Content::File { name, path, .. } => {
+                    let _ = tl.append(
+                        "phone",
+                        "file",
+                        name,
+                        &format!("Received file ({})", path.display()),
+                        Some(&path.to_string_lossy()),
+                        "incoming",
+                    );
+                }
+                Content::Link { uri } => {
+                    let _ = tl.append("phone", "file", "Received Link", uri, None, "incoming");
+                }
+                Content::Text { text } => {
+                    let _ = tl.append(
+                        "phone",
+                        "clipboard",
+                        "Received Text",
+                        text,
+                        None,
+                        "incoming",
+                    );
+                }
+            }
+        }
         let token = self.next_token.fetch_add(1, Ordering::Relaxed);
         let popup = Popup {
             summary: content.summary().into(),

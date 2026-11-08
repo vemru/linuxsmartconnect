@@ -1039,6 +1039,9 @@ over the control socket and prints the JSON reply.
 | `connect` | Connect to the paired phone now (Wi-Fi, then Bluetooth LE). Usually a few seconds; at worst about a minute (two 30 s Bluetooth scans). If it fails, the daemon keeps retrying in the background. |
 | `disconnect` | Close the current session and stay disconnected until the next Connect. |
 | `pair` | Make a fresh pairing QR. Prints the SVG path. |
+| `capabilities` | Print local feature capabilities matrix as JSON (features, status, reason, fix hint). |
+| `doctor [--json]` | Diagnose networking, avahi discovery, ports, firewall, Bluetooth, and dependencies. |
+| `feature <device> [<name> on\|off]` | Inspect or toggle per-device feature switches (clipboard, webcam, cross_control, etc.). |
 
 ### `smartconnect-mirror`
 
@@ -1283,3 +1286,71 @@ Read by `smartconnectd`. The helpers it starts inherit its environment, so their
 | `~/.cache/smartconnect/` | Phone app list (`apps.json`) and the stream host log when the GTK app started it. |
 | `~/.cache/smartconnect-linux/app-icons/` | Phone app icons: `<iconName>` downloaded by the daemon (or `smartconnect-fex`) on each app list, and `<pkg>.png` saved by the stream host. Safe to delete; the next connection downloads them again. |
 | `~/.local/state/smartconnect-linux/` | GTK app: the last connected phone (`last-device.json`, `last-wallpaper.*`). |
+
+## Command Palette
+
+`smartconnect-gui --palette` opens a floating keyboard launcher for rapid access to all app features:
+- Connect / Pair phone
+- Disconnect phone
+- Start / Stop Screen Mirror
+- Toggle Virtual Webcam
+- Browse Phone Storage (FUSE)
+- Browse Photos & Camera Roll
+- Open Timeline History
+- Open Connection Doctor (Diagnostics)
+- Open Settings
+
+### Compositor Keybindings
+
+Because Wayland prohibits application-level global key grabs, bind `smartconnect-gui --palette` in your compositor or desktop environment:
+
+#### Hyprland (`~/.config/hypr/hyprland.conf`)
+```ini
+bind = $mainMod, P, exec, smartconnect-gui --palette
+```
+
+#### Sway (`~/.config/sway/config`)
+```ini
+bindsym $mod+p exec smartconnect-gui --palette
+```
+
+#### GNOME
+Go to **Settings** → **Keyboard** → **View and Customize Shortcuts** → **Custom Shortcuts**:
+- Name: `Smart Connect Palette`
+- Command: `smartconnect-gui --palette`
+- Shortcut: e.g. `Super+P`
+
+#### KDE Plasma
+Go to **System Settings** → **Shortcuts** → **Custom Shortcuts** → **Edit** → **New** → **Global Shortcut** → **Command/URL**:
+- Trigger: e.g. `Meta+P`
+- Action: `smartconnect-gui --palette`
+
+## "Send to phone" in File Managers
+
+Right-click any file or directory to push it directly to your phone's Downloads folder over Smart Connect:
+
+- **CLI Usage**:
+  ```bash
+  smartconnect-send file1.jpg video.mp4 folder/
+  # or via daemon CLI
+  smartconnectd send file1.jpg video.mp4
+  ```
+
+- **Nautilus (GNOME Files)**:
+  Requires `nautilus-python`. The extension is installed to `~/.local/share/nautilus-python/extensions/smartconnect.py`.
+  Restart Nautilus: `nautilus -q`.
+
+- **Dolphin (KDE)**:
+  Uses KDE Service Menus:
+  - KDE 5: `~/.local/share/kservices5/ServiceMenus/smartconnect-send.desktop`
+  - KDE 6: `~/.local/share/kio/servicemenus/smartconnect-send.desktop`
+
+- **Thunar (XFCE)**:
+  Add a Custom Action in **Edit** → **Configure custom actions...**:
+  - Name: `Send to phone`
+  - Command: `smartconnect-send %F`
+  - Icon: `phone-symbolic`
+  - File Pattern: `*`
+  - Appears if selection contains: All files and directories
+
+

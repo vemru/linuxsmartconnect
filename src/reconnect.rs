@@ -49,6 +49,14 @@ pub fn backoff(attempt: usize, phone_on_lan: bool) -> Duration {
     }
 }
 
+/// Computes backoff with up to +/- 15% random jitter to avoid thundering herd on network recovery.
+pub fn backoff_with_jitter(attempt: usize, phone_on_lan: bool) -> Duration {
+    let base = backoff(attempt, phone_on_lan);
+    let millis = base.as_millis() as f64;
+    let factor = 0.85 + (rand::random::<f64>() * 0.30);
+    Duration::from_millis((millis * factor) as u64)
+}
+
 /// Whether the phone is on the LAN, from a TCP connect to its last address.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Presence {
@@ -286,7 +294,6 @@ mod tests {
         assert_eq!(slept_for((s(100), s(100)), (s(705), s(105))), s(600));
         assert_eq!(slept_for((s(100), s(100)), (s(90), s(105))), s(0));
     }
-
     #[test]
     fn only_new_addresses_count_as_the_network_coming_up() {
         let a: IpAddr = "192.168.1.20".parse().unwrap();
@@ -295,5 +302,15 @@ mod tests {
         assert!(gained_address(&[a], &[a, b]));
         assert!(!gained_address(&[a, b], &[a]));
         assert!(!gained_address(&[a], &[]));
+    }
+
+    #[test]
+    fn backoff_with_jitter_stays_within_bounds() {
+        let base = backoff(2, false);
+        for _ in 0..50 {
+            let j = backoff_with_jitter(2, false);
+            assert!(j >= Duration::from_millis((base.as_millis() as f64 * 0.85) as u64));
+            assert!(j <= Duration::from_millis((base.as_millis() as f64 * 1.16) as u64));
+        }
     }
 }

@@ -17,6 +17,7 @@ use tracing::{info, warn};
 pub struct PhoneStatus {
     pub connected: bool,
     pub paired: bool,
+    pub device_id: Option<String>,
     pub name: Option<String>,
     pub model: Option<String>,
     pub battery: Option<i64>,
@@ -38,6 +39,8 @@ pub struct PhoneStatus {
     pub phone_address: Option<String>,
     /// Recent phone notifications, newest first (memory only, never written to disk).
     pub notifications: Vec<PhoneNotification>,
+    /// Dynamic feature capability matrix.
+    pub capabilities: Option<crate::capabilities::Capabilities>,
 }
 
 #[derive(Clone, Serialize)]
@@ -64,9 +67,13 @@ pub struct StatusHub {
 
 impl StatusHub {
     pub fn new(paired: bool, pairing_qr: Option<String>) -> Self {
+        let caps = crate::capabilities::evaluate_capabilities(
+            &crate::capabilities::LiveProber::new(false),
+        );
         let state = PhoneStatus {
             paired,
             pairing_qr,
+            capabilities: Some(caps),
             ..Default::default()
         };
         Self {
@@ -80,8 +87,19 @@ impl StatusHub {
         serde_json::to_string(&*self.state.lock().unwrap()).unwrap_or_default()
     }
 
+    pub fn device_id(&self) -> Option<String> {
+        self.state.lock().unwrap().device_id.clone()
+    }
+
     pub fn subscribe(&self) -> broadcast::Receiver<String> {
         self.changes.subscribe()
+    }
+
+    pub fn refresh_capabilities(&self, connected: bool) {
+        let caps = crate::capabilities::evaluate_capabilities(
+            &crate::capabilities::LiveProber::new(connected),
+        );
+        self.update(|s| s.capabilities = Some(caps));
     }
 
     pub fn update(&self, f: impl FnOnce(&mut PhoneStatus)) {

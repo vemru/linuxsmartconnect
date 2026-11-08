@@ -4,9 +4,12 @@
 pub mod app_icons;
 pub mod ble;
 pub mod ble_connect;
+pub mod capabilities;
 pub mod clipboard;
 pub mod control;
 pub mod discovery;
+pub mod doctor;
+pub mod features;
 pub mod fex_host;
 pub mod helpers;
 pub mod hotspot;
@@ -21,4 +24,5 @@ pub mod server;
 pub mod share;
 pub mod sms;
 pub mod status;
+pub mod timeline;
 pub mod webcam;

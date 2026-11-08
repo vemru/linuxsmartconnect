@@ -34,6 +34,62 @@ fn runtime_dir() -> PathBuf {
         .join("smartconnect-linux/run")
 }
 
+/// Availability of a specific feature.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+#[serde(tag = "status", rename_all = "camelCase")]
+pub enum FeatureStatus {
+    #[default]
+    Available,
+    #[serde(rename_all = "camelCase")]
+    Unavailable { reason: String, fix_hint: String },
+}
+
+#[allow(dead_code)]
+impl FeatureStatus {
+    pub fn is_available(&self) -> bool {
+        matches!(self, Self::Available)
+    }
+
+    pub fn tooltip(&self, default_tooltip: &str) -> String {
+        match self {
+            Self::Available => default_tooltip.to_string(),
+            Self::Unavailable { reason, fix_hint } => {
+                format!("{reason}\nFix: {fix_hint}")
+            }
+        }
+    }
+}
+
+/// Feature availability matrix reported by the daemon.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Capabilities {
+    pub mirror: FeatureStatus,
+    pub webcam: FeatureStatus,
+    pub app_streaming: FeatureStatus,
+    pub cross_control: FeatureStatus,
+    pub phone_display: FeatureStatus,
+    pub storage_mount: FeatureStatus,
+    pub folder_share: FeatureStatus,
+    pub clipboard: FeatureStatus,
+    pub notifications: FeatureStatus,
+}
+
+/// Per-device feature switches.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct DeviceFeatures {
+    pub mirror: bool,
+    pub webcam: bool,
+    pub app_streaming: bool,
+    pub cross_control: bool,
+    pub phone_display: bool,
+    pub storage_mount: bool,
+    pub folder_share: bool,
+    pub clipboard: bool,
+    pub notifications: bool,
+}
+
 /// Mirror of the daemon's `PhoneStatus` (see `src/status.rs`). Every field is optional on the
 /// wire so an older/newer daemon never breaks parsing.
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
@@ -41,6 +97,7 @@ fn runtime_dir() -> PathBuf {
 pub struct Status {
     pub connected: bool,
     pub paired: bool,
+    pub device_id: Option<String>,
     pub name: Option<String>,
     pub model: Option<String>,
     pub battery: Option<i64>,
@@ -53,6 +110,7 @@ pub struct Status {
     pub wallpaper: Option<String>,
     pub pairing_qr: Option<String>,
     pub notifications: Vec<Notification>,
+    pub capabilities: Option<Capabilities>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
@@ -229,5 +287,171 @@ impl Reply {
                 .map(str::to_owned)
                 .collect(),
         )
+    }
+}
+
+/// Queries the daemon's local feature capabilities.
+#[allow(dead_code)]
+pub fn capabilities() -> Result<Capabilities, String> {
+    let rep = command("capabilities")?;
+    if !rep.ok {
+        return Err(rep.message);
+    }
+    let caps_val = rep.raw.get("capabilities").cloned().unwrap_or(rep.raw);
+    serde_json::from_value(caps_val).map_err(|e| format!("parsing capabilities: {e}"))
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CheckStatus {
+    #[default]
+    Ok,
+    Warn,
+    Fail,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DoctorCheck {
+    pub id: String,
+    pub title: String,
+    pub status: CheckStatus,
+    pub detail: String,
+    pub fix: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DoctorReport {
+    pub checks: Vec<DoctorCheck>,
+}
+
+pub fn doctor() -> Result<DoctorReport, String> {
+    let rep = command("doctor")?;
+    if !rep.ok {
+        return Err(rep.message);
+    }
+    let report_val = rep.raw.get("report").cloned().unwrap_or(rep.raw);
+    serde_json::from_value(report_val).map_err(|e| format!("parsing doctor report: {e}"))
+}
+
+pub fn run_fix_pkexec(fix_cmd: &str) -> Result<(), String> {
+    const SAFE_FIX_COMMANDS: &[&str] = &[
+        "systemctl start avahi-daemon",
+        "systemctl start bluetooth",
+        "modprobe v4l2loopback devices=1 video_nr=9 card_label='SmartConnect Webcam' exclusive_caps=1",
+        "modprobe fuse",
+        "firewall-cmd --add-port=52020/tcp --permanent",
+        "firewall-cmd --add-port=2049/tcp --permanent",
+        "firewall-cmd --reload",
+        "ufw allow 52020/tcp",
+        "ufw allow 2049/tcp",
+    ];
+    fn clean_cmd(s: &str) -> &str {
+        s.trim().strip_prefix("sudo ").unwrap_or(s.trim()).trim()
+    }
+    let is_safe = if fix_cmd.contains("&&") {
+        fix_cmd
+            .split("&&")
+            .all(|sub| SAFE_FIX_COMMANDS.iter().any(|&s| s == clean_cmd(sub)))
+    } else {
+        SAFE_FIX_COMMANDS.iter().any(|&s| s == clean_cmd(fix_cmd))
+    };
+    if !is_safe {
+        return Err(format!(
+            "Command '{fix_cmd}' is not in the safe fix whitelist"
+        ));
+    }
+    let stripped = if fix_cmd.contains("&&") {
+        fix_cmd
+            .split("&&")
+            .map(clean_cmd)
+            .collect::<Vec<_>>()
+            .join(" && ")
+    } else {
+        clean_cmd(fix_cmd).to_string()
+    };
+    let status = std::process::Command::new("pkexec")
+        .arg("sh")
+        .arg("-c")
+        .arg(&stripped)
+        .status()
+        .map_err(|e| format!("running pkexec: {e}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("Command exited with status {status}"))
+    }
+}
+
+pub fn fetch_features(device: &str) -> Result<DeviceFeatures, String> {
+    let cmd = serde_json::json!({ "cmd": "feature.get", "device": device }).to_string();
+    let rep = command(&cmd)?;
+    if !rep.ok {
+        return Err(rep.message);
+    }
+    let feats_val = rep.raw.get("features").cloned().unwrap_or(rep.raw);
+    serde_json::from_value(feats_val).map_err(|e| format!("parsing features: {e}"))
+}
+
+pub fn set_feature(device: &str, feature: &str, enabled: bool) -> Result<(), String> {
+    let cmd = serde_json::json!({
+        "cmd": "feature.set",
+        "device": device,
+        "feature": feature,
+        "enabled": enabled
+    })
+    .to_string();
+    let rep = command(&cmd)?;
+    if rep.ok {
+        Ok(())
+    } else {
+        Err(rep.message)
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
+pub struct TimelineItem {
+    pub id: i64,
+    pub ts: i64,
+    pub device: String,
+    pub kind: String, // "file", "clipboard", "notification", "session"
+    pub title: String,
+    pub detail: String,
+    pub path: Option<String>,
+    pub direction: String, // "incoming", "outgoing"
+}
+
+pub fn fetch_timeline(
+    kind: Option<&str>,
+    search: Option<&str>,
+) -> Result<Vec<TimelineItem>, String> {
+    let line = if let Some(q) = search.filter(|s| !s.trim().is_empty()) {
+        format!("timeline search {}", q.trim())
+    } else if let Some(k) = kind.filter(|k| !k.trim().is_empty() && *k != "all") {
+        format!("timeline {}", k.trim())
+    } else {
+        "timeline".to_string()
+    };
+    let rep = command(&line)?;
+    if !rep.ok {
+        return Err(rep.message);
+    }
+    let items_val = rep
+        .raw
+        .get("items")
+        .cloned()
+        .unwrap_or(Value::Array(vec![]));
+    serde_json::from_value(items_val).map_err(|e| format!("parsing timeline: {e}"))
+}
+
+pub fn clear_timeline() -> Result<(), String> {
+    let rep = command("timeline clear")?;
+    if rep.ok {
+        Ok(())
+    } else {
+        Err(rep.message)
     }
 }

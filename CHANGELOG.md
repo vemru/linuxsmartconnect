@@ -6,6 +6,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). The README's
 [feature matrix](README.md#feature-status) shows what is verified on a real phone.
 
+## [Unreleased]
+
+### Added
+
+- **Phase 3 Per-Feature Switches:** Added per-device feature on/off switches with daemon enforcement and GUI settings.
+  - Added `src/features.rs` with `DeviceFeatures` and `FeatureStore` persisting to `$XDG_STATE_HOME/smartconnect-linux/features.json` (mode 0600).
+  - Sensitive features (`cross_control`, `storage_mount`, `folder_share`) default to OFF; standard features (`mirror`, `webcam`, `app_streaming`, `phone_display`, `clipboard`, `notifications`) default to ON.
+  - Enforced directly in daemon session loop and helpers (ignoring incoming and preventing outgoing sync/connections when disabled).
+  - Capabilities matrix reflects disabled state as `Unavailable { reason: "disabled in settings", fix_hint: "Enable in Settings" }`.
+  - Added CLI `smartconnectd feature <device> [<name> on|off]` and control socket `feature.get`, `feature.set`, `feature.list` commands.
+  - Added GTK4 Feature Settings page in `smartconnect-gui` (`gui/src/settings.rs`) with live switches and daemon synchronization.
+
+- **Phase 2 Connection Doctor:** Added comprehensive diagnosis of networking, avahi discovery, ports (52020, 2049), firewall configurations (firewalld, UFW), Bluetooth services, and runtime dependencies.
+  - Added `src/doctor.rs` with `DoctorProber` abstraction, `run_diagnostics()`, whitelisted pkexec repair runner, and unit tests.
+  - Added `smartconnectd doctor [--json]` CLI command and control socket `doctor` command.
+  - Added "Diagnostics" view tab to `smartconnect-gui` (`gui/src/diagnostics.rs`) with live test status badges, one-click safe pkexec repair buttons, and clipboard export.
+- **Phase 1 Capability Matrix:** Implemented runtime probing and capability reporting across 9 features (`mirror`, `webcam`, `app_streaming`, `cross_control`, `phone_display`, `storage_mount`, `folder_share`, `clipboard`, `notifications`).
+  - Added `src/capabilities.rs` with `SystemProber` abstraction, `LiveProber` kernel/dependency checking (`v4l2loopback`, `/dev/fuse`, `fusermount3`, `webrtcbin`, display/Wayland compositors), and unit tests.
+  - Added control socket query support for `capabilities` keyword and `{"cmd": "capabilities"}` JSON command, plus CLI `smartconnectd capabilities`.
+  - Embedded `capabilities` in `PhoneStatus` for live updates to subscribed frontends.
+  - Bound GUI button sensitivity, subtitle status, and `fix_hint` tooltips in `smartconnect-gui` across webcam, screen mirror, cross-control, phone display, and storage/share controls.
+- Completed Phase 0 reconnaissance and architecture mapping ([feature-plan-recon.md](.notes/feature-plan-recon.md)) documenting workspace crates, control socket protocol, config locations, and concrete integration points for feature plan phases 1–9.
+
 ## [0.2.2] - 2026-10-31
 
 ### Fixed

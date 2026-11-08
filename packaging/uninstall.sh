@@ -49,12 +49,16 @@ if [ -f "$UNIT" ]; then
 fi
 
 # ---- files ----
+remove "$BIN_DIR/smartconnect"
 for b in "${BINS[@]}"; do
   remove "$BIN_DIR/$b"
 done
 remove "$APPS_DIR/$APP_ID.desktop" "$APPS_DIR/dev.smartconnect.Display.desktop" "$APPS_DIR/dev.smartconnect.Share.desktop" "$ICON_DIR/$APP_ID.svg"
 remove "${XDG_DATA_HOME:-$HOME/.local/share}/nautilus/scripts/Send to Phone (Smart Connect)"
-remove "${XDG_DATA_HOME:-$HOME/.local/share}/kio/servicemenus/smartconnect-share.desktop" 
+remove "${XDG_DATA_HOME:-$HOME/.local/share}/nautilus-python/extensions/smartconnect.py"
+remove "${XDG_DATA_HOME:-$HOME/.local/share}/kio/servicemenus/smartconnect-share.desktop"
+remove "${XDG_DATA_HOME:-$HOME/.local/share}/kio/servicemenus/smartconnect-send.desktop"
+remove "${XDG_DATA_HOME:-$HOME/.local/share}/kservices5/ServiceMenus/smartconnect-send.desktop"
 old_desktop="$APPS_DIR/smartconnect-gui.desktop"
 if [ -f "$old_desktop" ] && grep -q '^Exec=.*smartconnect-gui' "$old_desktop"; then
   remove "$old_desktop"
@@ -84,6 +88,12 @@ fi
 STATE_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/smartconnect-linux"
 PREFS_DIR="$CONFIG_HOME/smartconnect-linux"
 CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/smartconnect"
+if [ "$PURGE" = 0 ] && [ "$DRY" = 0 ] && [ -t 0 ] && [ -d "$STATE_DIR" ]; then
+  read -r -p "Keep pairing and identity in ~/.local/share/smartconnect-linux? [Y/n] " answer
+  case "$answer" in
+    [nN]|[nN][oO]) PURGE=1 ;;
+  esac
+fi
 if [ "$PURGE" = 1 ]; then
   for d in "$STATE_DIR" "$PREFS_DIR" "$CACHE_DIR"; do
     if [ -d "$d" ]; then run rm -rf "$d"; did "removed $d"; fi

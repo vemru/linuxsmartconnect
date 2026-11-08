@@ -24,7 +24,7 @@ use std::net::IpAddr;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
@@ -98,10 +98,27 @@ fn image_ext(mime: &str) -> &'static str {
     }
 }
 
+/// Returns true if `text` matches a one-time password (OTP/TOTP) pattern.
+pub fn is_otp_or_sensitive(text: &str) -> bool {
+    let t = text.trim();
+    // 6-8 digit numeric codes, optionally with a single space or dash (e.g. 123456, 123 456, 123-456, 12345678)
+    if (t.len() == 6 || t.len() == 7 || t.len() == 8 || t.len() == 9)
+        && (t.chars().all(|c| c.is_ascii_digit())
+            || ((t.len() == 7 || t.len() == 9)
+                && (t.contains(' ') || t.contains('-'))
+                && t.chars()
+                    .all(|c| c.is_ascii_digit() || c == ' ' || c == '-')))
+    {
+        return true;
+    }
+    false
+}
+
 /// Per-connection state: after a CLOSE the phone ignores us until it negotiates again.
 #[derive(Default)]
 pub struct Session {
     negotiated: bool,
+    last_sensitive: Mutex<Option<(String, Instant)>>,
 }
 
 impl Session {
@@ -168,17 +185,42 @@ impl Session {
     /// image goes out as a one-file list with an empty `path` and `storage`: the phone then PULLs
     /// it (over fex) instead of trying to mount the path over Share Hub.
     pub fn outgoing(&self, clip: &LocalClip) -> Option<Value> {
-        self.negotiated.then(|| match &clip.image {
-            Some(img) => json!({ "msgId": CLIP_UPDATE_NOTIFY, "data": {
+        if !self.negotiated {
+            return None;
+        }
+        match &clip.image {
+            Some(img) => Some(json!({ "msgId": CLIP_UPDATE_NOTIFY, "data": {
                 "clipId": clip.id,
                 "filelist": [ { "attr": 128, "name": img.name, "path": "", "size": img.data.len() } ],
                 "storage": "",
-            } }),
+            } })),
             None => {
+                if is_otp_or_sensitive(&clip.text) {
+                    let mut last = self.last_sensitive.lock().unwrap();
+                    let allow = if let Some((prev, when)) = &*last {
+                        prev == &clip.text && when.elapsed() <= Duration::from_secs(3)
+                    } else {
+                        false
+                    };
+                    if allow {
+                        *last = None;
+                        info!(
+                            "clipboard: sensitive/OTP text confirmed by double-copy; syncing to phone"
+                        );
+                    } else {
+                        *last = Some((clip.text.clone(), Instant::now()));
+                        info!(
+                            "clipboard: sensitive/OTP text detected; ignoring single copy (copy again within 3s to send)"
+                        );
+                        return None;
+                    }
+                }
                 let text: String = clip.text.chars().take(MAX_TEXT_CHARS).collect();
-                json!({ "msgId": CLIP_UPDATE_NOTIFY, "data": { "clipId": clip.id, "text": text } })
+                Some(
+                    json!({ "msgId": CLIP_UPDATE_NOTIFY, "data": { "clipId": clip.id, "text": text } }),
+                )
             }
-        })
+        }
     }
 }
 
@@ -234,6 +276,11 @@ impl LocalClipboard {
     /// `fingerprint` (lowercase hex SHA-256). Call once at startup.
     pub fn set_fex_endpoint(&self, port: u16, fingerprint: String) {
         let _ = self.fex_endpoint.set((port, fingerprint));
+    }
+
+    /// Returns the active fex endpoint port and fingerprint, if configured.
+    pub fn fex_endpoint(&self) -> Option<(u16, String)> {
+        self.fex_endpoint.get().cloned()
     }
 
     /// The phone PULLed `clip_id`: if that is our current image, offer it over fex and return the
@@ -939,7 +986,10 @@ mod tests {
         let img = clip.image.clone().expect("an image clip");
         assert_eq!(img.name, format!("clipboard_{}.png", clip.id));
 
-        let mut s = Session { negotiated: true };
+        let mut s = Session {
+            negotiated: true,
+            ..Default::default()
+        };
         let out = s.outgoing(&clip).unwrap();
         assert_eq!(
             out["data"]["filelist"][0],
@@ -979,7 +1029,10 @@ mod tests {
     #[test]
     fn an_image_clip_is_pulled() {
         let local = LocalClipboard::new();
-        let mut s = Session { negotiated: true };
+        let mut s = Session {
+            negotiated: true,
+            ..Default::default()
+        };
         let img = file_clip(
             9,
             json!([{ "attr": 128, "name": "a.jpg", "path": "/storage/emulated/0/a.jpg", "size": 1234 }]),
@@ -1043,7 +1096,10 @@ mod tests {
 
     #[test]
     fn long_text_is_truncated_to_the_phone_limit() {
-        let s = Session { negotiated: true };
+        let s = Session {
+            negotiated: true,
+            ..Default::default()
+        };
         let clip = LocalClip {
             id: 1,
             text: "é".repeat(MAX_TEXT_CHARS + 10),
@@ -1054,5 +1110,37 @@ mod tests {
             out["data"]["text"].as_str().unwrap().chars().count(),
             MAX_TEXT_CHARS
         );
+    }
+
+    #[test]
+    fn otp_and_totp_patterns_detected() {
+        assert!(is_otp_or_sensitive("123456"));
+        assert!(is_otp_or_sensitive(" 123456 "));
+        assert!(is_otp_or_sensitive("123 456"));
+        assert!(is_otp_or_sensitive("123-456"));
+        assert!(is_otp_or_sensitive("12345678"));
+        assert!(is_otp_or_sensitive("1234-5678"));
+        assert!(!is_otp_or_sensitive("12345"));
+        assert!(!is_otp_or_sensitive("hello world"));
+        assert!(!is_otp_or_sensitive("1234567890"));
+    }
+
+    #[test]
+    fn otp_requires_double_copy_within_window() {
+        let s = Session {
+            negotiated: true,
+            ..Default::default()
+        };
+        let clip = LocalClip {
+            id: 1,
+            text: "654321".to_string(),
+            image: None,
+        };
+        // First copy is dropped
+        assert!(s.outgoing(&clip).is_none());
+        // Immediate second copy within 3 seconds succeeds
+        let second = s.outgoing(&clip);
+        assert!(second.is_some());
+        assert_eq!(second.unwrap()["data"]["text"], "654321");
     }
 }

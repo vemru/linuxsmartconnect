@@ -932,6 +932,8 @@ struct State {
     own: Option<(u32, Opts)>,
     /// Our session exited without us stopping it: say why once the log is read.
     announce: Option<u32>,
+    /// Phone display feature capability.
+    cap: Option<crate::daemon::FeatureStatus>,
 }
 
 impl State {
@@ -1469,6 +1471,11 @@ impl DisplayPage {
         }
     }
 
+    pub fn set_capability(&self, cap: Option<crate::daemon::FeatureStatus>) {
+        self.st.borrow_mut().cap = cap;
+        self.refresh();
+    }
+
     /// The page was shown or hidden.
     pub fn set_visible(self: &Rc<Self>, visible: bool) {
         self.visible.set(visible);
@@ -1779,6 +1786,9 @@ impl DisplayPage {
 
     /// Why the current settings cannot start right now, if they cannot.
     fn blocked(st: &State, opts: &Opts) -> Option<String> {
+        if let Some(crate::daemon::FeatureStatus::Unavailable { reason, fix_hint }) = &st.cap {
+            return Some(format!("{reason}\nFix: {fix_hint}"));
+        }
         if !st.connected {
             return Some("Connect the phone first".into());
         }

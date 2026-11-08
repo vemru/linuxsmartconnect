@@ -43,6 +43,7 @@ while [ $# -gt 0 ]; do
     --no-plugin) PLUGIN=0; shift ;;
     --no-build) BUILD=0; shift ;;
     --dry-run|-n) DRY=1; shift ;;
+    --uninstall) shift; exec "$ROOT/packaging/uninstall.sh" "$@" ;;
     -h|--help) usage; exit 0 ;;
     *) printf 'unknown option: %s\n\n' "$1" >&2; usage >&2; exit 2 ;;
   esac
@@ -139,6 +140,7 @@ for b in "${BINS[@]}"; do
     run install -m755 "$ROOT/packaging/$b" "$BIN_DIR/$b"
   fi
 done
+run ln -sf smartconnectd "$BIN_DIR/smartconnect"
 
 # ---- systemd user unit ----
 say "Installing the systemd user unit to $UNIT_DIR"
@@ -193,7 +195,7 @@ if [ -d "$nautilus_scripts" ] || command -v nautilus >/dev/null 2>&1; then
   else
     cat <<'NS' > "$nautilus_scripts/Send to Phone (Smart Connect)"
 #!/usr/bin/env bash
-BIN="$(command -v smartconnect-share 2>/dev/null || echo "$HOME/.local/bin/smartconnect-share")"
+BIN="$(command -v smartconnect-send 2>/dev/null || echo "$HOME/.local/bin/smartconnect-send")"
 exec "$BIN" "$@"
 NS
     chmod 755 "$nautilus_scripts/Send to Phone (Smart Connect)"
@@ -201,11 +203,24 @@ NS
   did "Nautilus context menu script installed: $nautilus_scripts/Send to Phone (Smart Connect)"
 fi
 
-dolphin_dir="${XDG_DATA_HOME:-$HOME/.local/share}/kio/servicemenus"
-if [ -d "$dolphin_dir" ] || command -v dolphin >/dev/null 2>&1; then
-  run mkdir -p "$dolphin_dir"
-  install_filtered 644 "$ROOT/packaging/smartconnect-share.desktop" "$dolphin_dir/smartconnect-share.desktop" "${share_script:-}"
+nautilus_ext_dir="${XDG_DATA_HOME:-$HOME/.local/share}/nautilus-python/extensions"
+if [ -d "$(dirname "$nautilus_ext_dir")" ] || command -v nautilus >/dev/null 2>&1; then
+  run mkdir -p "$nautilus_ext_dir"
+  run install -Dm644 "$ROOT/packaging/nautilus/smartconnect.py" "$nautilus_ext_dir/smartconnect.py"
+  did "Nautilus Python extension installed: $nautilus_ext_dir/smartconnect.py"
 fi
+
+dolphin_dir="${XDG_DATA_HOME:-$HOME/.local/share}/kio/servicemenus"
+dolphin_dir5="${XDG_DATA_HOME:-$HOME/.local/share}/kservices5/ServiceMenus"
+if [ -d "$dolphin_dir" ] || [ -d "$dolphin_dir5" ] || command -v dolphin >/dev/null 2>&1; then
+  run mkdir -p "$dolphin_dir" "$dolphin_dir5"
+  send_script="s|^Exec=smartconnect-send|Exec=$(sed_escape "$BIN_DIR")/smartconnect-send|"
+  install_filtered 644 "$ROOT/packaging/dolphin/smartconnect-send.desktop" "$dolphin_dir/smartconnect-send.desktop" "${send_script:-}"
+  install_filtered 644 "$ROOT/packaging/dolphin/smartconnect-send.desktop" "$dolphin_dir5/smartconnect-send.desktop" "${send_script:-}"
+  install_filtered 644 "$ROOT/packaging/smartconnect-share.desktop" "$dolphin_dir/smartconnect-share.desktop" "${share_script:-}"
+  did "Dolphin Service Menus installed"
+fi
+run install -Dm644 "$ROOT/packaging/thunar/uca-snippet.xml" "$DOC_DIR/thunar-uca.xml"
 if [ -f "$SHARE_DIR/icons/hicolor/icon-theme.cache" ] && command -v gtk-update-icon-cache >/dev/null 2>&1; then
   run gtk-update-icon-cache -q -t -f "$SHARE_DIR/icons/hicolor" || true
 fi

@@ -118,6 +118,16 @@ async fn handle(daemon: Arc<Daemon>, stream: UnixStream) -> Result<()> {
         let reply = match line.trim() {
             "" => continue,
             "status" => daemon.status.snapshot(),
+            "capabilities" => {
+                let caps = daemon.evaluate_current_capabilities();
+                json!({ "ok": true, "capabilities": caps }).to_string()
+            }
+            "doctor" => {
+                let report = crate::doctor::run_diagnostics(&crate::doctor::LiveDoctorProber::new(
+                    daemon.is_connected(),
+                ));
+                json!({ "ok": true, "report": report }).to_string()
+            }
             "subscribe" => {
                 let mut changes = daemon.status.subscribe();
                 wr.write_all(format!("{}\n", daemon.status.snapshot()).as_bytes())
@@ -154,6 +164,89 @@ async fn handle(daemon: Arc<Daemon>, stream: UnixStream) -> Result<()> {
                 }
                 Err(e) => json!({ "ok": false, "message": format!("{e:#}") }).to_string(),
             },
+            l if l.starts_with("feature") => {
+                let parts: Vec<&str> = l.split_whitespace().collect();
+                match parts.as_slice() {
+                    ["feature"] => {
+                        let all = daemon.features.lock().unwrap().all().clone();
+                        json!({ "ok": true, "devices": all }).to_string()
+                    }
+                    ["feature", device] => {
+                        let dev_id = resolve_device_id(&daemon, device);
+                        let feats = daemon.features.lock().unwrap().get_or_default(&dev_id);
+                        json!({ "ok": true, "device": dev_id, "features": feats }).to_string()
+                    }
+                    ["feature", device, feat, state] => {
+                        let dev_id = resolve_device_id(&daemon, device);
+                        let enabled = match *state {
+                            "on" | "true" | "1" | "enable" => true,
+                            "off" | "false" | "0" | "disable" => false,
+                            other => {
+                                let err_resp = json!({ "ok": false, "message": format!("invalid state '{other}', expected on|off") });
+                                wr.write_all(format!("{err_resp}\n").as_bytes()).await?;
+                                continue;
+                            }
+                        };
+                        match daemon.features.lock().unwrap().set(&dev_id, feat, enabled) {
+                            Ok(()) => {
+                                daemon.refresh_capabilities();
+                                json!({ "ok": true, "message": format!("feature {feat} set to {enabled} for {dev_id}") }).to_string()
+                            }
+                            Err(e) => {
+                                json!({ "ok": false, "message": format!("{e:#}") }).to_string()
+                            }
+                        }
+                    }
+                    _ => {
+                        json!({ "ok": false, "message": "usage: feature <device> [<name> on|off]" })
+                            .to_string()
+                    }
+                }
+            }
+            l if l.starts_with("timeline") => {
+                let parts: Vec<&str> = l.split_whitespace().collect();
+                match parts.as_slice() {
+                    ["timeline"] => {
+                        match daemon.timeline.list(50, 0, None) {
+                            Ok(items) => json!({ "ok": true, "items": items }).to_string(),
+                            Err(e) => json!({ "ok": false, "message": format!("{e:#}") }).to_string(),
+                        }
+                    }
+                    ["timeline", "clear"] => {
+                        match daemon.timeline.clear() {
+                            Ok(()) => json!({ "ok": true, "message": "timeline cleared" }).to_string(),
+                            Err(e) => json!({ "ok": false, "message": format!("{e:#}") }).to_string(),
+                        }
+                    }
+                    ["timeline", "search", query @ ..] => {
+                        let q = query.join(" ");
+                        match daemon.timeline.search(&q, 50) {
+                            Ok(items) => json!({ "ok": true, "items": items }).to_string(),
+                            Err(e) => json!({ "ok": false, "message": format!("{e:#}") }).to_string(),
+                        }
+                    }
+                    ["timeline", kind] => {
+                        match daemon.timeline.list(50, 0, Some(kind)) {
+                            Ok(items) => json!({ "ok": true, "items": items }).to_string(),
+                            Err(e) => json!({ "ok": false, "message": format!("{e:#}") }).to_string(),
+                        }
+                    }
+                    _ => json!({ "ok": false, "message": "usage: timeline [clear | search <query> | <kind>]" }).to_string(),
+                }
+            }
+            l if l.starts_with("send_file") => {
+                let parts: Vec<&str> = l.split_whitespace().collect();
+                if parts.len() < 2 {
+                    json!({ "ok": false, "message": "usage: send_file <path>..." }).to_string()
+                } else {
+                    let paths: Vec<std::path::PathBuf> =
+                        parts[1..].iter().map(std::path::PathBuf::from).collect();
+                    match daemon.send_files(&paths) {
+                        Ok((task_id, count)) => json!({ "ok": true, "message": format!("offered {count} file(s) to phone"), "taskId": task_id }).to_string(),
+                        Err(e) => json!({ "ok": false, "message": format!("{e:#}") }).to_string(),
+                    }
+                }
+            }
             other => {
                 json!({ "ok": false, "message": format!("unknown command {other:?}") }).to_string()
             }
@@ -167,6 +260,41 @@ async fn handle(daemon: Arc<Daemon>, stream: UnixStream) -> Result<()> {
 /// event ids (negative) are only delivered when listed explicitly.
 fn watched(services: &[i64], svc: i64) -> bool {
     services.contains(&svc) || (services.is_empty() && svc >= 0)
+}
+
+fn resolve_device_id(daemon: &Daemon, device_input: &str) -> String {
+    let input = device_input.trim();
+    if input.is_empty() || input == "default" || input == "current" {
+        if let Some(dev_id) = daemon.status.device_id() {
+            return dev_id;
+        }
+        let pairing = daemon.pairing.lock().unwrap();
+        if let Some((k, _)) = pairing.iter().next() {
+            return k.clone();
+        }
+        return "default".to_string();
+    }
+    let pairing = daemon.pairing.lock().unwrap();
+    for (k, phone) in pairing.iter() {
+        if k == input {
+            return k.clone();
+        }
+        if phone
+            .device_name
+            .as_deref()
+            .is_some_and(|n| n.eq_ignore_ascii_case(input))
+        {
+            return k.clone();
+        }
+        if phone
+            .real_device_id
+            .as_deref()
+            .is_some_and(|r| r.eq_ignore_ascii_case(input))
+        {
+            return k.clone();
+        }
+    }
+    input.to_string()
 }
 
 fn json_command(daemon: &Daemon, v: &serde_json::Value) -> String {
@@ -195,6 +323,101 @@ fn json_command(daemon: &Daemon, v: &serde_json::Value) -> String {
         }
         // {"cmd":"notif_mute","pkg":"com.example","mute":true|false}: per-app mute list (no pkg: list it).
         "notif_mute" => crate::notifications::mute_command(v).to_string(),
+        "capabilities" => {
+            let caps = daemon.evaluate_current_capabilities();
+            json!({ "ok": true, "capabilities": caps }).to_string()
+        }
+        "feature.get" => {
+            let dev = s("device");
+            let dev_id = resolve_device_id(daemon, dev);
+            let feats = daemon.features.lock().unwrap().get_or_default(&dev_id);
+            json!({ "ok": true, "device": dev_id, "features": feats }).to_string()
+        }
+        "feature.set" => {
+            let dev = s("device");
+            let dev_id = resolve_device_id(daemon, dev);
+            let feat = s("feature");
+            let enabled = v
+                .get("enabled")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(true);
+            match daemon.features.lock().unwrap().set(&dev_id, feat, enabled) {
+                Ok(()) => {
+                    daemon.refresh_capabilities();
+                    json!({ "ok": true, "message": format!("feature {feat} set to {enabled} for {dev_id}") }).to_string()
+                }
+                Err(e) => json!({ "ok": false, "message": format!("{e:#}") }).to_string(),
+            }
+        }
+        "feature.list" => {
+            let all = daemon.features.lock().unwrap().all().clone();
+            json!({ "ok": true, "devices": all }).to_string()
+        }
+        "doctor" => {
+            let report = crate::doctor::run_diagnostics(&crate::doctor::LiveDoctorProber::new(
+                daemon.is_connected(),
+            ));
+            json!({ "ok": true, "report": report }).to_string()
+        }
+        "timeline.list" => {
+            let limit = v
+                .get("limit")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(50) as usize;
+            let offset = v
+                .get("offset")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0) as usize;
+            let kind = v.get("kind").and_then(serde_json::Value::as_str);
+            match daemon.timeline.list(limit, offset, kind) {
+                Ok(items) => json!({ "ok": true, "items": items }).to_string(),
+                Err(e) => json!({ "ok": false, "message": format!("{e:#}") }).to_string(),
+            }
+        }
+        "timeline.search" => {
+            let limit = v
+                .get("limit")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(50) as usize;
+            let query = s("query");
+            match daemon.timeline.search(query, limit) {
+                Ok(items) => json!({ "ok": true, "items": items }).to_string(),
+                Err(e) => json!({ "ok": false, "message": format!("{e:#}") }).to_string(),
+            }
+        }
+        "timeline.clear" => match daemon.timeline.clear() {
+            Ok(()) => json!({ "ok": true, "message": "timeline cleared" }).to_string(),
+            Err(e) => json!({ "ok": false, "message": format!("{e:#}") }).to_string(),
+        },
+        "timeline.prune" => {
+            let days = v
+                .get("days")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(30) as u32;
+            match daemon.timeline.prune(days) {
+                Ok(count) => json!({ "ok": true, "pruned": count }).to_string(),
+                Err(e) => json!({ "ok": false, "message": format!("{e:#}") }).to_string(),
+            }
+        }
+        "send_file" => {
+            let paths: Vec<std::path::PathBuf> = v
+                .get("paths")
+                .and_then(serde_json::Value::as_array)
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(serde_json::Value::as_str)
+                        .map(std::path::PathBuf::from)
+                        .collect()
+                })
+                .unwrap_or_default();
+            if paths.is_empty() {
+                return json!({ "ok": false, "message": "send_file needs a non-empty 'paths' array" }).to_string();
+            }
+            match daemon.send_files(&paths) {
+                Ok((task_id, count)) => json!({ "ok": true, "message": format!("offered {count} file(s) to phone"), "taskId": task_id }).to_string(),
+                Err(e) => json!({ "ok": false, "message": format!("{e:#}") }).to_string(),
+            }
+        }
         // {"cmd":"send","service":N,"data":{…}}: forward a service message to the phone.
         "send" => {
             let (Some(svc), Some(data)) = (
@@ -319,6 +542,22 @@ pub async fn request(cmd: &str) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Client side: send one command to the running daemon and parse its JSON answer.
+pub async fn query(cmd: &str) -> Result<serde_json::Value> {
+    let path = socket_path();
+    let stream = UnixStream::connect(&path)
+        .await
+        .with_context(|| format!("is smartconnectd running? ({})", path.display()))?;
+    let (rd, mut wr) = stream.into_split();
+    wr.write_all(format!("{cmd}\n").as_bytes()).await?;
+    let mut lines = BufReader::new(rd).lines();
+    if let Some(line) = lines.next_line().await? {
+        let v: serde_json::Value = serde_json::from_str(&line)?;
+        return Ok(v);
+    }
+    anyhow::bail!("no response from smartconnectd");
 }
 
 #[cfg(test)]

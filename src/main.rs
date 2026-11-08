@@ -63,6 +63,9 @@ struct Args {
     /// Allow connections from public/non-LAN IPs (by default, non-private IPs are dropped).
     #[arg(long)]
     allow_public: bool,
+    /// Uninstall smartconnect-linux components, services, and desktop entries.
+    #[arg(long)]
+    uninstall: bool,
     #[command(subcommand)]
     command: Option<Cmd>,
 }
@@ -79,6 +82,64 @@ enum Cmd {
     Subscribe,
     /// Show a fresh pairing QR (for a new phone).
     Pair,
+    /// Print local feature capabilities as JSON.
+    Capabilities,
+    /// Diagnose system dependencies and connection issues.
+    Doctor {
+        /// Print report as structured JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Inspect or modify per-device feature switches.
+    Feature {
+        /// Phone name or realDeviceId (or 'default' / 'current').
+        device: String,
+        /// Feature name (e.g. clipboard, webcam, mirror, cross_control).
+        name: Option<String>,
+        /// State to set (on|off).
+        state: Option<String>,
+    },
+    /// View or search the transfer and event timeline.
+    Timeline {
+        /// Optional search query or filter ("search <query>", "clear", "file", "clipboard", etc.).
+        #[arg(trailing_var_arg = true)]
+        args: Vec<String>,
+        /// Output formatted as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Send file(s) to the connected phone.
+    Send {
+        /// Target device name or id (optional, defaults to connected phone).
+        #[arg(long)]
+        device: Option<String>,
+        /// Paths of the files to send.
+        #[arg(required = true)]
+        paths: Vec<std::path::PathBuf>,
+    },
+}
+
+fn print_doctor_report(report: &smartconnect::doctor::DoctorReport) {
+    println!("smartconnectd: Connection Doctor Report");
+    println!("=======================================");
+    for check in &report.checks {
+        let icon = match check.status {
+            smartconnect::doctor::CheckStatus::Ok => "[OK]  ",
+            smartconnect::doctor::CheckStatus::Warn => "[WARN]",
+            smartconnect::doctor::CheckStatus::Fail => "[FAIL]",
+        };
+        println!("{icon} {}: {}", check.title, check.detail);
+        if let Some(fix) = &check.fix {
+            println!("       Fix: {fix}");
+        }
+    }
+    println!("---------------------------------------");
+    println!(
+        "Summary: {} failed, {} warnings, {} total checks",
+        report.fail_count(),
+        report.warn_count(),
+        report.checks.len()
+    );
 }
 
 #[tokio::main]
@@ -89,13 +150,243 @@ async fn main() -> Result<()> {
         )
         .init();
     let args = Args::parse();
+
+    if args.uninstall {
+        let exe = std::env::current_exe().unwrap_or_default();
+        let script = exe
+            .parent()
+            .and_then(|p| p.parent())
+            .map(|p| p.join("packaging/uninstall.sh"))
+            .filter(|p| p.exists())
+            .or_else(|| {
+                let p = PathBuf::from("/usr/local/share/doc/smartconnect-linux/uninstall.sh");
+                p.exists().then_some(p)
+            });
+
+        if let Some(s) = script {
+            let status = std::process::Command::new("bash").arg(s).status()?;
+            std::process::exit(status.code().unwrap_or(0));
+        } else {
+            let status = std::process::Command::new("bash")
+                .arg("-c")
+                .arg("if command -v packaging/uninstall.sh >/dev/null 2>&1; then packaging/uninstall.sh; elif [ -f \"$HOME/.local/share/doc/smartconnect-linux/uninstall.sh\" ]; then \"$HOME/.local/share/doc/smartconnect-linux/uninstall.sh\"; else echo 'uninstall.sh not found'; exit 1; fi")
+                .status()?;
+            std::process::exit(status.code().unwrap_or(0));
+        }
+    }
     if let Some(cmd) = &args.command {
+        if let Cmd::Doctor { json } = cmd {
+            let rep = match smartconnect::control::query("doctor").await {
+                Ok(v) if v.get("ok").and_then(|o| o.as_bool()) == Some(true) => {
+                    v.get("report").cloned().unwrap_or(v)
+                }
+                _ => {
+                    let report = smartconnect::doctor::run_diagnostics(
+                        &smartconnect::doctor::LiveDoctorProber::new(false),
+                    );
+                    serde_json::to_value(&report)?
+                }
+            };
+            if *json {
+                println!("{}", serde_json::to_string_pretty(&rep)?);
+            } else {
+                let report: smartconnect::doctor::DoctorReport = serde_json::from_value(rep)?;
+                print_doctor_report(&report);
+            }
+            return Ok(());
+        }
+
+        if let Cmd::Feature {
+            device,
+            name,
+            state,
+        } = cmd
+        {
+            let line = match (name, state) {
+                (Some(name), Some(state)) => format!("feature {device} {name} {state}"),
+                (Some(name), None) => format!("feature {device} {name}"),
+                (None, _) => format!("feature {device}"),
+            };
+            let queried = smartconnect::control::query(&line).await;
+            match queried {
+                Ok(v) if v.get("ok").and_then(|o| o.as_bool()) == Some(true) => {
+                    println!("{}", serde_json::to_string_pretty(&v)?);
+                    return Ok(());
+                }
+                _ => {
+                    let state_dir = args.state_dir.unwrap_or_else(default_state_dir);
+                    let mut store = smartconnect::features::FeatureStore::load(&state_dir)?;
+                    match (name, state) {
+                        (Some(name), Some(state)) => {
+                            let enabled = match state.as_str() {
+                                "on" | "true" | "1" | "enable" => true,
+                                "off" | "false" | "0" | "disable" => false,
+                                other => anyhow::bail!("invalid state '{other}', expected on|off"),
+                            };
+                            store.set(device, name, enabled)?;
+                            println!(
+                                "{}",
+                                serde_json::json!({
+                                    "ok": true,
+                                    "message": format!("feature {name} set to {enabled} for {device}")
+                                })
+                            );
+                        }
+                        (Some(name), None) => {
+                            let feats = store.get_or_default(device);
+                            let val = feats.get(name);
+                            println!(
+                                "{}",
+                                serde_json::json!({
+                                    "ok": true,
+                                    "device": device,
+                                    "feature": name,
+                                    "enabled": val
+                                })
+                            );
+                        }
+                        (None, _) => {
+                            let feats = store.get_or_default(device);
+                            println!(
+                                "{}",
+                                serde_json::to_string_pretty(&serde_json::json!({
+                                    "ok": true,
+                                    "device": device,
+                                    "features": feats
+                                }))?
+                            );
+                        }
+                    }
+                    return Ok(());
+                }
+            }
+        }
+
+        if let Cmd::Timeline {
+            args: tl_args,
+            json,
+        } = &cmd
+        {
+            let line_cmd = if tl_args.is_empty() {
+                "timeline".to_string()
+            } else {
+                format!("timeline {}", tl_args.join(" "))
+            };
+            if smartconnect::control::request(&line_cmd).await.is_ok() {
+                return Ok(());
+            }
+
+            // Offline fallback: query local SQLite database directly
+            let state_dir = args.state_dir.unwrap_or_else(default_state_dir);
+            let store = smartconnect::timeline::TimelineStore::open(&state_dir)?;
+            let items = if tl_args.is_empty() {
+                store.list(50, 0, None)?
+            } else if tl_args.first().map(|s| s.as_str()) == Some("clear") {
+                store.clear()?;
+                println!(
+                    "{}",
+                    serde_json::json!({ "ok": true, "message": "timeline cleared" })
+                );
+                return Ok(());
+            } else if tl_args.first().map(|s| s.as_str()) == Some("search") {
+                let q = tl_args[1..].join(" ");
+                store.search(&q, 50)?
+            } else {
+                let kind = &tl_args[0];
+                store.list(50, 0, Some(kind))?
+            };
+            if *json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(
+                        &serde_json::json!({ "ok": true, "items": items })
+                    )?
+                );
+            } else {
+                for item in &items {
+                    let dir = match item.direction.as_str() {
+                        "incoming" => "<-",
+                        "outgoing" => "->",
+                        _ => "--",
+                    };
+                    println!(
+                        "[{}] {} {:12} | {} | {}",
+                        item.ts, dir, item.kind, item.title, item.detail
+                    );
+                }
+            }
+            return Ok(());
+        }
+
+        if let Cmd::Send { device: _, paths } = &cmd {
+            let line_cmd = format!(
+                "send_file {}",
+                paths
+                    .iter()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            );
+            match smartconnect::control::query(&line_cmd).await {
+                Ok(reply) => {
+                    let ok = reply
+                        .get("ok")
+                        .and_then(serde_json::Value::as_bool)
+                        .unwrap_or(false);
+                    let msg = reply
+                        .get("message")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default();
+                    if ok {
+                        println!("{msg}");
+                        let _ = std::process::Command::new("notify-send")
+                            .arg("-a")
+                            .arg("Smart Connect")
+                            .arg("-i")
+                            .arg("document-send-symbolic")
+                            .arg("Smart Connect")
+                            .arg(msg)
+                            .status();
+                        return Ok(());
+                    } else {
+                        eprintln!("smartconnectd: {msg}");
+                        let _ = std::process::Command::new("notify-send")
+                            .arg("-a")
+                            .arg("Smart Connect")
+                            .arg("-i")
+                            .arg("phone-symbolic")
+                            .arg("Smart Connect")
+                            .arg(msg)
+                            .status();
+                        anyhow::bail!("{msg}");
+                    }
+                }
+                Err(e) => {
+                    let msg = format!("smartconnectd is not running: {e:#}");
+                    eprintln!("{msg}");
+                    let _ = std::process::Command::new("notify-send")
+                        .arg("-a")
+                        .arg("Smart Connect")
+                        .arg("-i")
+                        .arg("phone-symbolic")
+                        .arg("Smart Connect")
+                        .arg("Phone not connected")
+                        .status();
+                    return Err(e);
+                }
+            }
+        }
+
         let cmd = match cmd {
             Cmd::Connect => "connect",
             Cmd::Disconnect => "disconnect",
             Cmd::Status => "status",
             Cmd::Subscribe => "subscribe",
             Cmd::Pair => "pair",
+            Cmd::Capabilities => "capabilities",
+            Cmd::Doctor { .. } | Cmd::Feature { .. } | Cmd::Timeline { .. } | Cmd::Send { .. } => {
+                unreachable!()
+            }
         };
         return smartconnect::control::request(cmd).await;
     }
@@ -231,6 +522,7 @@ async fn main() -> Result<()> {
                 desktop,
                 smartconnect::status::runtime_dir().join("shares"),
             );
+            shares.set_timeline(daemon.timeline.clone());
             shares.start();
             let _ = daemon.share.set(shares);
         }
