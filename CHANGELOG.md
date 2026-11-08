@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). The README's
 [feature matrix](README.md#feature-status) shows what is verified on a real phone.
 
+## [Unreleased]
+
+### Added
+
+- Completed Phase 0 reconnaissance and architecture mapping ([feature-plan-recon.md](.notes/feature-plan-recon.md)) documenting workspace crates, control socket protocol, config locations, and concrete integration points for feature plan phases 1–9.
+
 ## [0.2.2] - 2026-10-31
 
 ### Fixed
