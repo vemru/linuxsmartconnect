@@ -124,6 +124,7 @@ for line in watch:
 | [`disconnect`](#disconnect) | plain | yes (`ok:false` otherwise) | `ok` + `message` |
 | [`pair`](#pair) | plain | no | `ok` + `message` + `qr` |
 | [`capabilities`](#capabilities) | plain / JSON | no | `ok` + `capabilities` |
+| [`doctor`](#doctor) | plain / JSON | no | `ok` + `report` |
 | [`watch`](#watch) | JSON | no (frames flow while connected) | `{"ok":true,"message":"watching"}`, then frames and local events (stream) |
 | [`send`](#send) | JSON | yes, except service 25 `cap` updates | `ok` + `message` |
 | [`reply`](#reply) | JSON | yes | `ok` + `message` |
@@ -220,6 +221,17 @@ Returns the local feature capability matrix evaluated by the daemon across 9 fea
 ```
 
 Can also be sent as JSON: `{"cmd":"capabilities"}`.
+
+### `doctor`
+
+Runs connection diagnostics and dependency verification across networking, avahi mDNS discovery, ports (52020, 2049), firewall rules, and hardware/kernel modules:
+
+```
+→ doctor
+← {"ok":true,"report":{"checks":[{"detail":"avahi-daemon is running for local peer discovery","id":"avahi","status":"ok","title":"Avahi mDNS daemon"},...]}}
+```
+
+Can also be sent as JSON: `{"cmd":"doctor"}`.
 
 ### `watch`
 

@@ -1040,6 +1040,7 @@ over the control socket and prints the JSON reply.
 | `disconnect` | Close the current session and stay disconnected until the next Connect. |
 | `pair` | Make a fresh pairing QR. Prints the SVG path. |
 | `capabilities` | Print local feature capabilities matrix as JSON (features, status, reason, fix hint). |
+| `doctor [--json]` | Diagnose networking, avahi discovery, ports, firewall, Bluetooth, and dependencies. |
 
 ### `smartconnect-mirror`
 

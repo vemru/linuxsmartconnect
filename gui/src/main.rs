@@ -3,6 +3,7 @@
 mod apps;
 mod crosscontrol;
 mod daemon;
+mod diagnostics;
 mod display;
 mod files;
 mod icons;

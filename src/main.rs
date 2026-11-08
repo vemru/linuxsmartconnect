@@ -81,6 +81,35 @@ enum Cmd {
     Pair,
     /// Print local feature capabilities as JSON.
     Capabilities,
+    /// Diagnose system dependencies and connection issues.
+    Doctor {
+        /// Print report as structured JSON.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+fn print_doctor_report(report: &smartconnect::doctor::DoctorReport) {
+    println!("smartconnectd: Connection Doctor Report");
+    println!("=======================================");
+    for check in &report.checks {
+        let icon = match check.status {
+            smartconnect::doctor::CheckStatus::Ok => "[OK]  ",
+            smartconnect::doctor::CheckStatus::Warn => "[WARN]",
+            smartconnect::doctor::CheckStatus::Fail => "[FAIL]",
+        };
+        println!("{icon} {}: {}", check.title, check.detail);
+        if let Some(fix) = &check.fix {
+            println!("       Fix: {fix}");
+        }
+    }
+    println!("---------------------------------------");
+    println!(
+        "Summary: {} failed, {} warnings, {} total checks",
+        report.fail_count(),
+        report.warn_count(),
+        report.checks.len()
+    );
 }
 
 #[tokio::main]
@@ -92,6 +121,27 @@ async fn main() -> Result<()> {
         .init();
     let args = Args::parse();
     if let Some(cmd) = &args.command {
+        if let Cmd::Doctor { json } = cmd {
+            let rep = match smartconnect::control::query("doctor").await {
+                Ok(v) if v.get("ok").and_then(|o| o.as_bool()) == Some(true) => {
+                    v.get("report").cloned().unwrap_or(v)
+                }
+                _ => {
+                    let report = smartconnect::doctor::run_diagnostics(
+                        &smartconnect::doctor::LiveDoctorProber::new(false),
+                    );
+                    serde_json::to_value(&report)?
+                }
+            };
+            if *json {
+                println!("{}", serde_json::to_string_pretty(&rep)?);
+            } else {
+                let report: smartconnect::doctor::DoctorReport = serde_json::from_value(rep)?;
+                print_doctor_report(&report);
+            }
+            return Ok(());
+        }
+
         let cmd = match cmd {
             Cmd::Connect => "connect",
             Cmd::Disconnect => "disconnect",
@@ -99,6 +149,7 @@ async fn main() -> Result<()> {
             Cmd::Subscribe => "subscribe",
             Cmd::Pair => "pair",
             Cmd::Capabilities => "capabilities",
+            Cmd::Doctor { .. } => unreachable!(),
         };
         return smartconnect::control::request(cmd).await;
     }

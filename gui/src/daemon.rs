@@ -284,3 +284,86 @@ pub fn capabilities() -> Result<Capabilities, String> {
     let caps_val = rep.raw.get("capabilities").cloned().unwrap_or(rep.raw);
     serde_json::from_value(caps_val).map_err(|e| format!("parsing capabilities: {e}"))
 }
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CheckStatus {
+    #[default]
+    Ok,
+    Warn,
+    Fail,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DoctorCheck {
+    pub id: String,
+    pub title: String,
+    pub status: CheckStatus,
+    pub detail: String,
+    pub fix: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DoctorReport {
+    pub checks: Vec<DoctorCheck>,
+}
+
+pub fn doctor() -> Result<DoctorReport, String> {
+    let rep = command("doctor")?;
+    if !rep.ok {
+        return Err(rep.message);
+    }
+    let report_val = rep.raw.get("report").cloned().unwrap_or(rep.raw);
+    serde_json::from_value(report_val).map_err(|e| format!("parsing doctor report: {e}"))
+}
+
+pub fn run_fix_pkexec(fix_cmd: &str) -> Result<(), String> {
+    const SAFE_FIX_COMMANDS: &[&str] = &[
+        "systemctl start avahi-daemon",
+        "systemctl start bluetooth",
+        "modprobe v4l2loopback devices=1 video_nr=9 card_label='SmartConnect Webcam' exclusive_caps=1",
+        "modprobe fuse",
+        "firewall-cmd --add-port=52020/tcp --permanent",
+        "firewall-cmd --add-port=2049/tcp --permanent",
+        "firewall-cmd --reload",
+        "ufw allow 52020/tcp",
+        "ufw allow 2049/tcp",
+    ];
+    fn clean_cmd(s: &str) -> &str {
+        s.trim().strip_prefix("sudo ").unwrap_or(s.trim()).trim()
+    }
+    let is_safe = if fix_cmd.contains("&&") {
+        fix_cmd
+            .split("&&")
+            .all(|sub| SAFE_FIX_COMMANDS.iter().any(|&s| s == clean_cmd(sub)))
+    } else {
+        SAFE_FIX_COMMANDS.iter().any(|&s| s == clean_cmd(fix_cmd))
+    };
+    if !is_safe {
+        return Err(format!(
+            "Command '{fix_cmd}' is not in the safe fix whitelist"
+        ));
+    }
+    let stripped = if fix_cmd.contains("&&") {
+        fix_cmd
+            .split("&&")
+            .map(clean_cmd)
+            .collect::<Vec<_>>()
+            .join(" && ")
+    } else {
+        clean_cmd(fix_cmd).to_string()
+    };
+    let status = std::process::Command::new("pkexec")
+        .arg("sh")
+        .arg("-c")
+        .arg(&stripped)
+        .status()
+        .map_err(|e| format!("running pkexec: {e}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("Command exited with status {status}"))
+    }
+}

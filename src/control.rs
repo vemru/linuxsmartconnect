@@ -124,6 +124,12 @@ async fn handle(daemon: Arc<Daemon>, stream: UnixStream) -> Result<()> {
                 );
                 json!({ "ok": true, "capabilities": caps }).to_string()
             }
+            "doctor" => {
+                let report = crate::doctor::run_diagnostics(&crate::doctor::LiveDoctorProber::new(
+                    daemon.is_connected(),
+                ));
+                json!({ "ok": true, "report": report }).to_string()
+            }
             "subscribe" => {
                 let mut changes = daemon.status.subscribe();
                 wr.write_all(format!("{}\n", daemon.status.snapshot()).as_bytes())
@@ -206,6 +212,12 @@ fn json_command(daemon: &Daemon, v: &serde_json::Value) -> String {
                 &crate::capabilities::LiveProber::new(daemon.is_connected()),
             );
             json!({ "ok": true, "capabilities": caps }).to_string()
+        }
+        "doctor" => {
+            let report = crate::doctor::run_diagnostics(&crate::doctor::LiveDoctorProber::new(
+                daemon.is_connected(),
+            ));
+            json!({ "ok": true, "report": report }).to_string()
         }
         // {"cmd":"send","service":N,"data":{…}}: forward a service message to the phone.
         "send" => {
@@ -331,6 +343,22 @@ pub async fn request(cmd: &str) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Client side: send one command to the running daemon and parse its JSON answer.
+pub async fn query(cmd: &str) -> Result<serde_json::Value> {
+    let path = socket_path();
+    let stream = UnixStream::connect(&path)
+        .await
+        .with_context(|| format!("is smartconnectd running? ({})", path.display()))?;
+    let (rd, mut wr) = stream.into_split();
+    wr.write_all(format!("{cmd}\n").as_bytes()).await?;
+    let mut lines = BufReader::new(rd).lines();
+    if let Some(line) = lines.next_line().await? {
+        let v: serde_json::Value = serde_json::from_str(&line)?;
+        return Ok(v);
+    }
+    anyhow::bail!("no response from smartconnectd");
 }
 
 #[cfg(test)]

@@ -8,6 +8,7 @@ pub mod capabilities;
 pub mod clipboard;
 pub mod control;
 pub mod discovery;
+pub mod doctor;
 pub mod fex_host;
 pub mod helpers;
 pub mod hotspot;

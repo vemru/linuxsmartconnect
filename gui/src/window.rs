@@ -54,6 +54,7 @@ pub struct Ui {
     display: Rc<DisplayPage>,
     cross: Rc<CrossControlPage>,
     files: Rc<FilesPage>,
+    diagnostics: Rc<crate::diagnostics::DiagnosticsPage>,
     /// The system-tray item, when the desktop has a StatusNotifierHost.
     tray: RefCell<Option<tray::Tray>>,
     /// Tracks how the daemon is running, so Quit stops the right thing.
@@ -843,6 +844,7 @@ impl Ui {
             .child(&display_clamp)
             .build();
         let (files, files_w) = FilesPage::build(&toasts);
+        let (diagnostics, diagnostics_w) = crate::diagnostics::DiagnosticsPage::build(&toasts);
         views.add_titled_with_icon(&phone_w, Some("phone"), "Phone", "phone-symbolic");
         views.add_titled_with_icon(&apps_w, Some("apps"), "Apps", "view-app-grid-symbolic");
         views.add_titled_with_icon(
@@ -852,6 +854,12 @@ impl Ui {
             "video-display-symbolic",
         );
         views.add_titled_with_icon(&files_w, Some("files"), "Files", "folder-symbolic");
+        views.add_titled_with_icon(
+            &diagnostics_w,
+            Some("diagnostics"),
+            "Diagnostics",
+            "utilities-system-monitor-symbolic",
+        );
 
         let (down_page, down) = DownPage::build();
         let spinner = adw::Spinner::builder()
@@ -930,6 +938,7 @@ impl Ui {
             display,
             cross,
             files,
+            diagnostics,
             tray: RefCell::default(),
             daemon_ctl: RefCell::default(),
             state: RefCell::new(State {
@@ -951,6 +960,7 @@ impl Ui {
                 Some("phone") => ui.load_muted(),
                 Some("apps") => ui.apps.shown(),
                 Some("display") => ui.cross.refresh(),
+                Some("diagnostics") => ui.diagnostics.run_checks(),
                 _ => {}
             }
         });

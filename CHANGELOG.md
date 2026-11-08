@@ -10,6 +10,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). The READM
 
 ### Added
 
+- **Phase 2 Connection Doctor:** Added comprehensive diagnosis of networking, avahi discovery, ports (52020, 2049), firewall configurations (firewalld, UFW), Bluetooth services, and runtime dependencies.
+  - Added `src/doctor.rs` with `DoctorProber` abstraction, `run_diagnostics()`, whitelisted pkexec repair runner, and unit tests.
+  - Added `smartconnectd doctor [--json]` CLI command and control socket `doctor` command.
+  - Added "Diagnostics" view tab to `smartconnect-gui` (`gui/src/diagnostics.rs`) with live test status badges, one-click safe pkexec repair buttons, and clipboard export.
 - **Phase 1 Capability Matrix:** Implemented runtime probing and capability reporting across 9 features (`mirror`, `webcam`, `app_streaming`, `cross_control`, `phone_display`, `storage_mount`, `folder_share`, `clipboard`, `notifications`).
   - Added `src/capabilities.rs` with `SystemProber` abstraction, `LiveProber` kernel/dependency checking (`v4l2loopback`, `/dev/fuse`, `fusermount3`, `webrtcbin`, display/Wayland compositors), and unit tests.
   - Added control socket query support for `capabilities` keyword and `{"cmd": "capabilities"}` JSON command, plus CLI `smartconnectd capabilities`.
