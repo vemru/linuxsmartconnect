@@ -267,6 +267,8 @@ struct State {
     /// Open this once the remount that Open/a quick folder triggered is up: `None` = the root,
     /// `Some(i)` = quick folder `i`.
     open_after: Option<Option<usize>>,
+    /// Storage mount feature capability.
+    mount_cap: Option<crate::daemon::FeatureStatus>,
 }
 
 pub struct FilesPage {
@@ -491,6 +493,7 @@ impl FilesPage {
                 quick: [None; 4],
                 probing: false,
                 open_after: None,
+                mount_cap: None,
             }),
             watching: Cell::new(false),
             ticks: Cell::new(0),
@@ -573,6 +576,16 @@ impl FilesPage {
                 self.start_mount();
             }
         }
+    }
+
+    pub fn set_capabilities(
+        self: &Rc<Self>,
+        mount_cap: Option<crate::daemon::FeatureStatus>,
+        share_cap: Option<crate::daemon::FeatureStatus>,
+    ) {
+        self.share.set_capability(share_cap);
+        self.st.borrow_mut().mount_cap = mount_cap;
+        self.refresh();
     }
 
     /// Sets the Storage widgets from the preferences.
@@ -1094,9 +1107,20 @@ impl FilesPage {
         self.mount.set_visible(!mounted);
         self.mount
             .set_label(if mounting { "Mounting…" } else { "Mount" });
-        // Mount only when the phone is connected and nothing is in flight.
+        let mount_cap_ok = match &st.mount_cap {
+            Some(crate::daemon::FeatureStatus::Unavailable { reason, fix_hint }) => {
+                self.mount
+                    .set_tooltip_text(Some(&format!("{reason}\nFix: {fix_hint}")));
+                false
+            }
+            _ => {
+                self.mount.set_tooltip_text(None);
+                true
+            }
+        };
+        // Mount only when the phone is connected, capability is available, and nothing is in flight.
         self.mount
-            .set_sensitive(st.connected && *p == Phase::Unmounted && !st.busy);
+            .set_sensitive(st.connected && *p == Phase::Unmounted && !st.busy && mount_cap_ok);
 
         self.open.set_visible(mounted);
         self.open.set_sensitive(!st.busy);

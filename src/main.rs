@@ -79,6 +79,8 @@ enum Cmd {
     Subscribe,
     /// Show a fresh pairing QR (for a new phone).
     Pair,
+    /// Print local feature capabilities as JSON.
+    Capabilities,
 }
 
 #[tokio::main]
@@ -96,6 +98,7 @@ async fn main() -> Result<()> {
             Cmd::Status => "status",
             Cmd::Subscribe => "subscribe",
             Cmd::Pair => "pair",
+            Cmd::Capabilities => "capabilities",
         };
         return smartconnect::control::request(cmd).await;
     }

@@ -38,6 +38,8 @@ pub struct PhoneStatus {
     pub phone_address: Option<String>,
     /// Recent phone notifications, newest first (memory only, never written to disk).
     pub notifications: Vec<PhoneNotification>,
+    /// Dynamic feature capability matrix.
+    pub capabilities: Option<crate::capabilities::Capabilities>,
 }
 
 #[derive(Clone, Serialize)]
@@ -64,9 +66,13 @@ pub struct StatusHub {
 
 impl StatusHub {
     pub fn new(paired: bool, pairing_qr: Option<String>) -> Self {
+        let caps = crate::capabilities::evaluate_capabilities(
+            &crate::capabilities::LiveProber::new(false),
+        );
         let state = PhoneStatus {
             paired,
             pairing_qr,
+            capabilities: Some(caps),
             ..Default::default()
         };
         Self {
@@ -82,6 +88,13 @@ impl StatusHub {
 
     pub fn subscribe(&self) -> broadcast::Receiver<String> {
         self.changes.subscribe()
+    }
+
+    pub fn refresh_capabilities(&self, connected: bool) {
+        let caps = crate::capabilities::evaluate_capabilities(
+            &crate::capabilities::LiveProber::new(connected),
+        );
+        self.update(|s| s.capabilities = Some(caps));
     }
 
     pub fn update(&self, f: impl FnOnce(&mut PhoneStatus)) {

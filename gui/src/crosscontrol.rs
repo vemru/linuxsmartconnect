@@ -493,6 +493,8 @@ pub struct CrossControlPage {
     connected: Cell<bool>,
     syncing: Cell<bool>,
     polling: Cell<bool>,
+    cross_cap: RefCell<Option<crate::daemon::FeatureStatus>>,
+    display_cap: RefCell<Option<crate::daemon::FeatureStatus>>,
 }
 
 fn mode_card(icon: &str, title: &str, subtitle: &str) -> (gtk::ToggleButton, gtk::Image) {
@@ -646,6 +648,8 @@ impl CrossControlPage {
             connected: Cell::new(false),
             syncing: Cell::new(false),
             polling: Cell::new(false),
+            cross_cap: RefCell::new(None),
+            display_cap: RefCell::new(None),
         });
         page.connect();
         page.update_position_label();
@@ -748,6 +752,17 @@ impl CrossControlPage {
     /// The phone link is up: modes can start.
     pub fn set_connected(self: &Rc<Self>, connected: bool) {
         self.connected.set(connected);
+        self.sync();
+    }
+
+    /// Update feature capabilities for Cross Control and Display modes.
+    pub fn set_capabilities(
+        self: &Rc<Self>,
+        cross: Option<crate::daemon::FeatureStatus>,
+        display: Option<crate::daemon::FeatureStatus>,
+    ) {
+        *self.cross_cap.borrow_mut() = cross;
+        *self.display_cap.borrow_mut() = display;
         self.sync();
     }
 
@@ -868,7 +883,22 @@ impl CrossControlPage {
             let on = running == Some(*mode);
             button.set_active(on);
             check.set_visible(on);
-            button.set_sensitive(self.connected.get() || on);
+            let (cap_ok, tooltip) = match mode {
+                Mode::Shared => match &*self.cross_cap.borrow() {
+                    Some(crate::daemon::FeatureStatus::Unavailable { reason, fix_hint }) => {
+                        (false, Some(format!("{reason}\nFix: {fix_hint}")))
+                    }
+                    _ => (true, None),
+                },
+                Mode::Duplicate | Mode::Extend => match &*self.display_cap.borrow() {
+                    Some(crate::daemon::FeatureStatus::Unavailable { reason, fix_hint }) => {
+                        (false, Some(format!("{reason}\nFix: {fix_hint}")))
+                    }
+                    _ => (true, None),
+                },
+            };
+            button.set_sensitive((self.connected.get() && cap_ok) || on);
+            button.set_tooltip_text(tooltip.as_deref());
         }
         self.syncing.set(false);
         let text = match (running, self.connected.get()) {

@@ -1039,6 +1039,7 @@ over the control socket and prints the JSON reply.
 | `connect` | Connect to the paired phone now (Wi-Fi, then Bluetooth LE). Usually a few seconds; at worst about a minute (two 30 s Bluetooth scans). If it fails, the daemon keeps retrying in the background. |
 | `disconnect` | Close the current session and stay disconnected until the next Connect. |
 | `pair` | Make a fresh pairing QR. Prints the SVG path. |
+| `capabilities` | Print local feature capabilities matrix as JSON (features, status, reason, fix hint). |
 
 ### `smartconnect-mirror`
 

@@ -123,6 +123,7 @@ for line in watch:
 | [`connect`](#connect) | plain | no | `ok` + `message` |
 | [`disconnect`](#disconnect) | plain | yes (`ok:false` otherwise) | `ok` + `message` |
 | [`pair`](#pair) | plain | no | `ok` + `message` + `qr` |
+| [`capabilities`](#capabilities) | plain / JSON | no | `ok` + `capabilities` |
 | [`watch`](#watch) | JSON | no (frames flow while connected) | `{"ok":true,"message":"watching"}`, then frames and local events (stream) |
 | [`send`](#send) | JSON | yes, except service 25 `cap` updates | `ok` + `message` |
 | [`reply`](#reply) | JSON | yes | `ok` + `message` |
@@ -208,6 +209,17 @@ status object's `pairingQr` is updated too.
 
 The daemon rewrites the same path whenever it makes a new token, so reload the file instead of
 caching the image.
+
+### `capabilities`
+
+Returns the local feature capability matrix evaluated by the daemon across 9 features (`mirror`, `webcam`, `appStreaming`, `crossControl`, `phoneDisplay`, `storageMount`, `folderShare`, `clipboard`, `notifications`):
+
+```
+→ capabilities
+← {"capabilities":{"appStreaming":{"status":"available"},"clipboard":{"status":"available"},"crossControl":{"fixHint":"Connect your phone in Smart Connect to use Cross Control","reason":"Phone is not connected","status":"unavailable"},"folderShare":{"status":"available"},"mirror":{"status":"available"},"notifications":{"status":"available"},"phoneDisplay":{"status":"available"},"storageMount":{"status":"available"},"webcam":{"fixHint":"sudo modprobe v4l2loopback devices=1 video_nr=9 card_label='SmartConnect Webcam' exclusive_caps=1","reason":"v4l2loopback kernel module is not loaded","status":"unavailable"}},"ok":true}
+```
+
+Can also be sent as JSON: `{"cmd":"capabilities"}`.
 
 ### `watch`
 
@@ -468,6 +480,7 @@ when unknown.
 | `pcAddress` | string or null | This PC's address on the phone's network: the local address of the last verified phone connection. `null` until the first one; kept after a disconnect. The stream host and the phone display offer the phone WebRTC candidates on this address only (unless `SMARTCONNECT_ICE_ADDRESSES` is set). |
 | `phoneAddress` | string or null | The phone's IP address on the last verified connection (the WebSocket peer). `null` until the first one; kept after a disconnect. `smartconnect-fex fetch-app-icons` pulls the app icons from this address. |
 | `notifications` | array | Up to 30 recent phone notifications, newest first (see below). Kept in memory only. |
+| `capabilities` | object or null | Local feature availability matrix evaluated across 9 features (see [`capabilities`](#capabilities)). Embedded in live status and pushed on change. |
 
 Each entry of `notifications`:
 

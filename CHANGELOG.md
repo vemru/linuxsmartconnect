@@ -10,6 +10,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). The READM
 
 ### Added
 
+- **Phase 1 Capability Matrix:** Implemented runtime probing and capability reporting across 9 features (`mirror`, `webcam`, `app_streaming`, `cross_control`, `phone_display`, `storage_mount`, `folder_share`, `clipboard`, `notifications`).
+  - Added `src/capabilities.rs` with `SystemProber` abstraction, `LiveProber` kernel/dependency checking (`v4l2loopback`, `/dev/fuse`, `fusermount3`, `webrtcbin`, display/Wayland compositors), and unit tests.
+  - Added control socket query support for `capabilities` keyword and `{"cmd": "capabilities"}` JSON command, plus CLI `smartconnectd capabilities`.
+  - Embedded `capabilities` in `PhoneStatus` for live updates to subscribed frontends.
+  - Bound GUI button sensitivity, subtitle status, and `fix_hint` tooltips in `smartconnect-gui` across webcam, screen mirror, cross-control, phone display, and storage/share controls.
 - Completed Phase 0 reconnaissance and architecture mapping ([feature-plan-recon.md](.notes/feature-plan-recon.md)) documenting workspace crates, control socket protocol, config locations, and concrete integration points for feature plan phases 1–9.
 
 ## [0.2.2] - 2026-10-31

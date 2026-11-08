@@ -1505,8 +1505,11 @@ impl Ui {
         }
         self.apps.set_connected(false);
         self.display.set_connected(false);
+        self.display.set_capability(None);
         self.cross.set_connected(false);
+        self.cross.set_capabilities(None, None);
         self.files.set_connected(false);
+        self.files.set_capabilities(None, None);
         {
             let mut st = self.state.borrow_mut();
             st.status = None;
@@ -1550,17 +1553,28 @@ impl Ui {
         self.remember_device();
         self.root.set_visible_child_name("main");
         self.show_switcher(true);
-        let (connected, muted_known) = {
+        let (connected, muted_known, caps) = {
             let st = self.state.borrow();
             (
                 st.status.as_ref().is_some_and(|s| s.connected),
                 st.muted.is_some(),
+                st.status.as_ref().and_then(|s| s.capabilities.clone()),
             )
         };
         self.apps.set_connected(connected);
         self.display.set_connected(connected);
+        self.display
+            .set_capability(caps.as_ref().map(|c| c.phone_display.clone()));
         self.cross.set_connected(connected);
+        self.cross.set_capabilities(
+            caps.as_ref().map(|c| c.cross_control.clone()),
+            caps.as_ref().map(|c| c.phone_display.clone()),
+        );
         self.files.set_connected(connected);
+        self.files.set_capabilities(
+            caps.as_ref().map(|c| c.storage_mount.clone()),
+            caps.as_ref().map(|c| c.folder_share.clone()),
+        );
         self.refresh_phone();
         self.refresh_notifications();
         self.refresh_pair();
@@ -1699,10 +1713,22 @@ impl Ui {
 
         // The card's action: Mirror screen (connected, or a mirror still open), Connect (phone
         // away), or Pair a phone (none paired).
+        let mirror_cap = s.capabilities.as_ref().map(|c| &c.mirror);
+        let (mirror_cap_ok, mirror_tooltip) = match mirror_cap {
+            Some(crate::daemon::FeatureStatus::Unavailable { reason, fix_hint }) => {
+                (false, Some(format!("{reason}\nFix: {fix_hint}")))
+            }
+            _ => (true, None),
+        };
         p.mirror
             .set_visible(state == PhoneState::Connected || mirroring);
         p.mirror
-            .set_sensitive(!pending && (s.connected || mirroring));
+            .set_sensitive(!pending && (mirroring || (s.connected && mirror_cap_ok)));
+        p.mirror.set_tooltip_text(if mirroring {
+            None
+        } else {
+            mirror_tooltip.as_deref()
+        });
         p.mirror.set_label(if pending {
             "Starting…"
         } else if mirroring {
@@ -1727,6 +1753,15 @@ impl Ui {
 
         // Cross Control stays visible for a paired phone (its page says when to connect).
         p.cross_group.set_visible(s.paired);
+        let cross_cap = s.capabilities.as_ref().map(|c| &c.cross_control);
+        let (cross_cap_ok, cross_tooltip) = match cross_cap {
+            Some(crate::daemon::FeatureStatus::Unavailable { reason, fix_hint }) => {
+                (false, Some(format!("{reason}\nFix: {fix_hint}")))
+            }
+            _ => (true, None),
+        };
+        p.cross.set_sensitive(cross_cap_ok);
+        p.cross.set_tooltip_text(cross_tooltip.as_deref());
 
         self.refresh_webcam_status();
 
@@ -2159,12 +2194,18 @@ impl Ui {
     }
 
     fn refresh_webcam_status(&self) {
-        let s_connected = self
+        let (s_connected, webcam_cap) = self
             .state
             .borrow()
             .status
             .as_ref()
-            .is_some_and(|s| s.connected);
+            .map(|s| {
+                (
+                    s.connected,
+                    s.capabilities.as_ref().map(|c| c.webcam.clone()),
+                )
+            })
+            .unwrap_or((false, None));
         let p = &self.phone;
         p.webcam_group.set_visible(true);
         let running = crate::webcam::is_running();
@@ -2174,19 +2215,37 @@ impl Ui {
             p.webcam_start_btn.remove_css_class("suggested-action");
             p.webcam_start_btn.add_css_class("destructive-action");
             p.webcam_start_btn.set_sensitive(true);
+            p.webcam_start_btn
+                .set_tooltip_text(Some("Stop webcam stream"));
+            p.webcam_row.set_tooltip_text(None);
             p.webcam_flip_btn.set_visible(true);
             p.webcam_torch_btn.set_visible(true);
         } else {
-            let info = crate::webcam::loopback_device_info();
-            let desc = match info {
-                Some(dev) => format!("Idle · v4l2loopback {dev}"),
-                None => "Idle · PipeWire camera node".to_owned(),
+            let (cap_ok, tooltip, unavailable_reason) = match webcam_cap {
+                Some(crate::daemon::FeatureStatus::Unavailable { reason, fix_hint }) => (
+                    false,
+                    Some(format!("{reason}\nFix: {fix_hint}")),
+                    Some(reason),
+                ),
+                _ => (true, None, None),
             };
-            p.webcam_row.set_subtitle(&desc);
+            if let Some(reason) = unavailable_reason {
+                p.webcam_row
+                    .set_subtitle(&format!("Unavailable · {reason}"));
+            } else {
+                let info = crate::webcam::loopback_device_info();
+                let desc = match info {
+                    Some(dev) => format!("Idle · v4l2loopback {dev}"),
+                    None => "Idle · PipeWire camera node".to_owned(),
+                };
+                p.webcam_row.set_subtitle(&desc);
+            }
             p.webcam_start_btn.set_label("Start webcam");
             p.webcam_start_btn.remove_css_class("destructive-action");
             p.webcam_start_btn.add_css_class("suggested-action");
-            p.webcam_start_btn.set_sensitive(s_connected);
+            p.webcam_start_btn.set_sensitive(s_connected && cap_ok);
+            p.webcam_start_btn.set_tooltip_text(tooltip.as_deref());
+            p.webcam_row.set_tooltip_text(tooltip.as_deref());
             p.webcam_flip_btn.set_visible(false);
             p.webcam_torch_btn.set_visible(false);
         }

@@ -668,6 +668,9 @@ async fn handle(
         s.name = name.or(s.name.take());
         s.pc_address = local_ip.or(s.pc_address.take());
         s.phone_address = Some(peer.ip().to_canonical().to_string());
+        s.capabilities = Some(crate::capabilities::evaluate_capabilities(
+            &crate::capabilities::LiveProber::new(true),
+        ));
     });
     daemon.remember_phone_ip(&stable_id, peer.ip().to_canonical());
     // A verified session (phone- or desktop-initiated) means the user wants to be connected.
@@ -675,7 +678,12 @@ async fn handle(
     daemon.phone_said_bye.store(false, Ordering::SeqCst);
     let result = session_loop(&mut tx, &mut rx, &mut log, peer, &daemon, &stable_id).await;
     if daemon.active_sessions.fetch_sub(1, Ordering::SeqCst) == 1 {
-        daemon.status.update(|s| s.connected = false);
+        daemon.status.update(|s| {
+            s.connected = false;
+            s.capabilities = Some(crate::capabilities::evaluate_capabilities(
+                &crate::capabilities::LiveProber::new(false),
+            ));
+        });
         if daemon.phone_said_bye.load(Ordering::SeqCst) {
             // svc 0 cmd 6: the user tapped Disconnect on the phone.
             daemon.user_disconnected.store(true, Ordering::SeqCst);

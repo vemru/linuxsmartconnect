@@ -34,6 +34,47 @@ fn runtime_dir() -> PathBuf {
         .join("smartconnect-linux/run")
 }
 
+/// Availability of a specific feature.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+#[serde(tag = "status", rename_all = "camelCase")]
+pub enum FeatureStatus {
+    #[default]
+    Available,
+    #[serde(rename_all = "camelCase")]
+    Unavailable { reason: String, fix_hint: String },
+}
+
+#[allow(dead_code)]
+impl FeatureStatus {
+    pub fn is_available(&self) -> bool {
+        matches!(self, Self::Available)
+    }
+
+    pub fn tooltip(&self, default_tooltip: &str) -> String {
+        match self {
+            Self::Available => default_tooltip.to_string(),
+            Self::Unavailable { reason, fix_hint } => {
+                format!("{reason}\nFix: {fix_hint}")
+            }
+        }
+    }
+}
+
+/// Feature availability matrix reported by the daemon.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Capabilities {
+    pub mirror: FeatureStatus,
+    pub webcam: FeatureStatus,
+    pub app_streaming: FeatureStatus,
+    pub cross_control: FeatureStatus,
+    pub phone_display: FeatureStatus,
+    pub storage_mount: FeatureStatus,
+    pub folder_share: FeatureStatus,
+    pub clipboard: FeatureStatus,
+    pub notifications: FeatureStatus,
+}
+
 /// Mirror of the daemon's `PhoneStatus` (see `src/status.rs`). Every field is optional on the
 /// wire so an older/newer daemon never breaks parsing.
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
@@ -53,6 +94,7 @@ pub struct Status {
     pub wallpaper: Option<String>,
     pub pairing_qr: Option<String>,
     pub notifications: Vec<Notification>,
+    pub capabilities: Option<Capabilities>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
@@ -230,4 +272,15 @@ impl Reply {
                 .collect(),
         )
     }
+}
+
+/// Queries the daemon's local feature capabilities.
+#[allow(dead_code)]
+pub fn capabilities() -> Result<Capabilities, String> {
+    let rep = command("capabilities")?;
+    if !rep.ok {
+        return Err(rep.message);
+    }
+    let caps_val = rep.raw.get("capabilities").cloned().unwrap_or(rep.raw);
+    serde_json::from_value(caps_val).map_err(|e| format!("parsing capabilities: {e}"))
 }

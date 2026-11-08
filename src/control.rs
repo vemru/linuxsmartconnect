@@ -118,6 +118,12 @@ async fn handle(daemon: Arc<Daemon>, stream: UnixStream) -> Result<()> {
         let reply = match line.trim() {
             "" => continue,
             "status" => daemon.status.snapshot(),
+            "capabilities" => {
+                let caps = crate::capabilities::evaluate_capabilities(
+                    &crate::capabilities::LiveProber::new(daemon.is_connected()),
+                );
+                json!({ "ok": true, "capabilities": caps }).to_string()
+            }
             "subscribe" => {
                 let mut changes = daemon.status.subscribe();
                 wr.write_all(format!("{}\n", daemon.status.snapshot()).as_bytes())
@@ -195,6 +201,12 @@ fn json_command(daemon: &Daemon, v: &serde_json::Value) -> String {
         }
         // {"cmd":"notif_mute","pkg":"com.example","mute":true|false}: per-app mute list (no pkg: list it).
         "notif_mute" => crate::notifications::mute_command(v).to_string(),
+        "capabilities" => {
+            let caps = crate::capabilities::evaluate_capabilities(
+                &crate::capabilities::LiveProber::new(daemon.is_connected()),
+            );
+            json!({ "ok": true, "capabilities": caps }).to_string()
+        }
         // {"cmd":"send","service":N,"data":{…}}: forward a service message to the phone.
         "send" => {
             let (Some(svc), Some(data)) = (
