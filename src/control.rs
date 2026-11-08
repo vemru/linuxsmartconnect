@@ -119,9 +119,7 @@ async fn handle(daemon: Arc<Daemon>, stream: UnixStream) -> Result<()> {
             "" => continue,
             "status" => daemon.status.snapshot(),
             "capabilities" => {
-                let caps = crate::capabilities::evaluate_capabilities(
-                    &crate::capabilities::LiveProber::new(daemon.is_connected()),
-                );
+                let caps = daemon.evaluate_current_capabilities();
                 json!({ "ok": true, "capabilities": caps }).to_string()
             }
             "doctor" => {
@@ -166,6 +164,45 @@ async fn handle(daemon: Arc<Daemon>, stream: UnixStream) -> Result<()> {
                 }
                 Err(e) => json!({ "ok": false, "message": format!("{e:#}") }).to_string(),
             },
+            l if l.starts_with("feature") => {
+                let parts: Vec<&str> = l.split_whitespace().collect();
+                match parts.as_slice() {
+                    ["feature"] => {
+                        let all = daemon.features.lock().unwrap().all().clone();
+                        json!({ "ok": true, "devices": all }).to_string()
+                    }
+                    ["feature", device] => {
+                        let dev_id = resolve_device_id(&daemon, device);
+                        let feats = daemon.features.lock().unwrap().get_or_default(&dev_id);
+                        json!({ "ok": true, "device": dev_id, "features": feats }).to_string()
+                    }
+                    ["feature", device, feat, state] => {
+                        let dev_id = resolve_device_id(&daemon, device);
+                        let enabled = match *state {
+                            "on" | "true" | "1" | "enable" => true,
+                            "off" | "false" | "0" | "disable" => false,
+                            other => {
+                                let err_resp = json!({ "ok": false, "message": format!("invalid state '{other}', expected on|off") });
+                                wr.write_all(format!("{err_resp}\n").as_bytes()).await?;
+                                continue;
+                            }
+                        };
+                        match daemon.features.lock().unwrap().set(&dev_id, feat, enabled) {
+                            Ok(()) => {
+                                daemon.refresh_capabilities();
+                                json!({ "ok": true, "message": format!("feature {feat} set to {enabled} for {dev_id}") }).to_string()
+                            }
+                            Err(e) => {
+                                json!({ "ok": false, "message": format!("{e:#}") }).to_string()
+                            }
+                        }
+                    }
+                    _ => {
+                        json!({ "ok": false, "message": "usage: feature <device> [<name> on|off]" })
+                            .to_string()
+                    }
+                }
+            }
             other => {
                 json!({ "ok": false, "message": format!("unknown command {other:?}") }).to_string()
             }
@@ -179,6 +216,41 @@ async fn handle(daemon: Arc<Daemon>, stream: UnixStream) -> Result<()> {
 /// event ids (negative) are only delivered when listed explicitly.
 fn watched(services: &[i64], svc: i64) -> bool {
     services.contains(&svc) || (services.is_empty() && svc >= 0)
+}
+
+fn resolve_device_id(daemon: &Daemon, device_input: &str) -> String {
+    let input = device_input.trim();
+    if input.is_empty() || input == "default" || input == "current" {
+        if let Some(dev_id) = daemon.status.device_id() {
+            return dev_id;
+        }
+        let pairing = daemon.pairing.lock().unwrap();
+        if let Some((k, _)) = pairing.iter().next() {
+            return k.clone();
+        }
+        return "default".to_string();
+    }
+    let pairing = daemon.pairing.lock().unwrap();
+    for (k, phone) in pairing.iter() {
+        if k == input {
+            return k.clone();
+        }
+        if phone
+            .device_name
+            .as_deref()
+            .is_some_and(|n| n.eq_ignore_ascii_case(input))
+        {
+            return k.clone();
+        }
+        if phone
+            .real_device_id
+            .as_deref()
+            .is_some_and(|r| r.eq_ignore_ascii_case(input))
+        {
+            return k.clone();
+        }
+    }
+    input.to_string()
 }
 
 fn json_command(daemon: &Daemon, v: &serde_json::Value) -> String {
@@ -208,10 +280,34 @@ fn json_command(daemon: &Daemon, v: &serde_json::Value) -> String {
         // {"cmd":"notif_mute","pkg":"com.example","mute":true|false}: per-app mute list (no pkg: list it).
         "notif_mute" => crate::notifications::mute_command(v).to_string(),
         "capabilities" => {
-            let caps = crate::capabilities::evaluate_capabilities(
-                &crate::capabilities::LiveProber::new(daemon.is_connected()),
-            );
+            let caps = daemon.evaluate_current_capabilities();
             json!({ "ok": true, "capabilities": caps }).to_string()
+        }
+        "feature.get" => {
+            let dev = s("device");
+            let dev_id = resolve_device_id(daemon, dev);
+            let feats = daemon.features.lock().unwrap().get_or_default(&dev_id);
+            json!({ "ok": true, "device": dev_id, "features": feats }).to_string()
+        }
+        "feature.set" => {
+            let dev = s("device");
+            let dev_id = resolve_device_id(daemon, dev);
+            let feat = s("feature");
+            let enabled = v
+                .get("enabled")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(true);
+            match daemon.features.lock().unwrap().set(&dev_id, feat, enabled) {
+                Ok(()) => {
+                    daemon.refresh_capabilities();
+                    json!({ "ok": true, "message": format!("feature {feat} set to {enabled} for {dev_id}") }).to_string()
+                }
+                Err(e) => json!({ "ok": false, "message": format!("{e:#}") }).to_string(),
+            }
+        }
+        "feature.list" => {
+            let all = daemon.features.lock().unwrap().all().clone();
+            json!({ "ok": true, "devices": all }).to_string()
         }
         "doctor" => {
             let report = crate::doctor::run_diagnostics(&crate::doctor::LiveDoctorProber::new(

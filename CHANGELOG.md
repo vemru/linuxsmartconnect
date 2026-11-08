@@ -10,6 +10,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). The READM
 
 ### Added
 
+- **Phase 3 Per-Feature Switches:** Added per-device feature on/off switches with daemon enforcement and GUI settings.
+  - Added `src/features.rs` with `DeviceFeatures` and `FeatureStore` persisting to `$XDG_STATE_HOME/smartconnect-linux/features.json` (mode 0600).
+  - Sensitive features (`cross_control`, `storage_mount`, `folder_share`) default to OFF; standard features (`mirror`, `webcam`, `app_streaming`, `phone_display`, `clipboard`, `notifications`) default to ON.
+  - Enforced directly in daemon session loop and helpers (ignoring incoming and preventing outgoing sync/connections when disabled).
+  - Capabilities matrix reflects disabled state as `Unavailable { reason: "disabled in settings", fix_hint: "Enable in Settings" }`.
+  - Added CLI `smartconnectd feature <device> [<name> on|off]` and control socket `feature.get`, `feature.set`, `feature.list` commands.
+  - Added GTK4 Feature Settings page in `smartconnect-gui` (`gui/src/settings.rs`) with live switches and daemon synchronization.
+
 - **Phase 2 Connection Doctor:** Added comprehensive diagnosis of networking, avahi discovery, ports (52020, 2049), firewall configurations (firewalld, UFW), Bluetooth services, and runtime dependencies.
   - Added `src/doctor.rs` with `DoctorProber` abstraction, `run_diagnostics()`, whitelisted pkexec repair runner, and unit tests.
   - Added `smartconnectd doctor [--json]` CLI command and control socket `doctor` command.

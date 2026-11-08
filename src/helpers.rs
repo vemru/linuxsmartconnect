@@ -178,6 +178,10 @@ impl Helpers {
             if data.get("cmd").and_then(Value::as_i64) != Some(0) {
                 continue;
             }
+            if !daemon.is_feature_enabled(daemon.status.device_id().as_deref(), "cross_control") {
+                info!("helpers: cross control disabled in settings; ignoring request");
+                continue;
+            }
             if let Some(c) = ours.as_mut()
                 && matches!(c.try_wait(), Ok(None))
             {
@@ -216,6 +220,14 @@ impl Helpers {
                 Err(RecvError::Closed) => return,
             };
             if !webcam::is_phone_request(&data) {
+                continue;
+            }
+            if !daemon.is_feature_enabled(daemon.status.device_id().as_deref(), "webcam") {
+                info!("helpers: webcam disabled in settings; ignoring request");
+                let _ = daemon.to_phone.send((
+                    webcam::SERVICE_WEBCAM,
+                    webcam::error_msg(webcam::ERR_NO_DRIVER),
+                ));
                 continue;
             }
             if lock_held(&webcam_lock_path()) {
@@ -260,6 +272,13 @@ impl Helpers {
             let Some(share) = display_request(&data) else {
                 continue;
             };
+            if !daemon.is_feature_enabled(daemon.status.device_id().as_deref(), "phone_display") {
+                info!("helpers: display disabled in settings; telling phone to stop");
+                let _ = daemon
+                    .to_phone
+                    .send((SERVICE_DISPLAY, display_stop_msg(&data)));
+                continue;
+            }
             if ours.lock().unwrap().is_some_and(alive) {
                 continue; // ours is up (maybe still connecting); it answers the phone itself
             }

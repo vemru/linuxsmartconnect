@@ -151,6 +151,8 @@ pub struct Daemon {
     /// Per-service svc 25 `cap` flags set by helpers (e.g. cross control's in-use bit), merged over
     /// `proto::device_status_caps()` so the phone always gets the full tile map.
     pub cap_overrides: Mutex<serde_json::Map<String, Value>>,
+    /// Per-device feature switches.
+    pub features: Mutex<crate::features::FeatureStore>,
     /// Allow connections from public/non-LAN IPs (by default, non-private IPs are dropped).
     pub allow_public: std::sync::atomic::AtomicBool,
     /// Rate-limiting state for failed authentication and reconnect attempts per IP.
@@ -169,6 +171,10 @@ impl Daemon {
         session_dir: PathBuf,
         ble_address: Option<String>,
     ) -> Self {
+        let state_dir = session_dir.parent().unwrap_or(&session_dir);
+        let features = crate::features::FeatureStore::load(state_dir).unwrap_or_else(|_| {
+            crate::features::FeatureStore::load(std::path::Path::new(".")).unwrap()
+        });
         // Last known /readyfor/mdns endpoint per phone, kept across restarts.
         let endpoints_path = session_dir.with_file_name("phone-endpoints.json");
         let endpoints: HashMap<String, SocketAddr> = std::fs::read(&endpoints_path)
@@ -205,9 +211,35 @@ impl Daemon {
             notifier: std::sync::OnceLock::new(),
             share: std::sync::OnceLock::new(),
             cap_overrides: Mutex::default(),
+            features: Mutex::new(features),
             allow_public: std::sync::atomic::AtomicBool::new(false),
             failed_auth: Mutex::default(),
         }
+    }
+
+    pub fn is_feature_enabled(&self, phone_id: Option<&str>, feature: &str) -> bool {
+        self.features.lock().unwrap().is_enabled(phone_id, feature)
+    }
+
+    pub fn current_features(&self) -> crate::features::DeviceFeatures {
+        let phone_id = self.status.device_id();
+        self.features
+            .lock()
+            .unwrap()
+            .get_for_optional_device(phone_id.as_deref())
+    }
+
+    pub fn evaluate_current_capabilities(&self) -> crate::capabilities::Capabilities {
+        let feats = self.current_features();
+        crate::capabilities::evaluate_capabilities_with_features(
+            &crate::capabilities::LiveProber::new(self.is_connected()),
+            Some(&feats),
+        )
+    }
+
+    pub fn refresh_capabilities(&self) {
+        let caps = self.evaluate_current_capabilities();
+        self.status.update(|s| s.capabilities = Some(caps));
     }
 
     pub fn set_allow_public(&self, allow: bool) {
@@ -662,15 +694,19 @@ async fn handle(
 
     daemon.active_sessions.fetch_add(1, Ordering::SeqCst);
     let name = hello.device_name.map(str::to_owned);
+    let feats = daemon.features.lock().unwrap().get_or_default(&stable_id);
+    let caps = crate::capabilities::evaluate_capabilities_with_features(
+        &crate::capabilities::LiveProber::new(true),
+        Some(&feats),
+    );
     daemon.status.update(|s| {
         s.connected = true;
         s.paired = true;
+        s.device_id = Some(stable_id.clone());
         s.name = name.or(s.name.take());
         s.pc_address = local_ip.or(s.pc_address.take());
         s.phone_address = Some(peer.ip().to_canonical().to_string());
-        s.capabilities = Some(crate::capabilities::evaluate_capabilities(
-            &crate::capabilities::LiveProber::new(true),
-        ));
+        s.capabilities = Some(caps);
     });
     daemon.remember_phone_ip(&stable_id, peer.ip().to_canonical());
     // A verified session (phone- or desktop-initiated) means the user wants to be connected.
@@ -678,11 +714,15 @@ async fn handle(
     daemon.phone_said_bye.store(false, Ordering::SeqCst);
     let result = session_loop(&mut tx, &mut rx, &mut log, peer, &daemon, &stable_id).await;
     if daemon.active_sessions.fetch_sub(1, Ordering::SeqCst) == 1 {
+        let feats = daemon.features.lock().unwrap().get_or_default(&stable_id);
+        let caps = crate::capabilities::evaluate_capabilities_with_features(
+            &crate::capabilities::LiveProber::new(false),
+            Some(&feats),
+        );
         daemon.status.update(|s| {
             s.connected = false;
-            s.capabilities = Some(crate::capabilities::evaluate_capabilities(
-                &crate::capabilities::LiveProber::new(false),
-            ));
+            s.device_id = None;
+            s.capabilities = Some(caps);
         });
         if daemon.phone_said_bye.load(Ordering::SeqCst) {
             // svc 0 cmd 6: the user tapped Disconnect on the phone.
@@ -738,14 +778,18 @@ where
                             if msg.service_id == crate::app_icons::SERVICE_APP_LIST {
                                 crate::app_icons::on_app_list(peer.ip().to_canonical(), d);
                             }
-                            if msg.service_id == clipboard::SERVICE_FILE_EX {
+                            if msg.service_id == clipboard::SERVICE_FILE_EX
+                                && daemon.is_feature_enabled(Some(phone_id), "clipboard")
+                            {
                                 clipboard::on_file_ex(peer.ip().to_canonical(), d, daemon.clipboard.clone());
                             }
                             if let Some(share) = daemon.share.get() {
                                 share.on_frame(msg.service_id, d, peer.ip().to_canonical()).await;
                             }
                             if matches!(msg.service_id, notifications::SERVICE_NOTIFY | notifications::SERVICE_NOTIFY_WIDGET) {
-                                if let Some(n) = daemon.notifier.get() {
+                                if daemon.is_feature_enabled(Some(phone_id), "notifications")
+                                    && let Some(n) = daemon.notifier.get()
+                                {
                                     n.handle(msg.service_id, d).await;
                                 }
                                 continue;
@@ -756,9 +800,14 @@ where
                                 key_exchanged = true;
                                 exchange_key(daemon, phone_id, d, true).map(|d| WsMsg::outgoing(device_id, SERVICE_MANAGER, d))
                             }
-                            (clipboard::SERVICE_CLIPBOARD, Some(d)) => clip
-                                .handle(d, clipboard)
-                                .map(|(svc, d)| WsMsg::outgoing(device_id, svc, d)),
+                            (clipboard::SERVICE_CLIPBOARD, Some(d)) => {
+                                if daemon.is_feature_enabled(Some(phone_id), "clipboard") {
+                                    clip.handle(d, clipboard)
+                                        .map(|(svc, d)| WsMsg::outgoing(device_id, svc, d))
+                                } else {
+                                    None
+                                }
+                            }
                             _ => respond(&msg, device_id),
                         };
                         if let Some(resp) = resp {
@@ -784,7 +833,9 @@ where
             },
             local = local_clips.recv() => match local {
                 Ok(c) => {
-                    if let Some(d) = clip.outgoing(&c) {
+                    if daemon.is_feature_enabled(Some(phone_id), "clipboard")
+                        && let Some(d) = clip.outgoing(&c)
+                    {
                         send(tx, log, peer, &WsMsg::outgoing(device_id, clipboard::SERVICE_CLIPBOARD, d)).await?;
                     }
                 }

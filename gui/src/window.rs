@@ -55,6 +55,7 @@ pub struct Ui {
     cross: Rc<CrossControlPage>,
     files: Rc<FilesPage>,
     diagnostics: Rc<crate::diagnostics::DiagnosticsPage>,
+    settings: Rc<crate::settings::SettingsPage>,
     /// The system-tray item, when the desktop has a StatusNotifierHost.
     tray: RefCell<Option<tray::Tray>>,
     /// Tracks how the daemon is running, so Quit stops the right thing.
@@ -845,6 +846,7 @@ impl Ui {
             .build();
         let (files, files_w) = FilesPage::build(&toasts);
         let (diagnostics, diagnostics_w) = crate::diagnostics::DiagnosticsPage::build(&toasts);
+        let (settings, settings_w) = crate::settings::SettingsPage::build(&toasts);
         views.add_titled_with_icon(&phone_w, Some("phone"), "Phone", "phone-symbolic");
         views.add_titled_with_icon(&apps_w, Some("apps"), "Apps", "view-app-grid-symbolic");
         views.add_titled_with_icon(
@@ -859,6 +861,12 @@ impl Ui {
             Some("diagnostics"),
             "Diagnostics",
             "utilities-system-monitor-symbolic",
+        );
+        views.add_titled_with_icon(
+            &settings_w,
+            Some("settings"),
+            "Settings",
+            "emblem-system-symbolic",
         );
 
         let (down_page, down) = DownPage::build();
@@ -939,6 +947,7 @@ impl Ui {
             cross,
             files,
             diagnostics,
+            settings,
             tray: RefCell::default(),
             daemon_ctl: RefCell::default(),
             state: RefCell::new(State {
@@ -961,6 +970,7 @@ impl Ui {
                 Some("apps") => ui.apps.shown(),
                 Some("display") => ui.cross.refresh(),
                 Some("diagnostics") => ui.diagnostics.run_checks(),
+                Some("settings") => ui.settings.load_features(),
                 _ => {}
             }
         });
@@ -1558,6 +1568,9 @@ impl Ui {
                 }
             }
             st.starting = false; // the socket answered
+            if let Some(dev) = status.device_id.as_deref() {
+                self.settings.set_device(Some(dev));
+            }
             st.status = Some(status);
         }
         self.remember_device();

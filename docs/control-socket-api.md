@@ -125,6 +125,7 @@ for line in watch:
 | [`pair`](#pair) | plain | no | `ok` + `message` + `qr` |
 | [`capabilities`](#capabilities) | plain / JSON | no | `ok` + `capabilities` |
 | [`doctor`](#doctor) | plain / JSON | no | `ok` + `report` |
+| [`feature`](#feature) | plain / JSON | no | `ok` + `device` + `features` / `ok` + `message` |
 | [`watch`](#watch) | JSON | no (frames flow while connected) | `{"ok":true,"message":"watching"}`, then frames and local events (stream) |
 | [`send`](#send) | JSON | yes, except service 25 `cap` updates | `ok` + `message` |
 | [`reply`](#reply) | JSON | yes | `ok` + `message` |
@@ -232,6 +233,24 @@ Runs connection diagnostics and dependency verification across networking, avahi
 ```
 
 Can also be sent as JSON: `{"cmd":"doctor"}`.
+
+### `feature`
+
+Inspects or updates per-device feature switches (stored at `$XDG_STATE_HOME/smartconnect-linux/features.json`):
+
+- **Query single device**: `feature <device>` or `{"cmd":"feature.get","device":"..."}`
+- **Set feature**: `feature <device> <name> on|off` or `{"cmd":"feature.set","device":"...","feature":"...","enabled":true|false}`
+- **List all**: `feature` or `{"cmd":"feature.list"}`
+
+Sensitive features (`cross_control`, `storage_mount`, `folder_share`) default to OFF. All others (`mirror`, `webcam`, `app_streaming`, `phone_display`, `clipboard`, `notifications`) default to ON. Changes take effect immediately without daemon restart and update the capabilities matrix.
+
+```
+→ feature default clipboard off
+← {"message":"feature clipboard set to false for default","ok":true}
+
+→ {"cmd":"feature.get","device":"default"}
+← {"device":"default","features":{"appStreaming":true,"clipboard":false,"crossControl":false,"folderShare":false,"mirror":true,"notifications":true,"phoneDisplay":true,"storageMount":false,"webcam":true},"ok":true}
+```
 
 ### `watch`
 

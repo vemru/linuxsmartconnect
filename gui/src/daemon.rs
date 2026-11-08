@@ -75,6 +75,21 @@ pub struct Capabilities {
     pub notifications: FeatureStatus,
 }
 
+/// Per-device feature switches.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct DeviceFeatures {
+    pub mirror: bool,
+    pub webcam: bool,
+    pub app_streaming: bool,
+    pub cross_control: bool,
+    pub phone_display: bool,
+    pub storage_mount: bool,
+    pub folder_share: bool,
+    pub clipboard: bool,
+    pub notifications: bool,
+}
+
 /// Mirror of the daemon's `PhoneStatus` (see `src/status.rs`). Every field is optional on the
 /// wire so an older/newer daemon never breaks parsing.
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
@@ -82,6 +97,7 @@ pub struct Capabilities {
 pub struct Status {
     pub connected: bool,
     pub paired: bool,
+    pub device_id: Option<String>,
     pub name: Option<String>,
     pub model: Option<String>,
     pub battery: Option<i64>,
@@ -365,5 +381,31 @@ pub fn run_fix_pkexec(fix_cmd: &str) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!("Command exited with status {status}"))
+    }
+}
+
+pub fn fetch_features(device: &str) -> Result<DeviceFeatures, String> {
+    let cmd = serde_json::json!({ "cmd": "feature.get", "device": device }).to_string();
+    let rep = command(&cmd)?;
+    if !rep.ok {
+        return Err(rep.message);
+    }
+    let feats_val = rep.raw.get("features").cloned().unwrap_or(rep.raw);
+    serde_json::from_value(feats_val).map_err(|e| format!("parsing features: {e}"))
+}
+
+pub fn set_feature(device: &str, feature: &str, enabled: bool) -> Result<(), String> {
+    let cmd = serde_json::json!({
+        "cmd": "feature.set",
+        "device": device,
+        "feature": feature,
+        "enabled": enabled
+    })
+    .to_string();
+    let rep = command(&cmd)?;
+    if rep.ok {
+        Ok(())
+    } else {
+        Err(rep.message)
     }
 }

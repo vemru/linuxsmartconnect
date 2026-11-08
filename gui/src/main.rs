@@ -11,6 +11,7 @@ mod lastdevice;
 mod lifecycle;
 mod mirror;
 mod prefs;
+mod settings;
 mod setup;
 mod share;
 mod tray;

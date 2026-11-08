@@ -1041,6 +1041,7 @@ over the control socket and prints the JSON reply.
 | `pair` | Make a fresh pairing QR. Prints the SVG path. |
 | `capabilities` | Print local feature capabilities matrix as JSON (features, status, reason, fix hint). |
 | `doctor [--json]` | Diagnose networking, avahi discovery, ports, firewall, Bluetooth, and dependencies. |
+| `feature <device> [<name> on\|off]` | Inspect or toggle per-device feature switches (clipboard, webcam, cross_control, etc.). |
 
 ### `smartconnect-mirror`
 

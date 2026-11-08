@@ -176,6 +176,25 @@ impl SystemProber for LiveProber {
 
 /// Evaluates capabilities using the given prober.
 pub fn evaluate_capabilities<P: SystemProber>(prober: &P) -> Capabilities {
+    evaluate_capabilities_with_features(prober, None)
+}
+
+fn apply_feature_flag(status: FeatureStatus, enabled: bool) -> FeatureStatus {
+    if !enabled {
+        FeatureStatus::unavailable(
+            "disabled in settings",
+            Some("Enable in Settings".to_string()),
+        )
+    } else {
+        status
+    }
+}
+
+/// Evaluates capabilities with optional per-device feature switches applied.
+pub fn evaluate_capabilities_with_features<P: SystemProber>(
+    prober: &P,
+    features: Option<&crate::features::DeviceFeatures>,
+) -> Capabilities {
     let connected = prober.is_phone_connected();
     let graphical = prober.has_graphical_session();
     let has_webrtcbin = prober.has_gstreamer_element("webrtcbin");
@@ -360,6 +379,42 @@ pub fn evaluate_capabilities<P: SystemProber>(prober: &P) -> Capabilities {
         FeatureStatus::available()
     };
 
+    let (
+        mirror,
+        webcam,
+        app_streaming,
+        cross_control,
+        phone_display,
+        storage_mount,
+        folder_share,
+        clipboard,
+        notifications,
+    ) = if let Some(f) = features {
+        (
+            apply_feature_flag(mirror, f.mirror),
+            apply_feature_flag(webcam, f.webcam),
+            apply_feature_flag(app_streaming, f.app_streaming),
+            apply_feature_flag(cross_control, f.cross_control),
+            apply_feature_flag(phone_display, f.phone_display),
+            apply_feature_flag(storage_mount, f.storage_mount),
+            apply_feature_flag(folder_share, f.folder_share),
+            apply_feature_flag(clipboard, f.clipboard),
+            apply_feature_flag(notifications, f.notifications),
+        )
+    } else {
+        (
+            mirror,
+            webcam,
+            app_streaming,
+            cross_control,
+            phone_display,
+            storage_mount,
+            folder_share,
+            clipboard,
+            notifications,
+        )
+    };
+
     Capabilities {
         mirror,
         webcam,
@@ -519,5 +574,27 @@ mod tests {
         assert!(serialized.contains("\"fixHint\":"));
         let deserialized: Capabilities = serde_json::from_str(&serialized).unwrap();
         assert_eq!(caps, deserialized);
+    }
+
+    #[test]
+    fn disabled_feature_in_settings_overrides_capability() {
+        let prober = MockProber::default();
+        let features = crate::features::DeviceFeatures {
+            clipboard: false,
+            webcam: false,
+            ..Default::default()
+        };
+
+        let caps = evaluate_capabilities_with_features(&prober, Some(&features));
+        assert!(!caps.clipboard.is_available());
+        assert_eq!(caps.clipboard.reason(), Some("disabled in settings"));
+        assert_eq!(caps.clipboard.fix_hint(), Some("Enable in Settings"));
+
+        assert!(!caps.webcam.is_available());
+        assert_eq!(caps.webcam.reason(), Some("disabled in settings"));
+
+        // Others that are enabled remain available
+        assert!(caps.mirror.is_available());
+        assert!(caps.app_streaming.is_available());
     }
 }

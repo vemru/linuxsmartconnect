@@ -17,6 +17,7 @@ use tracing::{info, warn};
 pub struct PhoneStatus {
     pub connected: bool,
     pub paired: bool,
+    pub device_id: Option<String>,
     pub name: Option<String>,
     pub model: Option<String>,
     pub battery: Option<i64>,
@@ -84,6 +85,10 @@ impl StatusHub {
 
     pub fn snapshot(&self) -> String {
         serde_json::to_string(&*self.state.lock().unwrap()).unwrap_or_default()
+    }
+
+    pub fn device_id(&self) -> Option<String> {
+        self.state.lock().unwrap().device_id.clone()
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<String> {

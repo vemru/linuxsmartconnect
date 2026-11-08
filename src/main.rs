@@ -87,6 +87,15 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// Inspect or modify per-device feature switches.
+    Feature {
+        /// Phone name or realDeviceId (or 'default' / 'current').
+        device: String,
+        /// Feature name (e.g. clipboard, webcam, mirror, cross_control).
+        name: Option<String>,
+        /// State to set (on|off).
+        state: Option<String>,
+    },
 }
 
 fn print_doctor_report(report: &smartconnect::doctor::DoctorReport) {
@@ -142,6 +151,72 @@ async fn main() -> Result<()> {
             return Ok(());
         }
 
+        if let Cmd::Feature {
+            device,
+            name,
+            state,
+        } = cmd
+        {
+            let line = match (name, state) {
+                (Some(name), Some(state)) => format!("feature {device} {name} {state}"),
+                (Some(name), None) => format!("feature {device} {name}"),
+                (None, _) => format!("feature {device}"),
+            };
+            let queried = smartconnect::control::query(&line).await;
+            match queried {
+                Ok(v) if v.get("ok").and_then(|o| o.as_bool()) == Some(true) => {
+                    println!("{}", serde_json::to_string_pretty(&v)?);
+                    return Ok(());
+                }
+                _ => {
+                    let state_dir = args.state_dir.unwrap_or_else(default_state_dir);
+                    let mut store = smartconnect::features::FeatureStore::load(&state_dir)?;
+                    match (name, state) {
+                        (Some(name), Some(state)) => {
+                            let enabled = match state.as_str() {
+                                "on" | "true" | "1" | "enable" => true,
+                                "off" | "false" | "0" | "disable" => false,
+                                other => anyhow::bail!("invalid state '{other}', expected on|off"),
+                            };
+                            store.set(device, name, enabled)?;
+                            println!(
+                                "{}",
+                                serde_json::json!({
+                                    "ok": true,
+                                    "message": format!("feature {name} set to {enabled} for {device}")
+                                })
+                            );
+                        }
+                        (Some(name), None) => {
+                            let feats = store.get_or_default(device);
+                            let val = feats.get(name);
+                            println!(
+                                "{}",
+                                serde_json::json!({
+                                    "ok": true,
+                                    "device": device,
+                                    "feature": name,
+                                    "enabled": val
+                                })
+                            );
+                        }
+                        (None, _) => {
+                            let feats = store.get_or_default(device);
+                            println!(
+                                "{}",
+                                serde_json::to_string_pretty(&serde_json::json!({
+                                    "ok": true,
+                                    "device": device,
+                                    "features": feats
+                                }))?
+                            );
+                        }
+                    }
+                    return Ok(());
+                }
+            }
+        }
+
         let cmd = match cmd {
             Cmd::Connect => "connect",
             Cmd::Disconnect => "disconnect",
@@ -149,7 +224,7 @@ async fn main() -> Result<()> {
             Cmd::Subscribe => "subscribe",
             Cmd::Pair => "pair",
             Cmd::Capabilities => "capabilities",
-            Cmd::Doctor { .. } => unreachable!(),
+            Cmd::Doctor { .. } | Cmd::Feature { .. } => unreachable!(),
         };
         return smartconnect::control::request(cmd).await;
     }
