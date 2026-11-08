@@ -2,11 +2,12 @@
 /dist
 **/target/
 
-# Local, machine-specific agent notes
+# Local, machine-specific notes and config
 CLAUDE.local.md
 /.cargo/config.toml
+.notes/
 
-# Never commit research material or secrets
+# Never commit research material, captures, or secrets
 *.pcap
 *.pcapng
 *.etl
@@ -16,9 +17,29 @@ config.json
 *.dll
 *.log
 
-# Python bytecode
+# Databases and SQLite state
+*.db
+*.db-shm
+*.db-wal
+*.db-*
+*.sqlite
+*.sqlite3
+
+# Temporary files and caches
+*.tmp
+*.temp
+*~
+*.swp
+*.swo
+.DS_Store
+.cache/
+*.cache/
 __pycache__/
 *.pyc
+
+# IDEs and editors
+.idea/
+.vscode/
 
 # Noctalia keeps a plugin's per-user settings in the plugin directory, so a linked
 # (install.sh --link) plugin writes them into the checkout
