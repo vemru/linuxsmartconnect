@@ -6,7 +6,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        ### :warning: Privacy & Security Redaction Notice
+        ### :warning: Privacy & Redaction Notice
         **NEVER include real personal data, secrets, or identifiers in issues!**
         Before pasting logs or descriptions, ensure you have redacted:
         - Device IDs, serial numbers, phone names
@@ -16,7 +16,7 @@ body:
         - Notification text, SMS messages, contacts, phone numbers
         - Personal home directory paths (e.g. `/home/username/...`)
 
-        *For security vulnerability reports, please use GitHub Private Vulnerability Reporting under the Security tab instead of public issues.*
+        *For security vulnerability reports, please use GitHub Private Vulnerability Reporting under the Security tab or follow [SECURITY.md](SECURITY.md).*
 
   - type: textarea
     id: description
@@ -51,12 +51,12 @@ body:
     id: environment
     attributes:
       label: Environment & System Details
-      description: Details about your Linux host and phone.
+      description: Details about your Linux host and phone. (Tip: run `smartconnectd doctor` for a diagnostic summary)
       value: |
         - OS / Distro: (e.g. Arch Linux, Fedora 40, Ubuntu 24.04)
         - Desktop Environment: (e.g. GNOME 46, KDE Plasma 6, Hyprland, Sway)
         - Session Type: (Wayland / X11)
-        - smartconnect-linux version or commit: (e.g. v0.2.1 or git commit SHA)
+        - smartconnect-linux version: (e.g. v0.2.2 or git commit SHA)
         - Phone Model: (e.g. Motorola Edge 50 Neo)
         - Android Version: (e.g. Android 14)
         - Smart Connect App Version:
@@ -67,7 +67,7 @@ body:
     id: logs
     attributes:
       label: Relevant Logs & Output
-      description: Please paste terminal output or logs with sensitive information (IPs, device IDs, tokens) REDACTED.
+      description: Please paste output from `smartconnectd doctor` or daemon terminal logs with sensitive information (IPs, device IDs, tokens) REDACTED.
       render: shell
 
   - type: checkboxes
