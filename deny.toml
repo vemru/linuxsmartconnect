@@ -1,9 +1,11 @@
 [advisories]
 ignore = [
+    # Marvin timing attack on RSA PKCS#1 v1.5 in rsa crate (no patch available for 0.9.x; used for local pairing handshake)
     "RUSTSEC-2023-0071",
-    "RUSTSEC-2026-0370",
-    "RUSTSEC-2026-0371",
-    "RUSTSEC-2026-0372",
+    # Upstream crates merged into zbus 6 (transitive dependencies of zbus 5.19)
+    "RUSTSEC-2026-0370", # zvariant
+    "RUSTSEC-2026-0371", # zbus_names
+    "RUSTSEC-2026-0372", # zvariant_derive
 ]
 
 [licenses]
@@ -20,3 +22,14 @@ allow = [
     "Unicode-3.0",
 ]
 confidence-threshold = 0.8
+
+[bans]
+multiple-versions = "warn"
+wildcards = "allow"
+deny = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
