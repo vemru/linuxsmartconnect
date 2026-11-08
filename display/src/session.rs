@@ -2119,7 +2119,6 @@ m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=mid:2\r\na=sctp-port:5000"
 
     /// `cargo test --release loopback -- --ignored --nocapture --test-threads=1`
     #[test]
-    #[ignore]
     fn loopback_audio_and_video_reach_a_phone_like_peer() {
         let (answer, a, v, muted) = loopback(true);
         assert_eq!(direction(&answer, "audio"), "a=sendonly");
@@ -2131,7 +2130,6 @@ m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=mid:2\r\na=sctp-port:5000"
 
     /// Without `--audio` the answer is what the device verified: audio section inactive, video sent.
     #[test]
-    #[ignore]
     fn loopback_without_audio_keeps_the_audio_section_inactive() {
         let (answer, a, v, _) = loopback(false);
         assert_eq!(direction(&answer, "audio"), "a=inactive");
@@ -2144,7 +2142,6 @@ m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=mid:2\r\na=sctp-port:5000"
     /// of the H.264 the fake phone receives each time; then cmd 54 audio-on without audio is
     /// answered with cmd 27 `{setAudio:false}`.
     #[test]
-    #[ignore]
     fn loopback_rotation_and_resolution_follow_the_phone() {
         let phone = FakePhone::new();
         let (d, rx) = fake_daemon();

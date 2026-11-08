@@ -33,8 +33,7 @@ jobs:
             gst-libav \
             libnice \
             wayland \
-            fuse3 \
-            cargo-deny
+            fuse3
 
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -61,8 +60,18 @@ jobs:
       - name: Run tests
         run: cargo test --workspace
 
-      - name: Check dependencies and advisories (cargo-deny)
-        run: cargo-deny check advisories
+  cargo-deny:
+    name: Dependency Checks (cargo-deny)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Run cargo-deny
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          command: check
+          arguments: --all-features
 
   install-smoke-test:
     name: Install Smoke Test (${{ matrix.distro }})
