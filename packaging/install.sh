@@ -43,7 +43,7 @@ while [ $# -gt 0 ]; do
     --no-plugin) PLUGIN=0; shift ;;
     --no-build) BUILD=0; shift ;;
     --dry-run|-n) DRY=1; shift ;;
-    --uninstall) exec "$ROOT/packaging/uninstall.sh" "$@" ;;
+    --uninstall) shift; exec "$ROOT/packaging/uninstall.sh" "$@" ;;
     -h|--help) usage; exit 0 ;;
     *) printf 'unknown option: %s\n\n' "$1" >&2; usage >&2; exit 2 ;;
   esac
