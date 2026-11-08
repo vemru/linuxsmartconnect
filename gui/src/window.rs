@@ -845,6 +845,7 @@ impl Ui {
             .child(&display_clamp)
             .build();
         let (files, files_w) = FilesPage::build(&toasts);
+        let (_photos, photos_w) = crate::photos::PhotosPage::build(&toasts);
         let (_timeline, timeline_w) = crate::timeline::TimelinePage::build(&toasts);
         let (diagnostics, diagnostics_w) = crate::diagnostics::DiagnosticsPage::build(&toasts);
         let (settings, settings_w) = crate::settings::SettingsPage::build(&toasts);
@@ -857,6 +858,7 @@ impl Ui {
             "video-display-symbolic",
         );
         views.add_titled_with_icon(&files_w, Some("files"), "Files", "folder-symbolic");
+        views.add_titled_with_icon(&photos_w, Some("photos"), "Photos", "camera-photo-symbolic");
         views.add_titled_with_icon(
             &timeline_w,
             Some("timeline"),

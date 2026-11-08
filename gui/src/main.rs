@@ -11,6 +11,7 @@ mod lastdevice;
 mod lifecycle;
 mod mirror;
 mod palette;
+mod photos;
 mod prefs;
 mod settings;
 mod setup;
