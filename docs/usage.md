@@ -1325,3 +1325,32 @@ Go to **System Settings** → **Shortcuts** → **Custom Shortcuts** → **Edit*
 - Trigger: e.g. `Meta+P`
 - Action: `smartconnect-gui --palette`
 
+## "Send to phone" in File Managers
+
+Right-click any file or directory to push it directly to your phone's Downloads folder over Smart Connect:
+
+- **CLI Usage**:
+  ```bash
+  smartconnect-send file1.jpg video.mp4 folder/
+  # or via daemon CLI
+  smartconnectd send file1.jpg video.mp4
+  ```
+
+- **Nautilus (GNOME Files)**:
+  Requires `nautilus-python`. The extension is installed to `~/.local/share/nautilus-python/extensions/smartconnect.py`.
+  Restart Nautilus: `nautilus -q`.
+
+- **Dolphin (KDE)**:
+  Uses KDE Service Menus:
+  - KDE 5: `~/.local/share/kservices5/ServiceMenus/smartconnect-send.desktop`
+  - KDE 6: `~/.local/share/kio/servicemenus/smartconnect-send.desktop`
+
+- **Thunar (XFCE)**:
+  Add a Custom Action in **Edit** → **Configure custom actions...**:
+  - Name: `Send to phone`
+  - Command: `smartconnect-send %F`
+  - Icon: `phone-symbolic`
+  - File Pattern: `*`
+  - Appears if selection contains: All files and directories
+
+

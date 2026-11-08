@@ -63,6 +63,9 @@ struct Args {
     /// Allow connections from public/non-LAN IPs (by default, non-private IPs are dropped).
     #[arg(long)]
     allow_public: bool,
+    /// Uninstall smartconnect-linux components, services, and desktop entries.
+    #[arg(long)]
+    uninstall: bool,
     #[command(subcommand)]
     command: Option<Cmd>,
 }
@@ -105,6 +108,15 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// Send file(s) to the connected phone.
+    Send {
+        /// Target device name or id (optional, defaults to connected phone).
+        #[arg(long)]
+        device: Option<String>,
+        /// Paths of the files to send.
+        #[arg(required = true)]
+        paths: Vec<std::path::PathBuf>,
+    },
 }
 
 fn print_doctor_report(report: &smartconnect::doctor::DoctorReport) {
@@ -138,6 +150,30 @@ async fn main() -> Result<()> {
         )
         .init();
     let args = Args::parse();
+
+    if args.uninstall {
+        let exe = std::env::current_exe().unwrap_or_default();
+        let script = exe
+            .parent()
+            .and_then(|p| p.parent())
+            .map(|p| p.join("packaging/uninstall.sh"))
+            .filter(|p| p.exists())
+            .or_else(|| {
+                let p = PathBuf::from("/usr/local/share/doc/smartconnect-linux/uninstall.sh");
+                p.exists().then_some(p)
+            });
+
+        if let Some(s) = script {
+            let status = std::process::Command::new("bash").arg(s).status()?;
+            std::process::exit(status.code().unwrap_or(0));
+        } else {
+            let status = std::process::Command::new("bash")
+                .arg("-c")
+                .arg("if command -v packaging/uninstall.sh >/dev/null 2>&1; then packaging/uninstall.sh; elif [ -f \"$HOME/.local/share/doc/smartconnect-linux/uninstall.sh\" ]; then \"$HOME/.local/share/doc/smartconnect-linux/uninstall.sh\"; else echo 'uninstall.sh not found'; exit 1; fi")
+                .status()?;
+            std::process::exit(status.code().unwrap_or(0));
+        }
+    }
     if let Some(cmd) = &args.command {
         if let Cmd::Doctor { json } = cmd {
             let rep = match smartconnect::control::query("doctor").await {
@@ -282,6 +318,65 @@ async fn main() -> Result<()> {
             return Ok(());
         }
 
+        if let Cmd::Send { device: _, paths } = &cmd {
+            let line_cmd = format!(
+                "send_file {}",
+                paths
+                    .iter()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            );
+            match smartconnect::control::query(&line_cmd).await {
+                Ok(reply) => {
+                    let ok = reply
+                        .get("ok")
+                        .and_then(serde_json::Value::as_bool)
+                        .unwrap_or(false);
+                    let msg = reply
+                        .get("message")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default();
+                    if ok {
+                        println!("{msg}");
+                        let _ = std::process::Command::new("notify-send")
+                            .arg("-a")
+                            .arg("Smart Connect")
+                            .arg("-i")
+                            .arg("document-send-symbolic")
+                            .arg("Smart Connect")
+                            .arg(msg)
+                            .status();
+                        return Ok(());
+                    } else {
+                        eprintln!("smartconnectd: {msg}");
+                        let _ = std::process::Command::new("notify-send")
+                            .arg("-a")
+                            .arg("Smart Connect")
+                            .arg("-i")
+                            .arg("phone-symbolic")
+                            .arg("Smart Connect")
+                            .arg(msg)
+                            .status();
+                        anyhow::bail!("{msg}");
+                    }
+                }
+                Err(e) => {
+                    let msg = format!("smartconnectd is not running: {e:#}");
+                    eprintln!("{msg}");
+                    let _ = std::process::Command::new("notify-send")
+                        .arg("-a")
+                        .arg("Smart Connect")
+                        .arg("-i")
+                        .arg("phone-symbolic")
+                        .arg("Smart Connect")
+                        .arg("Phone not connected")
+                        .status();
+                    return Err(e);
+                }
+            }
+        }
+
         let cmd = match cmd {
             Cmd::Connect => "connect",
             Cmd::Disconnect => "disconnect",
@@ -289,7 +384,9 @@ async fn main() -> Result<()> {
             Cmd::Subscribe => "subscribe",
             Cmd::Pair => "pair",
             Cmd::Capabilities => "capabilities",
-            Cmd::Doctor { .. } | Cmd::Feature { .. } | Cmd::Timeline { .. } => unreachable!(),
+            Cmd::Doctor { .. } | Cmd::Feature { .. } | Cmd::Timeline { .. } | Cmd::Send { .. } => {
+                unreachable!()
+            }
         };
         return smartconnect::control::request(cmd).await;
     }

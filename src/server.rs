@@ -347,6 +347,73 @@ impl Daemon {
         true
     }
 
+    /// Offers file(s) on the PC to the phone over fex and sends the service 2 download request.
+    pub fn send_files(&self, paths: &[std::path::PathBuf]) -> anyhow::Result<(String, usize)> {
+        if !self.is_connected() {
+            anyhow::bail!("phone not connected");
+        }
+        let Some((port, fingerprint)) = self.clipboard.fex_endpoint() else {
+            anyhow::bail!("fex transfer endpoint not available");
+        };
+        let mut out_files = Vec::new();
+        for p in paths {
+            if !p.exists() {
+                anyhow::bail!("file not found: {}", p.display());
+            }
+            let name = p
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
+            let data = std::fs::read(p).with_context(|| format!("reading {}", p.display()))?;
+            let mime = guess_mime(p);
+            out_files.push(smartconnect_fex::server::OutFile {
+                name,
+                mime_type: mime.to_string(),
+                data,
+            });
+        }
+        if out_files.is_empty() {
+            anyhow::bail!("no files to send");
+        }
+        let count = out_files.len();
+        let offer = self.clipboard.fex().offer(
+            &out_files,
+            &self.identity.device_id,
+            &self.identity.device_name,
+        );
+        let phone_id = self
+            .status
+            .device_id()
+            .unwrap_or_else(|| "phone".to_string());
+
+        for f in &out_files {
+            let _ = self.timeline.append(
+                &phone_id,
+                "file",
+                &f.name,
+                &format!("Sent file ({} bytes)", f.data.len()),
+                None,
+                "outgoing",
+            );
+        }
+
+        let frame = json!({
+            "ver": "1.0",
+            "cmd": 1,
+            "serviceId": 2,
+            "requestId": offer.task_id,
+            "port": port,
+            "fingerprint": fingerprint,
+            "token": offer.token,
+            "fexId": 0,
+            "autoDownload": true,
+        });
+
+        let _ = self.to_phone.send((2, frame));
+        Ok((offer.task_id.clone(), count))
+    }
+
     /// Keeps the link up: after an unexpected drop (or at startup) retry Connect — Wi-Fi, then
     /// Bluetooth so it works with the phone app in the background — with backoff, until connected
     /// or the user disconnects. Only one loop runs at a time; see `reconnect::run`.
@@ -1192,6 +1259,29 @@ fn pc_battery() -> i64 {
                 .ok()
         })
         .unwrap_or(100)
+}
+
+fn guess_mime(path: &std::path::Path) -> &'static str {
+    match path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "jpg" | "jpeg" => "image/jpeg",
+        "png" => "image/png",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "heic" => "image/heic",
+        "pdf" => "application/pdf",
+        "txt" => "text/plain",
+        "zip" => "application/zip",
+        "mp4" => "video/mp4",
+        "mkv" => "video/x-matroska",
+        "mp3" => "audio/mpeg",
+        _ => "application/octet-stream",
+    }
 }
 
 #[cfg(test)]

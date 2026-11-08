@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Push files directly to the connected phone's Downloads over Smart Connect.
+set -euo pipefail
+
+SMARTCONNECTD="${SMARTCONNECT_SMARTCONNECTD_BIN:-$(command -v smartconnectd || true)}"
+if [ -z "$SMARTCONNECTD" ]; then
+  DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  if [ -x "$DIR/smartconnectd" ]; then
+    SMARTCONNECTD="$DIR/smartconnectd"
+  elif [ -x "$DIR/../bin/smartconnectd" ]; then
+    SMARTCONNECTD="$DIR/../bin/smartconnectd"
+  elif [ -x "$HOME/.local/bin/smartconnectd" ]; then
+    SMARTCONNECTD="$HOME/.local/bin/smartconnectd"
+  else
+    SMARTCONNECTD="smartconnectd"
+  fi
+fi
+
+exec "$SMARTCONNECTD" send "$@"

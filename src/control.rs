@@ -234,6 +234,19 @@ async fn handle(daemon: Arc<Daemon>, stream: UnixStream) -> Result<()> {
                     _ => json!({ "ok": false, "message": "usage: timeline [clear | search <query> | <kind>]" }).to_string(),
                 }
             }
+            l if l.starts_with("send_file") => {
+                let parts: Vec<&str> = l.split_whitespace().collect();
+                if parts.len() < 2 {
+                    json!({ "ok": false, "message": "usage: send_file <path>..." }).to_string()
+                } else {
+                    let paths: Vec<std::path::PathBuf> =
+                        parts[1..].iter().map(std::path::PathBuf::from).collect();
+                    match daemon.send_files(&paths) {
+                        Ok((task_id, count)) => json!({ "ok": true, "message": format!("offered {count} file(s) to phone"), "taskId": task_id }).to_string(),
+                        Err(e) => json!({ "ok": false, "message": format!("{e:#}") }).to_string(),
+                    }
+                }
+            }
             other => {
                 json!({ "ok": false, "message": format!("unknown command {other:?}") }).to_string()
             }
@@ -383,6 +396,25 @@ fn json_command(daemon: &Daemon, v: &serde_json::Value) -> String {
                 .unwrap_or(30) as u32;
             match daemon.timeline.prune(days) {
                 Ok(count) => json!({ "ok": true, "pruned": count }).to_string(),
+                Err(e) => json!({ "ok": false, "message": format!("{e:#}") }).to_string(),
+            }
+        }
+        "send_file" => {
+            let paths: Vec<std::path::PathBuf> = v
+                .get("paths")
+                .and_then(serde_json::Value::as_array)
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(serde_json::Value::as_str)
+                        .map(std::path::PathBuf::from)
+                        .collect()
+                })
+                .unwrap_or_default();
+            if paths.is_empty() {
+                return json!({ "ok": false, "message": "send_file needs a non-empty 'paths' array" }).to_string();
+            }
+            match daemon.send_files(&paths) {
+                Ok((task_id, count)) => json!({ "ok": true, "message": format!("offered {count} file(s) to phone"), "taskId": task_id }).to_string(),
                 Err(e) => json!({ "ok": false, "message": format!("{e:#}") }).to_string(),
             }
         }

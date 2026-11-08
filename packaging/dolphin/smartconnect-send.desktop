@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Service
+X-KDE-ServiceTypes=KonqPopupMenu/Plugin
+MimeType=all/all;
+Actions=SendToPhone;
+X-KDE-Priority=TopLevel
+
+[Desktop Action SendToPhone]
+Name=Send to phone
+Icon=phone-symbolic
+Exec=smartconnect-send %F
