@@ -64,8 +64,8 @@ jobs:
       - name: Run tests
         run: cargo test --workspace
 
-      - name: Check dependencies and advisories (cargo-deny)
-        run: cargo-deny check advisories
+      - name: Check dependencies and licenses (cargo-deny)
+        run: cargo-deny check advisories licenses
 
   secret-scan:
     name: Secret Scanning (Gitleaks)
