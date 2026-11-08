@@ -995,6 +995,23 @@ impl Ui {
         self.refresh_tray();
     }
 
+    pub fn views(&self) -> &adw::ViewStack {
+        &self.views
+    }
+
+    pub fn current_capabilities(&self) -> crate::daemon::Capabilities {
+        self.state
+            .borrow()
+            .status
+            .as_ref()
+            .and_then(|s| s.capabilities.clone())
+            .unwrap_or_default()
+    }
+
+    pub fn show_palette(self: &Rc<Self>) {
+        crate::palette::CommandPalette::show(self);
+    }
+
     /// Stops the mirror viewer and Cross Control (if any) when the app quits, and unmounts the
     /// phone's storage so no stale FUSE mount is left behind. A phone-as-display session keeps
     /// running on purpose (like the stream host): it is a monitor with windows on it, the phone can
@@ -1961,7 +1978,7 @@ impl Ui {
         }
     }
 
-    fn toggle_connection(self: &Rc<Self>) {
+    pub(crate) fn toggle_connection(self: &Rc<Self>) {
         let connected = {
             let mut st = self.state.borrow_mut();
             if st.busy {
@@ -1994,7 +2011,7 @@ impl Ui {
     /// one more session window; a standalone viewer child is only the fallback when the host cannot
     /// start. (A viewer spawned while a host runs just hands off and exits, which used to look like
     /// a failed/stopped mirror.)
-    fn toggle_mirror(self: &Rc<Self>) {
+    pub(crate) fn toggle_mirror(self: &Rc<Self>) {
         if let Some(sid) = self.apps.mirror_session() {
             let weak = Rc::downgrade(self);
             glib::spawn_future_local(async move {
@@ -2086,7 +2103,7 @@ impl Ui {
         });
     }
 
-    fn toggle_webcam(self: &Rc<Self>) {
+    pub(crate) fn toggle_webcam(self: &Rc<Self>) {
         let is_running = crate::webcam::is_running();
         let weak = Rc::downgrade(self);
         if is_running {

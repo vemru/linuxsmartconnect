@@ -1286,3 +1286,42 @@ Read by `smartconnectd`. The helpers it starts inherit its environment, so their
 | `~/.cache/smartconnect/` | Phone app list (`apps.json`) and the stream host log when the GTK app started it. |
 | `~/.cache/smartconnect-linux/app-icons/` | Phone app icons: `<iconName>` downloaded by the daemon (or `smartconnect-fex`) on each app list, and `<pkg>.png` saved by the stream host. Safe to delete; the next connection downloads them again. |
 | `~/.local/state/smartconnect-linux/` | GTK app: the last connected phone (`last-device.json`, `last-wallpaper.*`). |
+
+## Command Palette
+
+`smartconnect-gui --palette` opens a floating keyboard launcher for rapid access to all app features:
+- Connect / Pair phone
+- Disconnect phone
+- Start / Stop Screen Mirror
+- Toggle Virtual Webcam
+- Browse Phone Storage (FUSE)
+- Browse Photos & Camera Roll
+- Open Timeline History
+- Open Connection Doctor (Diagnostics)
+- Open Settings
+
+### Compositor Keybindings
+
+Because Wayland prohibits application-level global key grabs, bind `smartconnect-gui --palette` in your compositor or desktop environment:
+
+#### Hyprland (`~/.config/hypr/hyprland.conf`)
+```ini
+bind = $mainMod, P, exec, smartconnect-gui --palette
+```
+
+#### Sway (`~/.config/sway/config`)
+```ini
+bindsym $mod+p exec smartconnect-gui --palette
+```
+
+#### GNOME
+Go to **Settings** → **Keyboard** → **View and Customize Shortcuts** → **Custom Shortcuts**:
+- Name: `Smart Connect Palette`
+- Command: `smartconnect-gui --palette`
+- Shortcut: e.g. `Super+P`
+
+#### KDE Plasma
+Go to **System Settings** → **Shortcuts** → **Custom Shortcuts** → **Edit** → **New** → **Global Shortcut** → **Command/URL**:
+- Trigger: e.g. `Meta+P`
+- Action: `smartconnect-gui --palette`
+
