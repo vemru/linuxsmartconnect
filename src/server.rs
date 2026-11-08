@@ -153,6 +153,8 @@ pub struct Daemon {
     pub cap_overrides: Mutex<serde_json::Map<String, Value>>,
     /// Per-device feature switches.
     pub features: Mutex<crate::features::FeatureStore>,
+    /// Searchable history of events, transfers, and sessions.
+    pub timeline: Arc<crate::timeline::TimelineStore>,
     /// Allow connections from public/non-LAN IPs (by default, non-private IPs are dropped).
     pub allow_public: std::sync::atomic::AtomicBool,
     /// Rate-limiting state for failed authentication and reconnect attempts per IP.
@@ -175,6 +177,12 @@ impl Daemon {
         let features = crate::features::FeatureStore::load(state_dir).unwrap_or_else(|_| {
             crate::features::FeatureStore::load(std::path::Path::new(".")).unwrap()
         });
+        let timeline = Arc::new(
+            crate::timeline::TimelineStore::open(state_dir).unwrap_or_else(|_| {
+                crate::timeline::TimelineStore::open(std::path::Path::new(".")).unwrap()
+            }),
+        );
+        let _ = timeline.prune(30);
         // Last known /readyfor/mdns endpoint per phone, kept across restarts.
         let endpoints_path = session_dir.with_file_name("phone-endpoints.json");
         let endpoints: HashMap<String, SocketAddr> = std::fs::read(&endpoints_path)
@@ -212,6 +220,7 @@ impl Daemon {
             share: std::sync::OnceLock::new(),
             cap_overrides: Mutex::default(),
             features: Mutex::new(features),
+            timeline,
             allow_public: std::sync::atomic::AtomicBool::new(false),
             failed_auth: Mutex::default(),
         }
@@ -703,11 +712,20 @@ async fn handle(
         s.connected = true;
         s.paired = true;
         s.device_id = Some(stable_id.clone());
-        s.name = name.or(s.name.take());
+        s.name = name.clone().or(s.name.take());
         s.pc_address = local_ip.or(s.pc_address.take());
         s.phone_address = Some(peer.ip().to_canonical().to_string());
         s.capabilities = Some(caps);
     });
+    let phone_label = name.as_deref().unwrap_or("Phone");
+    let _ = daemon.timeline.append(
+        &stable_id,
+        "session",
+        "Phone Connected",
+        &format!("{phone_label} connected ({peer})"),
+        None,
+        "incoming",
+    );
     daemon.remember_phone_ip(&stable_id, peer.ip().to_canonical());
     // A verified session (phone- or desktop-initiated) means the user wants to be connected.
     daemon.clear_phone_close();
@@ -724,6 +742,14 @@ async fn handle(
             s.device_id = None;
             s.capabilities = Some(caps);
         });
+        let _ = daemon.timeline.append(
+            &stable_id,
+            "session",
+            "Phone Disconnected",
+            "Session closed",
+            None,
+            "incoming",
+        );
         if daemon.phone_said_bye.load(Ordering::SeqCst) {
             // svc 0 cmd 6: the user tapped Disconnect on the phone.
             daemon.user_disconnected.store(true, Ordering::SeqCst);
@@ -791,6 +817,11 @@ where
                                     && let Some(n) = daemon.notifier.get()
                                 {
                                     n.handle(msg.service_id, d).await;
+                                    let title = d.get("title").and_then(Value::as_str).unwrap_or("Notification");
+                                    let body = d.get("text").or_else(|| d.get("body")).and_then(Value::as_str).unwrap_or_default();
+                                    if !body.is_empty() || title != "Notification" {
+                                        let _ = daemon.timeline.append(phone_id, "notification", title, body, None, "incoming");
+                                    }
                                 }
                                 continue;
                             }
@@ -802,6 +833,10 @@ where
                             }
                             (clipboard::SERVICE_CLIPBOARD, Some(d)) => {
                                 if daemon.is_feature_enabled(Some(phone_id), "clipboard") {
+                                    if let Some(text) = d.get("text").and_then(Value::as_str) {
+                                        let preview = if text.len() > 80 { &text[..80] } else { text };
+                                        let _ = daemon.timeline.append(phone_id, "clipboard", "Clipboard Received", preview, None, "incoming");
+                                    }
                                     clip.handle(d, clipboard)
                                         .map(|(svc, d)| WsMsg::outgoing(device_id, svc, d))
                                 } else {
@@ -836,6 +871,10 @@ where
                     if daemon.is_feature_enabled(Some(phone_id), "clipboard")
                         && let Some(d) = clip.outgoing(&c)
                     {
+                        if let Some(text) = d.get("text").and_then(Value::as_str) {
+                            let preview = if text.len() > 80 { &text[..80] } else { text };
+                            let _ = daemon.timeline.append(phone_id, "clipboard", "Clipboard Sent", preview, None, "outgoing");
+                        }
                         send(tx, log, peer, &WsMsg::outgoing(device_id, clipboard::SERVICE_CLIPBOARD, d)).await?;
                     }
                 }

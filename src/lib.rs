@@ -24,4 +24,5 @@ pub mod server;
 pub mod share;
 pub mod sms;
 pub mod status;
+pub mod timeline;
 pub mod webcam;

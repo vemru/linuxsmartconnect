@@ -203,6 +203,37 @@ async fn handle(daemon: Arc<Daemon>, stream: UnixStream) -> Result<()> {
                     }
                 }
             }
+            l if l.starts_with("timeline") => {
+                let parts: Vec<&str> = l.split_whitespace().collect();
+                match parts.as_slice() {
+                    ["timeline"] => {
+                        match daemon.timeline.list(50, 0, None) {
+                            Ok(items) => json!({ "ok": true, "items": items }).to_string(),
+                            Err(e) => json!({ "ok": false, "message": format!("{e:#}") }).to_string(),
+                        }
+                    }
+                    ["timeline", "clear"] => {
+                        match daemon.timeline.clear() {
+                            Ok(()) => json!({ "ok": true, "message": "timeline cleared" }).to_string(),
+                            Err(e) => json!({ "ok": false, "message": format!("{e:#}") }).to_string(),
+                        }
+                    }
+                    ["timeline", "search", query @ ..] => {
+                        let q = query.join(" ");
+                        match daemon.timeline.search(&q, 50) {
+                            Ok(items) => json!({ "ok": true, "items": items }).to_string(),
+                            Err(e) => json!({ "ok": false, "message": format!("{e:#}") }).to_string(),
+                        }
+                    }
+                    ["timeline", kind] => {
+                        match daemon.timeline.list(50, 0, Some(kind)) {
+                            Ok(items) => json!({ "ok": true, "items": items }).to_string(),
+                            Err(e) => json!({ "ok": false, "message": format!("{e:#}") }).to_string(),
+                        }
+                    }
+                    _ => json!({ "ok": false, "message": "usage: timeline [clear | search <query> | <kind>]" }).to_string(),
+                }
+            }
             other => {
                 json!({ "ok": false, "message": format!("unknown command {other:?}") }).to_string()
             }
@@ -314,6 +345,46 @@ fn json_command(daemon: &Daemon, v: &serde_json::Value) -> String {
                 daemon.is_connected(),
             ));
             json!({ "ok": true, "report": report }).to_string()
+        }
+        "timeline.list" => {
+            let limit = v
+                .get("limit")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(50) as usize;
+            let offset = v
+                .get("offset")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0) as usize;
+            let kind = v.get("kind").and_then(serde_json::Value::as_str);
+            match daemon.timeline.list(limit, offset, kind) {
+                Ok(items) => json!({ "ok": true, "items": items }).to_string(),
+                Err(e) => json!({ "ok": false, "message": format!("{e:#}") }).to_string(),
+            }
+        }
+        "timeline.search" => {
+            let limit = v
+                .get("limit")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(50) as usize;
+            let query = s("query");
+            match daemon.timeline.search(query, limit) {
+                Ok(items) => json!({ "ok": true, "items": items }).to_string(),
+                Err(e) => json!({ "ok": false, "message": format!("{e:#}") }).to_string(),
+            }
+        }
+        "timeline.clear" => match daemon.timeline.clear() {
+            Ok(()) => json!({ "ok": true, "message": "timeline cleared" }).to_string(),
+            Err(e) => json!({ "ok": false, "message": format!("{e:#}") }).to_string(),
+        },
+        "timeline.prune" => {
+            let days = v
+                .get("days")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(30) as u32;
+            match daemon.timeline.prune(days) {
+                Ok(count) => json!({ "ok": true, "pruned": count }).to_string(),
+                Err(e) => json!({ "ok": false, "message": format!("{e:#}") }).to_string(),
+            }
         }
         // {"cmd":"send","service":N,"data":{…}}: forward a service message to the phone.
         "send" => {

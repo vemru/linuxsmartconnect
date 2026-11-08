@@ -43,6 +43,7 @@ tokio-tungstenite = { version = "0.30.0", default-features = false, features = [
 zbus = { version = "5.19", default-features = false, features = ["tokio"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
+rusqlite = { version = "0.41.1", features = ["bundled"] }
 
 [lib]
 name = "smartconnect"

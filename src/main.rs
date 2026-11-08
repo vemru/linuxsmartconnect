@@ -96,6 +96,15 @@ enum Cmd {
         /// State to set (on|off).
         state: Option<String>,
     },
+    /// View or search the transfer and event timeline.
+    Timeline {
+        /// Optional search query or filter ("search <query>", "clear", "file", "clipboard", etc.).
+        #[arg(trailing_var_arg = true)]
+        args: Vec<String>,
+        /// Output formatted as JSON.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 fn print_doctor_report(report: &smartconnect::doctor::DoctorReport) {
@@ -217,6 +226,62 @@ async fn main() -> Result<()> {
             }
         }
 
+        if let Cmd::Timeline {
+            args: tl_args,
+            json,
+        } = &cmd
+        {
+            let line_cmd = if tl_args.is_empty() {
+                "timeline".to_string()
+            } else {
+                format!("timeline {}", tl_args.join(" "))
+            };
+            if smartconnect::control::request(&line_cmd).await.is_ok() {
+                return Ok(());
+            }
+
+            // Offline fallback: query local SQLite database directly
+            let state_dir = args.state_dir.unwrap_or_else(default_state_dir);
+            let store = smartconnect::timeline::TimelineStore::open(&state_dir)?;
+            let items = if tl_args.is_empty() {
+                store.list(50, 0, None)?
+            } else if tl_args.first().map(|s| s.as_str()) == Some("clear") {
+                store.clear()?;
+                println!(
+                    "{}",
+                    serde_json::json!({ "ok": true, "message": "timeline cleared" })
+                );
+                return Ok(());
+            } else if tl_args.first().map(|s| s.as_str()) == Some("search") {
+                let q = tl_args[1..].join(" ");
+                store.search(&q, 50)?
+            } else {
+                let kind = &tl_args[0];
+                store.list(50, 0, Some(kind))?
+            };
+            if *json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(
+                        &serde_json::json!({ "ok": true, "items": items })
+                    )?
+                );
+            } else {
+                for item in &items {
+                    let dir = match item.direction.as_str() {
+                        "incoming" => "<-",
+                        "outgoing" => "->",
+                        _ => "--",
+                    };
+                    println!(
+                        "[{}] {} {:12} | {} | {}",
+                        item.ts, dir, item.kind, item.title, item.detail
+                    );
+                }
+            }
+            return Ok(());
+        }
+
         let cmd = match cmd {
             Cmd::Connect => "connect",
             Cmd::Disconnect => "disconnect",
@@ -224,7 +289,7 @@ async fn main() -> Result<()> {
             Cmd::Subscribe => "subscribe",
             Cmd::Pair => "pair",
             Cmd::Capabilities => "capabilities",
-            Cmd::Doctor { .. } | Cmd::Feature { .. } => unreachable!(),
+            Cmd::Doctor { .. } | Cmd::Feature { .. } | Cmd::Timeline { .. } => unreachable!(),
         };
         return smartconnect::control::request(cmd).await;
     }
@@ -360,6 +425,7 @@ async fn main() -> Result<()> {
                 desktop,
                 smartconnect::status::runtime_dir().join("shares"),
             );
+            shares.set_timeline(daemon.timeline.clone());
             shares.start();
             let _ = daemon.share.set(shares);
         }

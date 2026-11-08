@@ -409,3 +409,49 @@ pub fn set_feature(device: &str, feature: &str, enabled: bool) -> Result<(), Str
         Err(rep.message)
     }
 }
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
+pub struct TimelineItem {
+    pub id: i64,
+    pub ts: i64,
+    pub device: String,
+    pub kind: String, // "file", "clipboard", "notification", "session"
+    pub title: String,
+    pub detail: String,
+    pub path: Option<String>,
+    pub direction: String, // "incoming", "outgoing"
+}
+
+pub fn fetch_timeline(
+    kind: Option<&str>,
+    search: Option<&str>,
+) -> Result<Vec<TimelineItem>, String> {
+    let line = if let Some(q) = search.filter(|s| !s.trim().is_empty()) {
+        format!("timeline search {}", q.trim())
+    } else if let Some(k) = kind.filter(|k| !k.trim().is_empty() && *k != "all") {
+        format!("timeline {}", k.trim())
+    } else {
+        "timeline".to_string()
+    };
+    let rep = command(&line)?;
+    if !rep.ok {
+        return Err(rep.message);
+    }
+    let items_val = rep
+        .raw
+        .get("items")
+        .cloned()
+        .unwrap_or(Value::Array(vec![]));
+    serde_json::from_value(items_val).map_err(|e| format!("parsing timeline: {e}"))
+}
+
+pub fn clear_timeline() -> Result<(), String> {
+    let rep = command("timeline clear")?;
+    if rep.ok {
+        Ok(())
+    } else {
+        Err(rep.message)
+    }
+}

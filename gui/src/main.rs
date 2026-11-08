@@ -14,6 +14,7 @@ mod prefs;
 mod settings;
 mod setup;
 mod share;
+mod timeline;
 mod tray;
 mod webcam;
 mod window;
