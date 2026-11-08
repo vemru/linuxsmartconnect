@@ -39,27 +39,7 @@ pub struct TimelineStore {
 }
 
 impl TimelineStore {
-    pub fn open(dir: &Path) -> Result<Self> {
-        let db_path = dir.join(TIMELINE_DB);
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-            if !db_path.exists() {
-                let _ = fs::OpenOptions::new()
-                    .create(true)
-                    .write(true)
-                    .truncate(true)
-                    .mode(0o600)
-                    .open(&db_path);
-            }
-            let _ = fs::set_permissions(&db_path, fs::Permissions::from_mode(0o600));
-        }
-
-        let conn = Connection::open(&db_path)
-            .with_context(|| format!("opening timeline database at {}", db_path.display()))?;
-
-        // Initialize schema
+    fn init_schema(conn: &Connection) -> Result<()> {
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS timeline (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -92,10 +72,44 @@ impl TimelineStore {
             END;
             ",
         );
+        Ok(())
+    }
+
+    pub fn open(dir: &Path) -> Result<Self> {
+        let db_path = dir.join(TIMELINE_DB);
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+            if !db_path.exists() {
+                let _ = fs::OpenOptions::new()
+                    .create(true)
+                    .write(true)
+                    .truncate(true)
+                    .mode(0o600)
+                    .open(&db_path);
+            }
+            let _ = fs::set_permissions(&db_path, fs::Permissions::from_mode(0o600));
+        }
+
+        let conn = Connection::open(&db_path)
+            .with_context(|| format!("opening timeline database at {}", db_path.display()))?;
+
+        Self::init_schema(&conn)?;
 
         Ok(Self {
             conn: Mutex::new(conn),
             db_path,
+        })
+    }
+
+    /// Opens an in-memory SQLite database for fallback when disk storage cannot be opened.
+    pub fn open_in_memory() -> Result<Self> {
+        let conn = Connection::open_in_memory().context("opening in-memory timeline database")?;
+        Self::init_schema(&conn)?;
+        Ok(Self {
+            conn: Mutex::new(conn),
+            db_path: PathBuf::from(":memory:"),
         })
     }
 

@@ -126,6 +126,14 @@ impl FeatureStore {
         Ok(Self { path, devices })
     }
 
+    /// Creates an in-memory feature store with empty defaults.
+    pub fn in_memory() -> Self {
+        Self {
+            path: PathBuf::from(FEATURES_FILE),
+            devices: BTreeMap::new(),
+        }
+    }
+
     pub fn save(&self) -> Result<()> {
         let json = serde_json::to_vec_pretty(&self.devices)?;
         write_private(&self.path, &json)

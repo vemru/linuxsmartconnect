@@ -21,7 +21,7 @@ use tokio_rustls::rustls::{self, ServerConfig};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
 use tokio_tungstenite::tungstenite::http::StatusCode;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 use crate::clipboard::{self, LocalClipboard};
 use crate::discovery;
@@ -174,12 +174,33 @@ impl Daemon {
         ble_address: Option<String>,
     ) -> Self {
         let state_dir = session_dir.parent().unwrap_or(&session_dir);
-        let features = crate::features::FeatureStore::load(state_dir).unwrap_or_else(|_| {
-            crate::features::FeatureStore::load(std::path::Path::new(".")).unwrap()
+        let features = crate::features::FeatureStore::load(state_dir).unwrap_or_else(|e| {
+            warn!(
+                "features: failed to load from {}: {e:#}; falling back to current directory",
+                state_dir.display()
+            );
+            crate::features::FeatureStore::load(std::path::Path::new(".")).unwrap_or_else(|e2| {
+                warn!(
+                    "features: failed to load from current directory: {e2:#}; using in-memory defaults"
+                );
+                crate::features::FeatureStore::in_memory()
+            })
         });
         let timeline = Arc::new(
-            crate::timeline::TimelineStore::open(state_dir).unwrap_or_else(|_| {
-                crate::timeline::TimelineStore::open(std::path::Path::new(".")).unwrap()
+            crate::timeline::TimelineStore::open(state_dir).unwrap_or_else(|e| {
+                warn!(
+                    "timeline: failed to open database at {}: {e:#}; falling back to current directory",
+                    state_dir.display()
+                );
+                crate::timeline::TimelineStore::open(std::path::Path::new(".")).unwrap_or_else(|e2| {
+                    warn!(
+                        "timeline: failed to open database in current directory: {e2:#}; using in-memory timeline"
+                    );
+                    crate::timeline::TimelineStore::open_in_memory().unwrap_or_else(|e3| {
+                        error!("timeline: failed to initialize in-memory database: {e3:#}; exiting");
+                        std::process::exit(1);
+                    })
+                })
             }),
         );
         let _ = timeline.prune(30);
