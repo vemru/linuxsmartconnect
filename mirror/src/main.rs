@@ -2003,6 +2003,26 @@ fn host_call(req: &Value) -> Option<Value> {
     serde_json::from_str(&line).ok()
 }
 
+/// Whether the connected UNIX socket peer runs as the same user (SO_PEERCRED).
+fn peer_is_owner(fd: std::os::fd::RawFd) -> bool {
+    let mut ucred = libc::ucred {
+        pid: 0,
+        uid: 0,
+        gid: 0,
+    };
+    let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    unsafe {
+        libc::getsockopt(
+            fd,
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            &mut ucred as *mut _ as *mut libc::c_void,
+            &mut len,
+        ) == 0
+            && ucred.uid == libc::geteuid()
+    }
+}
+
 fn serve_control(tx: mpsc::Sender<Ev>) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
     let path = host_socket_path();
@@ -2020,23 +2040,7 @@ fn serve_control(tx: mpsc::Sender<Ev>) -> Result<()> {
         for conn in listener.incoming().map_while(Result::ok) {
             use std::os::fd::AsRawFd;
             let fd = conn.as_raw_fd();
-            let mut ucred = libc::ucred {
-                pid: 0,
-                uid: 0,
-                gid: 0,
-            };
-            let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
-            let cred_ok = unsafe {
-                libc::getsockopt(
-                    fd,
-                    libc::SOL_SOCKET,
-                    libc::SO_PEERCRED,
-                    &mut ucred as *mut _ as *mut libc::c_void,
-                    &mut len,
-                ) == 0
-                    && ucred.uid == libc::geteuid()
-            };
-            if !cred_ok {
+            if !peer_is_owner(fd) {
                 eprintln!("mirror-ctl: refusing connection from untrusted UID");
                 continue;
             }
@@ -2764,5 +2768,18 @@ mod tests {
         s.set_rotation(0, None);
         assert_eq!(s.st.lock().unwrap().current_rotation, 0);
         assert_eq!(rotation_to_direction(0), "identity");
+    }
+
+    #[test]
+    fn test_peer_cred_validation() {
+        use std::os::fd::AsRawFd;
+
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        // Sockets paired in the same process are owned by current EUID
+        assert!(peer_is_owner(ours.as_raw_fd()));
+        assert!(peer_is_owner(theirs.as_raw_fd()));
+
+        // Invalid fd must fail
+        assert!(!peer_is_owner(-1));
     }
 }

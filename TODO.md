@@ -13,9 +13,6 @@ and [docs/](docs/) for details.
   connections or just make switching between paired phones seamless.
 
 ## Security & Hardening backlog
-- **Mirror socket peer credential validation:** Add `SO_PEERCRED` validation in
-  `mirror/src/main.rs:serve_control` matching the current user's EUID, aligning with
-  `src/control.rs`.
 - **Reconnect authentication challenge-response:** Implement proof-of-possession verification
   (e.g., encrypted challenge nonce or AEAD signature) for reconnecting paired phones on `/readyfor/`
   to mitigate potential static `realDeviceId` spoofing on shared Wi-Fi networks.
