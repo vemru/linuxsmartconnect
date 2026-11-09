@@ -20,7 +20,7 @@ that file changes.
 
 | | |
 |---|---|
-| Path | `$XDG_RUNTIME_DIR/smartconnectd.sock`, or the system temp directory (`/tmp`) if `XDG_RUNTIME_DIR` is unset |
+| Path | `$XDG_RUNTIME_DIR/smartconnectd.sock`, or `$XDG_STATE_HOME/smartconnect-linux/run/smartconnectd.sock` if `XDG_RUNTIME_DIR` is unset (mode 0700) |
 | Type | Unix stream socket |
 | Lifetime | Created when the daemon starts, after it removes any stale file. A daemon restart replaces it, so clients must reconnect. The GTK app retries every 2 s and the Noctalia plugin every 3 s. |
 | Access | No authentication. Anyone who can connect gets full control, so access is governed by file permissions. `$XDG_RUNTIME_DIR` is private to your user (mode 0700), and the socket itself is created with the daemon's umask. See [Security](security.md#local-exposure). |

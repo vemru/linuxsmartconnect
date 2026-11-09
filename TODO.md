@@ -13,9 +13,6 @@ and [docs/](docs/) for details.
   connections or just make switching between paired phones seamless.
 
 ## Security & Hardening backlog
-- **Harmonize UNIX socket runtime paths:** Standardize socket path resolution across the QML shell
-  plugin (`SmartConnect.qml`) and auxiliary scripts to eliminate `/tmp` fallbacks and match
-  `src/control.rs`'s secure `$XDG_STATE_HOME/smartconnect-linux/run/` (mode 0700) fallback.
 - **Zenity overwrite confirmation:** Add `--confirm-overwrite` to the fallback `zenity --save` file
   selection dialog in `src/share.rs` to protect against accidental file overwrites when
   `xdg-desktop-portal` is absent.

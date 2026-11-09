@@ -21,7 +21,7 @@ pub fn socket_path() -> PathBuf {
     runtime_dir().join("smartconnectd.sock")
 }
 
-fn runtime_dir() -> PathBuf {
+pub(crate) fn runtime_dir() -> PathBuf {
     if let Some(dir) = std::env::var_os("XDG_RUNTIME_DIR").filter(|v| !v.is_empty()) {
         return PathBuf::from(dir);
     }

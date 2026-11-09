@@ -347,9 +347,7 @@ fn parse_scale(v: &str) -> Option<u32> {
 // ── Processes ───────────────────────────────────────────────────────────────
 
 fn runtime_dir() -> PathBuf {
-    std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir)
+    crate::daemon::runtime_dir()
 }
 
 /// Shared with the Noctalia plugin, which starts sessions the same way.
