@@ -223,7 +223,14 @@ pub async fn dial_phone(
     let fp = expected_fp
         .map(ToOwned::to_owned)
         .or_else(|| daemon.phone_fingerprint(phone_real_id));
-    push_invite(addr, &daemon.identity.device_id, &key, &invite, fp.as_deref()).await
+    push_invite(
+        addr,
+        &daemon.identity.device_id,
+        &key,
+        &invite,
+        fp.as_deref(),
+    )
+    .await
 }
 
 /// Opens `wss://addr/readyfor/mdns`, sends the sealed invite as one binary frame, then lingers
