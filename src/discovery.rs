@@ -25,6 +25,7 @@ use base64::engine::general_purpose::STANDARD as B64;
 use futures_util::{SinkExt, StreamExt};
 use rand::RngCore;
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::net::TcpStream;
 use tokio::process::{Child, Command};
@@ -199,7 +200,12 @@ where
 }
 
 /// Dials a phone's `/readyfor/mdns` and pushes our invite (reconnect without a QR).
-pub async fn dial_phone(daemon: &Daemon, phone_real_id: &str, addr: SocketAddr) -> Result<()> {
+pub async fn dial_phone(
+    daemon: &Daemon,
+    phone_real_id: &str,
+    addr: SocketAddr,
+    expected_fp: Option<&str>,
+) -> Result<()> {
     let key = daemon
         .pairing
         .lock()
@@ -214,7 +220,10 @@ pub async fn dial_phone(daemon: &Daemon, phone_real_id: &str, addr: SocketAddr) 
         daemon.ws_port,
     )
     .to_string();
-    push_invite(addr, &daemon.identity.device_id, &key, &invite).await
+    let fp = expected_fp
+        .map(ToOwned::to_owned)
+        .or_else(|| daemon.phone_fingerprint(phone_real_id));
+    push_invite(addr, &daemon.identity.device_id, &key, &invite, fp.as_deref()).await
 }
 
 /// Opens `wss://addr/readyfor/mdns`, sends the sealed invite as one binary frame, then lingers
@@ -224,6 +233,7 @@ pub async fn push_invite(
     our_nonce_b64: &str,
     key: &str,
     invite: &str,
+    expected_fp: Option<&str>,
 ) -> Result<()> {
     let frame = seal(key, &B64.decode(our_nonce_b64)?, invite.as_bytes())?;
     let tcp = timeout(Duration::from_secs(5), TcpStream::connect(addr)).await??;
@@ -231,8 +241,8 @@ pub async fn push_invite(
         ClientConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
             .with_safe_default_protocol_versions()?
             .dangerous()
-            // The phone presents a throwaway self-signed cert; the payload itself is AES-GCM sealed.
-            .with_custom_certificate_verifier(Arc::new(AcceptAny))
+            // Pins the phone's advertised certificate fingerprint when known.
+            .with_custom_certificate_verifier(Arc::new(FingerprintVerifier::new(expected_fp)))
             .with_no_client_auth();
     let tls = TlsConnector::from(Arc::new(config))
         .connect(ServerName::IpAddress(addr.ip().into()), tcp)
@@ -266,8 +276,8 @@ pub async fn connect_now(daemon: &Daemon) -> (bool, String) {
     }
     daemon.clear_phone_close();
     let mut wifi_err = None;
-    for (phone, addr) in daemon.known_phone_endpoints() {
-        match dial_phone(daemon, &phone, addr).await {
+    for (phone, addr, fp) in daemon.known_phone_endpoints() {
+        match dial_phone(daemon, &phone, addr, fp.as_deref()).await {
             Ok(()) => {
                 return (
                     true,
@@ -354,7 +364,7 @@ pub async fn watch_phones(daemon: Arc<Daemon>) -> Result<()> {
         .context("starting avahi-browse")?;
     let mut lines = BufReader::new(child.stdout.take().context("avahi-browse stdout")?).lines();
     while let Some(line) = lines.next_line().await? {
-        let Some((addr, txt_device_id)) = parse_resolved(&line) else {
+        let Some((addr, txt_device_id, txt_fp)) = parse_resolved(&line) else {
             continue;
         };
         let Ok(nonce) = B64.decode(&txt_device_id) else {
@@ -363,7 +373,7 @@ pub async fn watch_phones(daemon: Arc<Daemon>) -> Result<()> {
         let Some((phone, _)) = phone_for_nonce(&daemon, &nonce) else {
             continue;
         };
-        daemon.remember_phone_mdns(&phone, addr);
+        daemon.remember_phone_mdns(&phone, addr, txt_fp.as_deref());
         if !daemon.should_dial_back() {
             info!(%addr, %phone, "mdns: phone is advertising but just disconnected or is connected; not dialing");
             continue;
@@ -371,7 +381,7 @@ pub async fn watch_phones(daemon: Arc<Daemon>) -> Result<()> {
         info!(%addr, %phone, "mdns: paired phone is advertising; dialing it back");
         let d = daemon.clone();
         tokio::spawn(async move {
-            if let Err(e) = dial_phone(&d, &phone, addr).await {
+            if let Err(e) = dial_phone(&d, &phone, addr, txt_fp.as_deref()).await {
                 warn!(%addr, "mdns: dial-back failed: {e:#}");
             }
         });
@@ -379,34 +389,77 @@ pub async fn watch_phones(daemon: Arc<Daemon>) -> Result<()> {
     bail!("avahi-browse exited: {:?}", child.wait().await?)
 }
 
-/// `=;iface;IPv4;name;type;domain;host;address;port;"k=v" "k=v"` → (address:port, TXT deviceId).
-fn parse_resolved(line: &str) -> Option<(SocketAddr, String)> {
+/// `=;iface;IPv4;name;type;domain;host;address;port;"k=v" "k=v"` → (address:port, TXT deviceId, Option<TXT fp>).
+fn parse_resolved(line: &str) -> Option<(SocketAddr, String, Option<String>)> {
     let f: Vec<&str> = line.splitn(10, ';').collect();
     if f.len() < 10 || f[0] != "=" || f[2] != "IPv4" {
         return None;
     }
     let addr = SocketAddr::new(f[7].parse().ok()?, f[8].parse().ok()?);
-    let device_id = f[9]
-        .split('"')
-        .find_map(|kv| kv.strip_prefix("deviceId="))
-        .map(str::to_owned)?;
-    Some((addr, device_id))
+    let mut device_id = None;
+    let mut fp = None;
+    for kv in f[9].split('"') {
+        if let Some(id) = kv.strip_prefix("deviceId=") {
+            device_id = Some(id.to_owned());
+        } else if let Some(f) = kv.strip_prefix("fp=") {
+            fp = Some(f.to_owned());
+        }
+    }
+    let device_id = device_id?;
+    Some((addr, device_id, fp))
 }
 
 #[derive(Debug)]
-struct AcceptAny;
+pub struct FingerprintVerifier {
+    expected: Option<[u8; 32]>,
+}
 
-impl ServerCertVerifier for AcceptAny {
+impl FingerprintVerifier {
+    pub fn new(expected_fp: Option<&str>) -> Self {
+        let expected = expected_fp.and_then(|s| {
+            let s = s.trim();
+            if s.len() == 64 {
+                hex::decode(s).ok().and_then(|v| v.try_into().ok())
+            } else if s.len() == 44 {
+                B64.decode(s).ok().and_then(|v| v.try_into().ok())
+            } else {
+                hex::decode(s)
+                    .ok()
+                    .and_then(|v| v.try_into().ok())
+                    .or_else(|| B64.decode(s).ok().and_then(|v| v.try_into().ok()))
+            }
+        });
+        Self { expected }
+    }
+}
+
+impl ServerCertVerifier for FingerprintVerifier {
     fn verify_server_cert(
         &self,
-        _: &CertificateDer<'_>,
+        end_entity: &CertificateDer<'_>,
         _: &[CertificateDer<'_>],
         _: &ServerName<'_>,
         _: &[u8],
         _: UnixTime,
     ) -> Result<ServerCertVerified, rustls::Error> {
+        if let Some(expected) = &self.expected {
+            let actual: [u8; 32] = Sha256::digest(end_entity.as_ref()).into();
+            if &actual != expected {
+                warn!(
+                    actual = %hex::encode(actual),
+                    expected = %hex::encode(expected),
+                    "discovery TLS cert fingerprint mismatch"
+                );
+                return Err(rustls::Error::InvalidCertificate(
+                    rustls::CertificateError::ApplicationVerificationFailure,
+                ));
+            }
+        } else {
+            debug!("discovery TLS cert verification: no expected fingerprint pinned; allowing");
+        }
         Ok(ServerCertVerified::assertion())
     }
+
     fn verify_tls12_signature(
         &self,
         _: &[u8],
@@ -415,6 +468,7 @@ impl ServerCertVerifier for AcceptAny {
     ) -> Result<HandshakeSignatureValid, rustls::Error> {
         Ok(HandshakeSignatureValid::assertion())
     }
+
     fn verify_tls13_signature(
         &self,
         _: &[u8],
@@ -423,6 +477,7 @@ impl ServerCertVerifier for AcceptAny {
     ) -> Result<HandshakeSignatureValid, rustls::Error> {
         Ok(HandshakeSignatureValid::assertion())
     }
+
     fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
         rustls::crypto::ring::default_provider()
             .signature_verification_algorithms
@@ -464,10 +519,55 @@ mod tests {
 
     #[test]
     fn parses_avahi_resolved_lines() {
-        let line = r#"=;wlan0;IPv4;phone;_readyformdns._tcp;local;phone.local;192.168.1.20;11234;"fp=ab" "deviceId=AAECAwQFBgcICQoLDA0ODw==" "os=1""#;
-        let (addr, id) = parse_resolved(line).unwrap();
+        let line = r#"=;wlan0;IPv4;phone;_readyformdns._tcp;local;phone.local;192.168.1.20;11234;"fp=aabbcc" "deviceId=AAECAwQFBgcICQoLDA0ODw==" "os=1""#;
+        let (addr, id, fp) = parse_resolved(line).unwrap();
         assert_eq!(addr, "192.168.1.20:11234".parse().unwrap());
         assert_eq!(id, "AAECAwQFBgcICQoLDA0ODw==");
+        assert_eq!(fp.as_deref(), Some("aabbcc"));
         assert!(parse_resolved("+;wlan0;IPv4;phone;_readyformdns._tcp;local").is_none());
+    }
+
+    #[test]
+    fn fingerprint_verifier_pins_matching_cert() {
+        let cert_data = b"dummy certificate data";
+        let cert = CertificateDer::from(&cert_data[..]);
+        let digest: [u8; 32] = Sha256::digest(cert.as_ref()).into();
+        let hex_fp = hex::encode(digest);
+        let b64_fp = B64.encode(digest);
+
+        // Matches with hex
+        let v_hex = FingerprintVerifier::new(Some(&hex_fp));
+        let server_name = ServerName::try_from("example.com").unwrap();
+        assert!(
+            v_hex
+                .verify_server_cert(&cert, &[], &server_name, &[], UnixTime::now())
+                .is_ok()
+        );
+
+        // Matches with base64
+        let v_b64 = FingerprintVerifier::new(Some(&b64_fp));
+        assert!(
+            v_b64
+                .verify_server_cert(&cert, &[], &server_name, &[], UnixTime::now())
+                .is_ok()
+        );
+
+        // Mismatched fp fails
+        let v_bad = FingerprintVerifier::new(Some(
+            "0000000000000000000000000000000000000000000000000000000000000000",
+        ));
+        assert!(
+            v_bad
+                .verify_server_cert(&cert, &[], &server_name, &[], UnixTime::now())
+                .is_err()
+        );
+
+        // No fp pinned allows (fallback)
+        let v_none = FingerprintVerifier::new(None);
+        assert!(
+            v_none
+                .verify_server_cert(&cert, &[], &server_name, &[], UnixTime::now())
+                .is_ok()
+        );
     }
 }

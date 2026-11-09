@@ -13,10 +13,6 @@ and [docs/](docs/) for details.
   connections or just make switching between paired phones seamless.
 
 ## Security & Hardening backlog
-
-- **Pin discovery TLS certificate fingerprint:** In `src/discovery.rs`, replace the permissive
-  `AcceptAny` rustls certificate verifier in `push_invite` with certificate fingerprint verification
-  pinned to the phone's advertised mDNS TXT `fp=...` record.
 - **Harmonize UNIX socket runtime paths:** Standardize socket path resolution across the QML shell
   plugin (`SmartConnect.qml`) and auxiliary scripts to eliminate `/tmp` fallbacks and match
   `src/control.rs`'s secure `$XDG_STATE_HOME/smartconnect-linux/run/` (mode 0700) fallback.
