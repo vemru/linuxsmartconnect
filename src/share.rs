@@ -1535,18 +1535,7 @@ impl SystemDesktop {
     }
 
     async fn fallback_save(&self, name: &str, directory: bool) -> Result<Option<PathBuf>> {
-        let mut cmd = tokio::process::Command::new("zenity");
-        cmd.arg("--file-selection");
-        if directory {
-            cmd.arg("--directory")
-                .arg("--title=Choose where to save the folder");
-        } else {
-            cmd.arg("--save").arg("--title=Save shared file");
-        }
-        let start = downloads_dir().map(|d| if directory { d } else { d.join(name) });
-        if let Some(start) = start {
-            cmd.arg(format!("--filename={}", start.display()));
-        }
+        let mut cmd = zenity_save_cmd(name, directory);
         let output = cmd.output().await.context("starting zenity")?;
         if !output.status.success() {
             return Ok(None); // Cancel exits non-zero.
@@ -1558,6 +1547,24 @@ impl SystemDesktop {
         let dest = PathBuf::from(chosen);
         Ok(Some(if directory { dest.join(name) } else { dest }))
     }
+}
+
+fn zenity_save_cmd(name: &str, directory: bool) -> tokio::process::Command {
+    let mut cmd = tokio::process::Command::new("zenity");
+    cmd.arg("--file-selection");
+    if directory {
+        cmd.arg("--directory")
+            .arg("--title=Choose where to save the folder");
+    } else {
+        cmd.arg("--save")
+            .arg("--confirm-overwrite")
+            .arg("--title=Save shared file");
+    }
+    let start = downloads_dir().map(|d| if directory { d } else { d.join(name) });
+    if let Some(start) = start {
+        cmd.arg(format!("--filename={}", start.display()));
+    }
+    cmd
 }
 
 /// Portal "the user cancelled": not an error worth falling back on.
@@ -2385,5 +2392,28 @@ mod tests {
             .await;
         assert!(!staged_dir.exists());
         assert!(manager.pending.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn zenity_save_cmd_includes_confirm_overwrite() {
+        let cmd = zenity_save_cmd("photo.jpg", false);
+        let args: Vec<String> = cmd
+            .as_std()
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert!(args.contains(&"--file-selection".to_string()));
+        assert!(args.contains(&"--save".to_string()));
+        assert!(args.contains(&"--confirm-overwrite".to_string()));
+        assert!(args.contains(&"--title=Save shared file".to_string()));
+
+        let cmd_dir = zenity_save_cmd("folder", true);
+        let args_dir: Vec<String> = cmd_dir
+            .as_std()
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert!(args_dir.contains(&"--directory".to_string()));
+        assert!(!args_dir.contains(&"--confirm-overwrite".to_string()));
     }
 }

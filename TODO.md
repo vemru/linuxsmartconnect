@@ -13,9 +13,6 @@ and [docs/](docs/) for details.
   connections or just make switching between paired phones seamless.
 
 ## Security & Hardening backlog
-- **Zenity overwrite confirmation:** Add `--confirm-overwrite` to the fallback `zenity --save` file
-  selection dialog in `src/share.rs` to protect against accidental file overwrites when
-  `xdg-desktop-portal` is absent.
 - **Mirror socket peer credential validation:** Add `SO_PEERCRED` validation in
   `mirror/src/main.rs:serve_control` matching the current user's EUID, aligning with
   `src/control.rs`.
