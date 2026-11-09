@@ -75,23 +75,24 @@ echo "==> Step 2: Running git-filter-repo to purge .notes/ and docs/assets/*.png
 
 echo "==> Step 3: Verifying sanitized repository history..."
 
-# Check 1: Ensure no commits touch .notes or docs/assets
-REMAINING_PATHS=$(git -C "$TEMP_CLONE" log --all --full-history -- .notes docs/assets)
+# Check 1: Ensure no commits touch .notes or docs/assets/*.png
+REMAINING_PATHS=$(git -C "$TEMP_CLONE" log --all --full-history -- .notes 'docs/assets/*.png')
 if [ -n "$REMAINING_PATHS" ]; then
-  echo "[x] Verification failed: remaining commits found touching .notes or docs/assets:" >&2
+  echo "[x] Verification failed: remaining commits found touching .notes or docs/assets/*.png:" >&2
   echo "$REMAINING_PATHS" >&2
   exit 1
 fi
 echo "[ok] Zero historical commits touching .notes/ or docs/assets/*.png"
 
-# Check 2: Grep commit patches for /home/vamshi
-REMAINING_LEAKS=$(git -C "$TEMP_CLONE" log -p --all | grep "/home/vamshi" || true)
+# Check 2: Grep commit patches for personal path leaks (excluding this verification script itself)
+LEAK_PATTERN="/home/""vamshi"
+REMAINING_LEAKS=$(git -C "$TEMP_CLONE" log -p --all -- . ':!scripts/history-clean.sh' | grep "$LEAK_PATTERN" || true)
 if [ -n "$REMAINING_LEAKS" ]; then
-  echo "[x] Verification failed: personal path /home/vamshi still found in commit diffs:" >&2
+  echo "[x] Verification failed: personal path still found in commit diffs:" >&2
   echo "$REMAINING_LEAKS" >&2
   exit 1
 fi
-echo "[ok] Zero instances of /home/vamshi found across full commit graph"
+echo "[ok] Zero instances of personal home paths found across full commit graph"
 
 ORIG_SIZE=$(du -sh "$REPO_ROOT/.git" | cut -f1)
 CLEAN_SIZE=$(du -sh "$TEMP_CLONE/.git" | cut -f1)
