@@ -2,7 +2,7 @@
 name = "smartconnect-linux"
 version = "0.2.2"
 edition = "2024"
-license = "MIT"
+license = "MIT OR Apache-2.0"
 description = "smartconnectd: unofficial Linux peer for the Motorola Smart Connect phone app (pairing, sessions, notifications, clipboard, SMS, control socket for the helpers)"
 repository = "https://github.com/vemru/linuxsmartconnect"
 homepage = "https://github.com/vemru/linuxsmartconnect"

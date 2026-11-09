@@ -2,7 +2,7 @@
 name = "smartconnect-mirror"
 version = "0.2.2"
 edition = "2024"
-license = "MIT"
+license = "MIT OR Apache-2.0"
 description = "Phone-screen mirror viewer for smartconnectd (GStreamer webrtcbin answerer)"
 repository = "https://github.com/vemru/linuxsmartconnect"
 homepage = "https://github.com/vemru/linuxsmartconnect"

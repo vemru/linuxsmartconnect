@@ -2,7 +2,7 @@
 name = "smartconnect-display"
 version = "0.2.2"
 edition = "2024"
-license = "MIT"
+license = "MIT OR Apache-2.0"
 description = "Phone as a display for this PC (Smart Connect svc 202): screen capture streamed over WebRTC, touch and keyboard input back"
 repository = "https://github.com/vemru/linuxsmartconnect"
 homepage = "https://github.com/vemru/linuxsmartconnect"
