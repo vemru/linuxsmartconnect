@@ -12,7 +12,7 @@ QtObject {
 
   readonly property string socketPath: Quickshell.env("XDG_RUNTIME_DIR")
     ? (Quickshell.env("XDG_RUNTIME_DIR") + "/smartconnectd.sock")
-    : (Quickshell.env("HOME") + "/.local/state/smartconnect-linux/run/smartconnectd.sock")
+    : ((Quickshell.env("XDG_STATE_HOME") || (Quickshell.env("HOME") + "/.local/state")) + "/smartconnect-linux/run/smartconnectd.sock")
 
   property bool daemonAvailable: false
   property var status: ({})
@@ -230,7 +230,9 @@ QtObject {
   readonly property string defaultDisplayBinary: "smartconnect-display"
   readonly property string configHome: Quickshell.env("XDG_CONFIG_HOME") || (Quickshell.env("HOME") + "/.config")
   readonly property string displayConfigPath: configHome + "/smartconnect-linux/display.json"
-  readonly property string displayLogPath: (Quickshell.env("XDG_RUNTIME_DIR") || "/tmp") + "/smartconnect-display.log"
+  readonly property string displayLogPath: (Quickshell.env("XDG_RUNTIME_DIR")
+    ? Quickshell.env("XDG_RUNTIME_DIR")
+    : ((Quickshell.env("XDG_STATE_HOME") || (Quickshell.env("HOME") + "/.local/state")) + "/smartconnect-linux/run")) + "/smartconnect-display.log"
   readonly property var displayDefaults: ({ mode: "extend", size: "native", displayScale: 2.0, oskHeight: 45, output: null, audio: false, followRotation: false, bitrate: 8000, fps: 60 })
   property var displayConfig: displayDefaults
   // Running sessions (ours or not): [{ pid, mode }].

@@ -147,6 +147,9 @@ done
 PHONE_NAME=""
 IS_CONNECTED=0
 SOCK="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/smartconnectd.sock"
+if [ ! -S "$SOCK" ]; then
+  SOCK="${XDG_STATE_HOME:-$HOME/.local/state}/smartconnect-linux/run/smartconnectd.sock"
+fi
 if [ -S "$SOCK" ]; then
   status_json="$(echo "status" | nc -U "$SOCK" -w 1 2>/dev/null || true)"
   if [ -n "$status_json" ]; then

@@ -107,9 +107,10 @@ These are the kinds of things the Windows app allows too. A paired phone can:
   process running as your user can connect or disconnect the phone, read status, notifications and
   SMS, reply to notifications, send SMS from your phone, and send raw protocol messages to it. This
   is the usual trust model for per-user desktop daemons. `$XDG_RUNTIME_DIR` is private to your user
-  (mode 0700). If `XDG_RUNTIME_DIR` is unset, the socket goes to `/tmp` with the daemon's umask; a
-  umask of 022 still keeps other users out, because connecting needs write permission. Run the
-  daemon in a normal login session, where systemd sets `XDG_RUNTIME_DIR`.
+  (mode 0700). If `XDG_RUNTIME_DIR` is unset, the socket goes to
+  `$XDG_STATE_HOME/smartconnect-linux/run/smartconnectd.sock` in a private directory (mode 0700),
+  never the shared `/tmp`. Run the daemon in a normal login session, where systemd sets
+  `XDG_RUNTIME_DIR`.
 - **Stream host socket** (`$XDG_RUNTIME_DIR/smartconnect-mirror.sock`): same model. It can start and
   close stream windows.
 - **Reply window:** the notification's title and body reach `qs` through environment variables,

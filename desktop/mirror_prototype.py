@@ -23,7 +23,14 @@ gi.require_version("GstWebRTC", "1.0")
 gi.require_version("GstSdp", "1.0")
 from gi.repository import GLib, Gst, GstSdp, GstWebRTC  # noqa: E402
 
-SOCK = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "smartconnectd.sock")
+def socket_path() -> str:
+    if runtime_dir := os.environ.get("XDG_RUNTIME_DIR"):
+        return os.path.join(runtime_dir, "smartconnectd.sock")
+    state_home = os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state")
+    return os.path.join(state_home, "smartconnect-linux", "run", "smartconnectd.sock")
+
+
+SOCK = socket_path()
 LAN_PREFIX = os.environ.get("SC_LAN_PREFIX", "192.168.")
 
 
