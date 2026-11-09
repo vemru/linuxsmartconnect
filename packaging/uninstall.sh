@@ -42,10 +42,12 @@ remove() { # removes each existing file or symlink
 # ---- service ----
 if [ -f "$UNIT" ]; then
   if have_user_manager; then
-    run systemctl --user disable --now smartconnectd.service || true
+    run systemctl --user disable --now smartconnectd.service 2>/dev/null || true
+  else
+    warn "no systemd user manager reachable: skipping service disable"
   fi
   remove "$UNIT"
-  if have_user_manager; then run systemctl --user daemon-reload; fi
+  if have_user_manager; then run systemctl --user daemon-reload 2>/dev/null || true; fi
 fi
 
 # ---- files ----
