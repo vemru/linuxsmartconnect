@@ -6,45 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). The README's
 [feature matrix](README.md#feature-status) shows what is verified on a real phone.
 
-## [Unreleased]
+### [Unreleased]
+
+## [0.3.0] - 2026-11-09
 
 ### Added
 
-- **Phase 9 Clipboard OTP Protection & Reconnect Jitter:**
-  - Added double-copy confirmation requirement for one-time passwords, 2FA tokens, and sensitive numeric codes before syncing over the clipboard channel.
-  - Added randomized backoff jitter to automatic reconnection loops to prevent synchronized reconnect storms on network interface state changes.
-- **Phase 8 Installer Verification, Uninstaller & Multi-Distro CI:**
-  - Added full `--uninstall` and `--uninstall --purge` flags to `packaging/install.sh` for clean removal of binaries, systemd units, desktop files, icons, and state directories.
-  - Added multi-distro CI smoke tests across Arch Linux, Fedora 40, and Ubuntu 24.04 running as an unprivileged user.
-  - Added `cargo-deny` security advisory checks to CI workflow.
-- **Phase 7 File Manager Integrations & CLI Send:**
-  - Added "Send to phone" context menu actions for major Linux file managers (Nautilus, Dolphin, Nemo, and Thunar).
-  - Added CLI `smartconnectd send <path...>` command and control socket file transfer initiation.
-- **Phase 6 Photos Browser:**
-  - Implemented GTK4 Photos gallery view in `smartconnect-gui` with asynchronous thumbnail caching and image preview modal.
-- **Phase 5 Command Palette:**
-  - Added quick-action Command Palette with fuzzy search across connected phone features, settings, and apps (`smartconnectd palette`).
-  - Added compositor keybinding shortcuts for Wayland environments.
-- **Phase 4 Searchable Activity Timeline:**
-  - Added searchable interaction timeline powered by SQLite FTS5 index (`$XDG_STATE_HOME/smartconnect-linux/timeline.db`).
-  - Records file shares, clipboard synchronizations, notification interactions, and connection events with full-text search.
-  - Added Timeline view tab in `smartconnect-gui` with search filter and item details.
-- **Phase 3 Per-Feature Switches:**
-  - Added per-device feature on/off switches with daemon enforcement and GUI settings (`$XDG_STATE_HOME/smartconnect-linux/features.json`).
-  - Sensitive features (`cross_control`, `storage_mount`, `folder_share`) default to OFF; standard features default to ON.
-  - Enforced in daemon session loop and helpers (ignoring incoming and preventing outgoing sync/connections when disabled).
-  - Capabilities matrix reflects disabled state as `Unavailable { reason: "disabled in settings", fix_hint: "Enable in Settings" }`.
-  - Added CLI `smartconnectd feature <device> [<name> on|off]` and control socket `feature.get`, `feature.set`, `feature.list` commands.
-  - Added GTK4 Feature Settings page in `smartconnect-gui` with live switches and daemon synchronization.
-- **Phase 2 Connection Doctor:**
-  - Added comprehensive diagnostics for local network interfaces, mDNS discovery (Avahi), listener ports (52020, 2049), firewall configurations (firewalld, UFW), Bluetooth services, and runtime helper dependencies.
-  - Added `smartconnectd doctor [--json]` CLI command and control socket `doctor` command.
-  - Added "Diagnostics" view tab to `smartconnect-gui` with live test status badges, one-click safe pkexec repair buttons, and clipboard export.
-- **Phase 1 Capability Matrix:**
-  - Implemented runtime probing and capability reporting across 9 features (`mirror`, `webcam`, `app_streaming`, `cross_control`, `phone_display`, `storage_mount`, `folder_share`, `clipboard`, `notifications`).
-  - Added `src/capabilities.rs` with `SystemProber` abstraction, checking `v4l2loopback`, `/dev/fuse`, `fusermount3`, `webrtcbin`, display/Wayland compositors, and kernel dependencies.
-  - Added control socket query support for `capabilities` keyword and `{"cmd": "capabilities"}` JSON command, plus CLI `smartconnectd capabilities`.
-  - Bound GUI button sensitivity, subtitle status, and `fix_hint` tooltips in `smartconnect-gui`.
+- **Capability Matrix:** Diagnostic capability evaluation (`src/capabilities.rs`), `capabilities` control socket query, and dynamic GUI card sensitivity and status badges.
+- **Connection Doctor:** Automated troubleshooting engine (`src/doctor.rs`), `smartconnectd doctor [--json]` CLI command, and GTK4 Diagnostics dialog with safe repair actions.
+- **Per-Device Feature Switches:** Granular per-device toggles (`$XDG_STATE_HOME/smartconnect-linux/features.json`), socket commands (`feature.get`/`set`/`list`), and GTK4 Feature Settings page.
+- **Searchable Activity Timeline:** SQLite FTS5 indexed event log (`src/timeline.rs`) with 30-day retention pruning, socket queries, and GTK4 Timeline page.
+- **Command Palette:** GTK4 fuzzy launcher (`gui/src/palette.rs`) activated via single-instance `smartconnect-gui --palette` (<50ms) with Wayland compositor keybinding support.
+- **Photos Browser:** GTK4 photos gallery (`gui/src/photos.rs`) over FUSE with async thumbnail caching and multi-select actions.
+- **Send to Phone:** Push files to phone via FEX server, `smartconnectd send <paths...>` CLI, and context menus for Nautilus, Dolphin, Nemo, and Thunar.
+- **Verified Installer and Uninstaller:** SHA-256 verification of installer artifacts, clean uninstaller with state purge prompts (`packaging/install.sh --uninstall [--purge]`), and multi-distro CI matrix (Arch, Fedora 40, Ubuntu 24.04).
+- **OTP Double-Copy Protection:** Sensitive numeric OTP/2FA token pattern detection requiring double-copy confirmation within 3 seconds before clipboard synchronization.
+- **Reconnect Backoff with Jitter:** Randomized jitter added to exponential reconnect backoff to prevent synchronized reconnect storms across local networks.
+
+### Fixed
+
+- **Installer Uninstall Flag:** Properly shift arguments before forwarding to `packaging/uninstall.sh` in `install.sh --uninstall`.
+- **Smoke-Test Non-Root Execution:** Execute CI install smoke tests as an unprivileged user across all containerized Linux distributions.
+- **Store Error Handling:** Handled `FeatureStore` and `TimelineStore` file operations gracefully without panics or unwraps.
 
 ## [0.2.2] - 2026-10-31
 
