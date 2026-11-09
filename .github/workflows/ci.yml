@@ -104,11 +104,28 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Install dependencies
         run: ${{ matrix.setup }}
+      - name: Assert root execution refusal in install.sh
+        run: |
+          set +e
+          output=$(./packaging/install.sh --dry-run 2>&1)
+          status=$?
+          set -e
+          if [ $status -eq 0 ]; then
+            echo "install.sh should have refused execution as root, but exited with code 0" >&2
+            exit 1
+          fi
+          if ! printf '%s\n' "$output" | grep -q "run this as your normal user, not as root"; then
+            echo "Expected root refusal message not found in output:" >&2
+            printf '%s\n' "$output" >&2
+            exit 1
+          fi
+          echo "Root refusal verified: $output"
       - name: Setup unprivileged user and run smoke tests
         run: |
-          useradd -m -s /bin/bash testuser || adduser -D testuser
+          id -u testuser >/dev/null 2>&1 || useradd -m -s /bin/bash testuser || adduser -D testuser
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           chown -R testuser:testuser "$GITHUB_WORKSPACE"
-          su testuser -c "cd '$GITHUB_WORKSPACE' && ./packaging/install.sh --dry-run"
-          su testuser -c "cd '$GITHUB_WORKSPACE' && ./packaging/install.sh --uninstall --dry-run"
-          su testuser -c "cd '$GITHUB_WORKSPACE' && ./packaging/install.sh --uninstall --purge --dry-run"
+          su - testuser -c "git config --global --add safe.directory '$GITHUB_WORKSPACE'"
+          su - testuser -c "export PATH=\"\$HOME/.local/bin:\$PATH\" && cd '$GITHUB_WORKSPACE' && ./packaging/install.sh --dry-run"
+          su - testuser -c "export PATH=\"\$HOME/.local/bin:\$PATH\" && cd '$GITHUB_WORKSPACE' && ./packaging/install.sh --uninstall --dry-run"
+          su - testuser -c "export PATH=\"\$HOME/.local/bin:\$PATH\" && cd '$GITHUB_WORKSPACE' && ./packaging/install.sh --uninstall --purge --dry-run"

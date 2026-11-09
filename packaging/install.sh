@@ -293,32 +293,42 @@ fi
 # ---- systemd ----
 if have_user_manager; then
   say "Updating the systemd user manager"
-  run systemctl --user daemon-reload
-  # A unit outside systemd's search path (an unusual --prefix) is enabled by its full path.
-  unit_ref="smartconnectd.service"
-  if command -v systemd-analyze >/dev/null 2>&1 \
-    && ! systemd-analyze --user unit-paths 2>/dev/null | grep -qxF "$UNIT_DIR"; then
-    unit_ref="$UNIT"
-    warn "$UNIT_DIR is not in systemd's user unit search path; --enable links $UNIT"
-  fi
-  if [ "$ENABLE" = 1 ]; then
-    if systemctl --user is-active --quiet smartconnectd.service; then
-      run systemctl --user enable "$unit_ref"
-      run systemctl --user restart smartconnectd.service
-      did "service enabled and restarted with the new build"
-    elif pgrep -u "$(id -u)" -x smartconnectd >/dev/null 2>&1; then
-      run systemctl --user enable "$unit_ref"
-      warn "a smartconnectd you started by hand is running and holds port 52020: stop it, then run"
-      echo "      systemctl --user start smartconnectd"
-    else
-      run systemctl --user enable --now "$unit_ref"
-      did "service enabled and started"
+  if ! run systemctl --user daemon-reload; then
+    warn "systemctl --user daemon-reload failed: skipping service enable/start"
+  else
+    # A unit outside systemd's search path (an unusual --prefix) is enabled by its full path.
+    unit_ref="smartconnectd.service"
+    if command -v systemd-analyze >/dev/null 2>&1 \
+      && ! systemd-analyze --user unit-paths 2>/dev/null | grep -qxF "$UNIT_DIR"; then
+      unit_ref="$UNIT"
+      warn "$UNIT_DIR is not in systemd's user unit search path; --enable links $UNIT"
     fi
-  elif systemctl --user is-active --quiet smartconnectd.service; then
-    warn "the service is running the previous build: systemctl --user restart smartconnectd"
+    if [ "$ENABLE" = 1 ]; then
+      if systemctl --user is-active --quiet smartconnectd.service 2>/dev/null; then
+        run systemctl --user enable "$unit_ref" || warn "failed to enable $unit_ref"
+        run systemctl --user restart smartconnectd.service || warn "failed to restart smartconnectd.service"
+        did "service enabled and restarted with the new build"
+      elif pgrep -u "$(id -u)" -x smartconnectd >/dev/null 2>&1; then
+        run systemctl --user enable "$unit_ref" || warn "failed to enable $unit_ref"
+        warn "a smartconnectd you started by hand is running and holds port 52020: stop it, then run"
+        echo "      systemctl --user start smartconnectd"
+      else
+        if run systemctl --user enable --now "$unit_ref"; then
+          did "service enabled and started"
+        else
+          warn "could not enable/start $unit_ref via systemd user manager"
+        fi
+      fi
+    elif systemctl --user is-active --quiet smartconnectd.service 2>/dev/null; then
+      warn "the service is running the previous build: systemctl --user restart smartconnectd"
+    fi
   fi
 else
-  warn "no systemd user manager reachable: start smartconnectd from your session's autostart instead"
+  if [ "$ENABLE" = 1 ]; then
+    warn "no systemd user manager reachable: skipping service enable/start (start smartconnectd from your session's autostart instead)"
+  else
+    warn "no systemd user manager reachable: start smartconnectd from your session's autostart instead"
+  fi
 fi
 
 # ---- environment checks ----
