@@ -121,6 +121,8 @@ pub struct Daemon {
     active_sessions: AtomicUsize,
     /// Last seen `/readyfor/mdns` endpoint per paired phone (from its mDNS advert).
     phone_mdns: Mutex<HashMap<String, SocketAddr>>,
+    /// Last seen certificate fingerprint per paired phone (from its mDNS TXT advert).
+    phone_fps: Mutex<HashMap<String, String>>,
     endpoints_path: PathBuf,
     /// When the phone last closed a session itself (e.g. the user tapped Disconnect).
     /// Set by an explicit Disconnect (phone `cmd 6` or desktop); cleared by any Connect. While set,
@@ -225,6 +227,7 @@ impl Daemon {
             clipboard: LocalClipboard::new(),
             active_sessions: AtomicUsize::new(0),
             phone_mdns: Mutex::new(endpoints),
+            phone_fps: Mutex::new(HashMap::new()),
             endpoints_path,
             user_disconnected: std::sync::atomic::AtomicBool::new(false),
             phone_said_bye: std::sync::atomic::AtomicBool::new(false),
@@ -514,7 +517,7 @@ impl Daemon {
             .filter(|a| a.ip() != ip)
             .map(|a| SocketAddr::new(ip, a.port()));
         if let Some(addr) = moved {
-            self.remember_phone_mdns(phone, addr);
+            self.remember_phone_mdns(phone, addr, None);
         }
     }
 
@@ -533,17 +536,28 @@ impl Daemon {
         self.user_disconnected.store(false, Ordering::SeqCst);
     }
 
-    pub fn known_phone_endpoints(&self) -> Vec<(String, SocketAddr)> {
+    pub fn known_phone_endpoints(&self) -> Vec<(String, SocketAddr, Option<String>)> {
+        let fps = self.phone_fps.lock().unwrap();
         self.phone_mdns
             .lock()
             .unwrap()
             .iter()
-            .map(|(p, a)| (p.clone(), *a))
+            .map(|(p, a)| (p.clone(), *a, fps.get(p).cloned()))
             .collect()
     }
 
-    pub fn remember_phone_mdns(&self, phone: &str, addr: SocketAddr) {
+    pub fn phone_fingerprint(&self, phone: &str) -> Option<String> {
+        self.phone_fps.lock().unwrap().get(phone).cloned()
+    }
+
+    pub fn remember_phone_mdns(&self, phone: &str, addr: SocketAddr, fp: Option<&str>) {
         *self.phone_ip.lock().unwrap() = Some(addr.ip());
+        if let Some(fp) = fp {
+            self.phone_fps
+                .lock()
+                .unwrap()
+                .insert(phone.to_owned(), fp.to_owned());
+        }
         let mut map = self.phone_mdns.lock().unwrap();
         if map.insert(phone.to_owned(), addr) != Some(addr)
             && let Ok(json) = serde_json::to_vec_pretty(&*map)
@@ -1084,9 +1098,10 @@ fn schedule_post_pair_dial(daemon: &Daemon, phone_id: &str) {
     let invite =
         discovery::invite_json(&daemon.identity, &token, &daemon.ips(), daemon.ws_port).to_string();
     let phone = phone_id.to_owned();
+    let fp = daemon.phone_fingerprint(phone_id);
     tokio::spawn(async move {
         tokio::time::sleep(Duration::from_secs(5)).await;
-        if let Err(e) = discovery::push_invite(addr, &id, &key, &invite).await {
+        if let Err(e) = discovery::push_invite(addr, &id, &key, &invite, fp.as_deref()).await {
             warn!(%addr, %phone, "post-pair dial-back failed: {e:#}");
         }
     });
