@@ -1,7 +1,7 @@
 {
   "id": "smart-connect",
   "name": "Smart Connect",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "minNoctaliaVersion": "4.4.0",
   "author": "vemru",
   "official": false,

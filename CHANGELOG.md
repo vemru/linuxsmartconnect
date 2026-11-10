@@ -8,6 +8,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). The READM
 
 ### [Unreleased]
 
+## [0.3.2] - 2026-11-10
+
+### Security & Packaging
+
+- **Fail-Closed Advertised Fingerprint Verification:** Enforced fail-closed validation on advertised mDNS TLS certificate fingerprints (`fp=...`) in `src/discovery.rs`. Malformed or non-decodable fingerprint strings now explicitly reject TLS certificate verification (`rustls::CertificateError::ApplicationVerificationFailure`) rather than silently falling back to unpinned acceptance.
+- **Standalone Release Tarball Packaging:** Bundled complete desktop assets into the release distribution tarball, including `smartconnectd.service`, `.desktop` application launchers, scalable SVG icons, and `packaging/install.sh` / `uninstall.sh`.
+
 ## [0.3.1] - 2026-11-09
 
 ### Security & Hardening
