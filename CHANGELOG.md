@@ -8,6 +8,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). The READM
 
 ### [Unreleased]
 
+## [0.3.1] - 2026-11-09
+
+### Security & Hardening
+
+- **Discovery TLS Fingerprint Pinning:** Pinned advertised SHA-256 certificate fingerprints from mDNS TXT `fp=...` records in `src/discovery.rs` during invite push verification, replacing permissive `AcceptAny` (#9, closes #1).
+- **Harmonized UNIX Socket Fallback Paths:** Standardized socket path resolution across `SmartConnect.qml`, `packaging/smartconnect-share`, `desktop/mirror_prototype.py`, and `gui/src/display.rs` to securely fall back to `$XDG_STATE_HOME/smartconnect-linux/run` (mode 0700), eliminating all `/tmp` socket fallbacks (#10, closes #2).
+- **Zenity Overwrite Confirmation:** Added `--confirm-overwrite` to the fallback zenity file chooser in `src/share.rs` to protect against accidental file overwriting when `xdg-desktop-portal` is unavailable (#11, closes #3).
+- **Mirror Control Socket EUID Validation:** Enforced `SO_PEERCRED` validation in `mirror/src/main.rs:serve_control`, rejecting connections whose peer credentials do not match `libc::geteuid()` (#12, closes #4).
+- **CI Smoke Test Hardening:** Hardened CI container smoke tests across Arch Linux, Fedora 40, and Ubuntu 24.04 with unprivileged test user execution (#8).
+
 ## [0.3.0] - 2026-11-09
 
 ### Added
