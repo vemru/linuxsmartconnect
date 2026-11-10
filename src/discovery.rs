@@ -416,26 +416,40 @@ fn parse_resolved(line: &str) -> Option<(SocketAddr, String, Option<String>)> {
     Some((addr, device_id, fp))
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum ExpectedFingerprint {
+    None,
+    Pinned([u8; 32]),
+    Invalid,
+}
+
 #[derive(Debug)]
 pub struct FingerprintVerifier {
-    expected: Option<[u8; 32]>,
+    expected: ExpectedFingerprint,
 }
 
 impl FingerprintVerifier {
     pub fn new(expected_fp: Option<&str>) -> Self {
-        let expected = expected_fp.and_then(|s| {
-            let s = s.trim();
-            if s.len() == 64 {
-                hex::decode(s).ok().and_then(|v| v.try_into().ok())
-            } else if s.len() == 44 {
-                B64.decode(s).ok().and_then(|v| v.try_into().ok())
-            } else {
-                hex::decode(s)
-                    .ok()
-                    .and_then(|v| v.try_into().ok())
-                    .or_else(|| B64.decode(s).ok().and_then(|v| v.try_into().ok()))
+        let expected = match expected_fp {
+            None => ExpectedFingerprint::None,
+            Some(s) => {
+                let s = s.trim();
+                let decoded: Option<[u8; 32]> = if s.len() == 64 {
+                    hex::decode(s).ok().and_then(|v| v.try_into().ok())
+                } else if s.len() == 44 {
+                    B64.decode(s).ok().and_then(|v| v.try_into().ok())
+                } else {
+                    hex::decode(s)
+                        .ok()
+                        .and_then(|v| v.try_into().ok())
+                        .or_else(|| B64.decode(s).ok().and_then(|v| v.try_into().ok()))
+                };
+                match decoded {
+                    Some(bytes) => ExpectedFingerprint::Pinned(bytes),
+                    None => ExpectedFingerprint::Invalid,
+                }
             }
-        });
+        };
         Self { expected }
     }
 }
@@ -449,20 +463,29 @@ impl ServerCertVerifier for FingerprintVerifier {
         _: &[u8],
         _: UnixTime,
     ) -> Result<ServerCertVerified, rustls::Error> {
-        if let Some(expected) = &self.expected {
-            let actual: [u8; 32] = Sha256::digest(end_entity.as_ref()).into();
-            if &actual != expected {
-                warn!(
-                    actual = %hex::encode(actual),
-                    expected = %hex::encode(expected),
-                    "discovery TLS cert fingerprint mismatch"
-                );
+        match self.expected {
+            ExpectedFingerprint::Pinned(expected) => {
+                let actual: [u8; 32] = Sha256::digest(end_entity.as_ref()).into();
+                if actual != expected {
+                    warn!(
+                        actual = %hex::encode(actual),
+                        expected = %hex::encode(expected),
+                        "discovery TLS cert fingerprint mismatch"
+                    );
+                    return Err(rustls::Error::InvalidCertificate(
+                        rustls::CertificateError::ApplicationVerificationFailure,
+                    ));
+                }
+            }
+            ExpectedFingerprint::Invalid => {
+                warn!("discovery TLS cert verification failed: malformed advertised fingerprint");
                 return Err(rustls::Error::InvalidCertificate(
                     rustls::CertificateError::ApplicationVerificationFailure,
                 ));
             }
-        } else {
-            debug!("discovery TLS cert verification: no expected fingerprint pinned; allowing");
+            ExpectedFingerprint::None => {
+                debug!("discovery TLS cert verification: no expected fingerprint pinned; allowing");
+            }
         }
         Ok(ServerCertVerified::assertion())
     }
@@ -575,6 +598,14 @@ mod tests {
             v_none
                 .verify_server_cert(&cert, &[], &server_name, &[], UnixTime::now())
                 .is_ok()
+        );
+
+        // Malformed fp fails closed
+        let v_malformed = FingerprintVerifier::new(Some("not-valid-hex-or-b64!"));
+        assert!(
+            v_malformed
+                .verify_server_cert(&cert, &[], &server_name, &[], UnixTime::now())
+                .is_err()
         );
     }
 }

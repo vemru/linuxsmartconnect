@@ -1,6 +1,6 @@
 # smartconnect-linux
 
-[![Version](https://img.shields.io/badge/version-v0.3.0-blue.svg)](https://github.com/vemru/linuxsmartconnect/releases/tag/v0.3.0)
+[![Version](https://img.shields.io/badge/version-v0.3.1-blue.svg)](https://github.com/vemru/linuxsmartconnect/releases/tag/v0.3.1)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-yellow.svg)](LICENSE-MIT)
 [![Platform: Linux](https://img.shields.io/badge/platform-Linux%20%28Wayland%29-green.svg)](docs/installation.md)
 [![Rust: 1.80+](https://img.shields.io/badge/rust-1.80%2B-orange.svg)](https://www.rust-lang.org)
