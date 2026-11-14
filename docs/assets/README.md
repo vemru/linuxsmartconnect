@@ -18,7 +18,7 @@ This directory contains interface preview screenshots used across project docume
 The original captures contained uncompressed full-resolution bitmaps (22.8 MB total) and exposed personal metadata. Replacement captures must strictly adhere to the following sanitization rules:
 
 1. **Device Identification**:
-   - Do **not** show real hardware device names or serials (e.g. replace `"My Edge 50 neo"` with a generic label like `"Motorola Phone"` or `"Android Device"`).
+   - Do **not** show real hardware device names or serials (e.g. use generic labels like `"Motorola Phone"` or `"Android Device"`).
    - Ensure Bluetooth MAC addresses and local IP addresses are either obscured or set to standard test ranges (e.g. `192.168.1.100` / `00:11:22:33:44:55`).
 
 2. **Application List (`apps-page.png`)**:

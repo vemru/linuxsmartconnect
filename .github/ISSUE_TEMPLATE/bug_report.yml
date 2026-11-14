@@ -57,7 +57,7 @@ body:
         - Desktop Environment: (e.g. GNOME 46, KDE Plasma 6, Hyprland, Sway)
         - Session Type: (Wayland / X11)
         - smartconnect-linux version: (e.g. v0.2.2 or git commit SHA)
-        - Phone Model: (e.g. Motorola Edge 50 Neo)
+        - Phone Model: (e.g. Motorola Edge — your model)
         - Android Version: (e.g. Android 14)
         - Smart Connect App Version:
     validations:

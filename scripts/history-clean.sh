@@ -85,8 +85,15 @@ fi
 echo "[ok] Zero historical commits touching .notes/ or docs/assets/*.png"
 
 # Check 2: Grep commit patches for personal path leaks (excluding this verification script itself)
-LEAK_PATTERN="/home/""vamshi"
-REMAINING_LEAKS=$(git -C "$TEMP_CLONE" log -p --all -- . ':!scripts/history-clean.sh' | grep "$LEAK_PATTERN" || true)
+CURRENT_USER="${USER:-$(id -un 2>/dev/null || whoami 2>/dev/null || echo "")}"
+USER_HOME="${HOME:-/home/${CURRENT_USER}}"
+# Literal (-F) patterns: a regex built from $USER/$HOME breaks on a name with regex
+# metacharacters, and a silently widened or failed match defeats the whole check.
+LEAK_GREP=(-F -e "$USER_HOME")
+if [ -n "$CURRENT_USER" ] && [ "$CURRENT_USER" != "root" ] && [ "$CURRENT_USER" != "user" ]; then
+  LEAK_GREP+=(-e "/home/${CURRENT_USER}")
+fi
+REMAINING_LEAKS=$(git -C "$TEMP_CLONE" log -p --all -- . ':!scripts/history-clean.sh' | grep "${LEAK_GREP[@]}" || true)
 if [ -n "$REMAINING_LEAKS" ]; then
   echo "[x] Verification failed: personal path still found in commit diffs:" >&2
   echo "$REMAINING_LEAKS" >&2
