@@ -52,7 +52,10 @@ pub fn target(head: &[u8]) -> Option<&str> {
 
 /// Whether `target` is one of the fex routes.
 pub fn is_fex(target: &str) -> bool {
-    matches!(target.split('?').next(), Some("/websocket" | "/download"))
+    matches!(
+        target.split('?').next(),
+        Some("/websocket" | "/download" | "/downloadFile")
+    )
 }
 
 /// Whether `peer` is the phone's current session address. fex offers exist only for the connected
@@ -176,6 +179,7 @@ mod tests {
         let head = b"GET /download?taskId=abc&token=x HTTP/1.1\r\nHost: pc\r\n\r\n";
         assert_eq!(target(head), Some("/download?taskId=abc&token=x"));
         assert!(is_fex("/download?taskId=abc"));
+        assert!(is_fex("/downloadFile?taskId=abc"));
         assert!(is_fex("/websocket"));
         assert!(!is_fex("/readyfor/"));
         assert!(!is_fex("/readyfor/mdns?x=1"));

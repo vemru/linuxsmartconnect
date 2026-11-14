@@ -739,6 +739,60 @@ impl LocalFs {
         cache.insert(key, jpeg.clone());
         Some(jpeg)
     }
+
+    /// Returns the file attributes for a path (`GETATTRPATH`, proc 24).
+    pub fn getattr_path(&self, path: &str, label: &str) -> Result<fattr3, nfsstat3> {
+        let target = self
+            .resolve_phone_path(path, label)
+            .ok_or(nfsstat3::NFS3ERR_NOENT)?;
+        let meta = std::fs::symlink_metadata(&target).map_err(|_| nfsstat3::NFS3ERR_NOENT)?;
+        let id = self.intern(target);
+        Ok(metadata_to_fattr3(id, &meta))
+    }
+
+    /// Reads bytes from a path (`READPATH`, proc 25).
+    pub fn read_path(
+        &self,
+        path: &str,
+        label: &str,
+        offset: u64,
+        count: u32,
+    ) -> Result<(fattr3, Vec<u8>, bool), nfsstat3> {
+        let target = self
+            .resolve_phone_path(path, label)
+            .ok_or(nfsstat3::NFS3ERR_NOENT)?;
+        let meta = std::fs::symlink_metadata(&target).map_err(|_| nfsstat3::NFS3ERR_NOENT)?;
+        if meta.is_dir() {
+            return Err(nfsstat3::NFS3ERR_ISDIR);
+        }
+        let id = self.intern(target.clone());
+        let attr = metadata_to_fattr3(id, &meta);
+        let mut f = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(&target)
+            .map_err(|_| nfsstat3::NFS3ERR_IO)?;
+        let len = f.metadata().map_err(|_| nfsstat3::NFS3ERR_IO)?.len();
+        if offset >= len {
+            return Ok((attr, Vec::new(), true));
+        }
+        f.seek(SeekFrom::Start(offset))
+            .map_err(|_| nfsstat3::NFS3ERR_IO)?;
+        let want = u64::from(count).min(len - offset) as usize;
+        let mut buf = vec![0u8; want];
+        let mut filled = 0;
+        while filled < want {
+            match f.read(&mut buf[filled..]) {
+                Ok(0) => break,
+                Ok(n) => filled += n,
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(_) => return Err(nfsstat3::NFS3ERR_IO),
+            }
+        }
+        buf.truncate(filled);
+        let eof = offset + filled as u64 >= len;
+        Ok((attr, buf, eof))
+    }
 }
 
 /// A JPEG of `file` scaled to fit [`THUMB_SIZE`].

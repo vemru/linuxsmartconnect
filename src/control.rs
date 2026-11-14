@@ -235,12 +235,17 @@ async fn handle(daemon: Arc<Daemon>, stream: UnixStream) -> Result<()> {
                 }
             }
             l if l.starts_with("send_file") => {
-                let parts: Vec<&str> = l.split_whitespace().collect();
-                if parts.len() < 2 {
+                let rest = l.strip_prefix("send_file").unwrap_or("").trim();
+                let paths: Vec<std::path::PathBuf> = if rest.is_empty() {
+                    Vec::new()
+                } else if std::path::Path::new(rest).exists() {
+                    vec![std::path::PathBuf::from(rest)]
+                } else {
+                    rest.split_whitespace().map(std::path::PathBuf::from).collect()
+                };
+                if paths.is_empty() {
                     json!({ "ok": false, "message": "usage: send_file <path>..." }).to_string()
                 } else {
-                    let paths: Vec<std::path::PathBuf> =
-                        parts[1..].iter().map(std::path::PathBuf::from).collect();
                     match daemon.send_files(&paths) {
                         Ok((task_id, count)) => json!({ "ok": true, "message": format!("offered {count} file(s) to phone"), "taskId": task_id }).to_string(),
                         Err(e) => json!({ "ok": false, "message": format!("{e:#}") }).to_string(),

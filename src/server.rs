@@ -422,7 +422,7 @@ impl Daemon {
             );
         }
 
-        let frame = json!({
+        let mut frame = json!({
             "ver": "1.0",
             "cmd": 1,
             "serviceId": 2,
@@ -432,7 +432,19 @@ impl Daemon {
             "token": offer.token,
             "fexId": 0,
             "autoDownload": true,
+            "fileName": offer.request.file_name,
+            "filePath": offer.request.file_name,
+            "name": offer.request.file_name,
+            "text": offer.request.file_name,
+            "fileCount": count,
+            "totalSize": offer.request.total_size,
+            "mimeType": offer.request.mime_type,
         });
+        if let Some(ip) = self.status.pc_address() {
+            if let Some(obj) = frame.as_object_mut() {
+                obj.insert("ip".to_string(), json!(ip));
+            }
+        }
 
         let _ = self.to_phone.send((2, frame));
         Ok((offer.task_id.clone(), count))

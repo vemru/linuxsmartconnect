@@ -87,6 +87,10 @@ impl StatusHub {
         serde_json::to_string(&*self.state.lock().unwrap()).unwrap_or_default()
     }
 
+    pub fn pc_address(&self) -> Option<String> {
+        self.state.lock().unwrap().pc_address.clone()
+    }
+
     pub fn device_id(&self) -> Option<String> {
         self.state.lock().unwrap().device_id.clone()
     }

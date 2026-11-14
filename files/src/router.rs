@@ -35,6 +35,8 @@ use crate::server::{NFS_PROGRAM, ZERO_ROOT_LEN, be32, hex, pad4, rewrite_zero_ro
 /// Lenovo's NFS procedure numbers (the phone's own server has them as procedures 22–29).
 const PROC_READTHUMBNAIL: u32 = 22;
 const PROC_READCATEGORYDIR: u32 = 23;
+const PROC_GETATTRPATH: u32 = 24;
+const PROC_READPATH: u32 = 25;
 const PROC_REMOVEBATCH: u32 = 27;
 /// `READTHUMBNAIL` status when there is no thumbnail (the phone's own server's value).
 const THUMB_NONE: u32 = 100;
@@ -176,6 +178,15 @@ enum LenovoCall {
     },
     /// `READTHUMBNAIL`: an image path (share-relative or prefixed, see [`LocalFs::resolve_phone_path`]).
     Thumbnail { xid: u32, path: String },
+    /// `GETATTRPATH`: a file path to stat.
+    GetAttrPath { xid: u32, path: String },
+    /// `READPATH`: a file path to read by path, with offset and count.
+    ReadPath {
+        xid: u32,
+        path: String,
+        offset: u64,
+        count: u32,
+    },
     /// `REMOVEBATCH`: a JSON array of paths.
     RemoveBatch { xid: u32, paths_json: String },
 }
@@ -194,7 +205,15 @@ fn parse_lenovo_call(frag: &[u8]) -> Option<LenovoCall> {
         return None;
     }
     let proc_ = be32(body, 20)?;
-    if ![PROC_READTHUMBNAIL, PROC_READCATEGORYDIR, PROC_REMOVEBATCH].contains(&proc_) {
+    if ![
+        PROC_READTHUMBNAIL,
+        PROC_READCATEGORYDIR,
+        PROC_GETATTRPATH,
+        PROC_READPATH,
+        PROC_REMOVEBATCH,
+    ]
+    .contains(&proc_)
+    {
         return None;
     }
     let xid = be32(body, 0)?;
@@ -219,6 +238,32 @@ fn parse_lenovo_call(frag: &[u8]) -> Option<LenovoCall> {
             LenovoCall::Thumbnail {
                 xid,
                 path: String::from_utf8_lossy(path).into_owned(),
+            }
+        }
+        PROC_GETATTRPATH => {
+            let (path, _) = opaque(body, args)?;
+            LenovoCall::GetAttrPath {
+                xid,
+                path: String::from_utf8_lossy(path).into_owned(),
+            }
+        }
+        PROC_READPATH => {
+            let (path, at) = opaque(body, args)?;
+            let (offset, count) = if body.len() >= at + 12 {
+                (
+                    u64::from_be_bytes(body[at..at + 8].try_into().ok()?),
+                    be32(body, at + 8)?,
+                )
+            } else if body.len() >= at + 8 {
+                (be32(body, at)? as u64, be32(body, at + 4)?)
+            } else {
+                return None;
+            };
+            LenovoCall::ReadPath {
+                xid,
+                path: String::from_utf8_lossy(path).into_owned(),
+                offset,
+                count,
             }
         }
         _ => {
@@ -257,6 +302,27 @@ fn answer(call: LenovoCall, s: &Session) -> Vec<u8> {
             Some(jpeg) => opaque_reply(xid, 0, Some(jpeg.as_slice())),
             None => opaque_reply(xid, THUMB_NONE, None),
         },
+        LenovoCall::GetAttrPath { xid, path } => {
+            let result = s.fs.getattr_path(&path, &s.label);
+            debug!(
+                "GETATTRPATH {path:?} -> status {:?}",
+                result.as_ref().err().map(|e| *e as u32).unwrap_or(0)
+            );
+            getattr_path_reply(xid, result)
+        }
+        LenovoCall::ReadPath {
+            xid,
+            path,
+            offset,
+            count,
+        } => {
+            let result = s.fs.read_path(&path, &s.label, offset, count);
+            debug!(
+                "READPATH {path:?} offset {offset} count {count} -> status {:?}",
+                result.as_ref().err().map(|e| *e as u32).unwrap_or(0)
+            );
+            read_path_reply(xid, result)
+        }
         LenovoCall::RemoveBatch { xid, paths_json } => {
             if !s.allow_delete {
                 tracing::info!("refused a delete from the phone (the share is read-only)");
@@ -356,9 +422,89 @@ fn category_reply(
     record(body)
 }
 
+fn write_fattr3(body: &mut Vec<u8>, attr: &nfs3_server::nfs3_types::nfs3::fattr3) {
+    let put32 = |b: &mut Vec<u8>, v: u32| b.extend_from_slice(&v.to_be_bytes());
+    let put64 = |b: &mut Vec<u8>, v: u64| b.extend_from_slice(&v.to_be_bytes());
+    put32(body, attr.type_ as u32);
+    put32(body, attr.mode);
+    put32(body, attr.nlink);
+    put32(body, attr.uid);
+    put32(body, attr.gid);
+    put64(body, attr.size);
+    put64(body, attr.used);
+    put32(body, attr.rdev.specdata1);
+    put32(body, attr.rdev.specdata2);
+    put64(body, attr.fsid);
+    put64(body, attr.fileid);
+    put32(body, attr.atime.seconds);
+    put32(body, attr.atime.nseconds);
+    put32(body, attr.mtime.seconds);
+    put32(body, attr.mtime.nseconds);
+    put32(body, attr.ctime.seconds);
+    put32(body, attr.ctime.nseconds);
+}
+
+fn getattr_path_reply(
+    xid: u32,
+    result: Result<nfs3_server::nfs3_types::nfs3::fattr3, nfs3_server::nfs3_types::nfs3::nfsstat3>,
+) -> Vec<u8> {
+    let mut body = reply_header(xid);
+    match result {
+        Ok(attr) => {
+            body.extend_from_slice(&0u32.to_be_bytes()); // NFS3_OK
+            write_fattr3(&mut body, &attr);
+        }
+        Err(stat) => {
+            body.extend_from_slice(&(stat as u32).to_be_bytes());
+        }
+    }
+    record(body)
+}
+
+fn read_path_reply(
+    xid: u32,
+    result: Result<(nfs3_server::nfs3_types::nfs3::fattr3, Vec<u8>, bool), nfs3_server::nfs3_types::nfs3::nfsstat3>,
+) -> Vec<u8> {
+    let mut body = reply_header(xid);
+    let put32 = |b: &mut Vec<u8>, v: u32| b.extend_from_slice(&v.to_be_bytes());
+    match result {
+        Ok((attr, data, eof)) => {
+            put32(&mut body, 0); // NFS3_OK
+            put32(&mut body, 1); // attributes_follow = TRUE
+            write_fattr3(&mut body, &attr);
+            put32(&mut body, data.len() as u32); // count
+            put32(&mut body, if eof { 1 } else { 0 }); // eof
+            put32(&mut body, data.len() as u32); // opaque len
+            body.extend_from_slice(&data);
+            body.resize(body.len() + pad4(data.len()) - data.len(), 0);
+        }
+        Err(stat) => {
+            put32(&mut body, stat as u32);
+            put32(&mut body, 0); // attributes_follow = FALSE
+        }
+    }
+    record(body)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn check_fattr3_and_replies() {
+        let meta = std::fs::metadata("Cargo.toml").unwrap();
+        let attr = nfs3_server::fs_util::metadata_to_fattr3(1, &meta);
+        let mut b = Vec::new();
+        write_fattr3(&mut b, &attr);
+        assert_eq!(b.len(), 84);
+
+        let get_rep = getattr_path_reply(1, Ok(attr.clone()));
+        assert_eq!(get_rep.len(), 4 + 24 + 4 + 84);
+
+        let read_rep = read_path_reply(2, Ok((attr, b"hello".to_vec(), true)));
+        // 4 (marker) + 24 (hdr) + 4 (stat) + 4 (attr_follow) + 84 (fattr3) + 4 (count) + 4 (eof) + 4 (opaque len) + 8 (data padded)
+        assert_eq!(read_rep.len(), 4 + 24 + 4 + 4 + 84 + 4 + 4 + 4 + 8);
+    }
 
     /// An NFSv3 call shaped like the phone's (AUTH_UNIX "localhost", no verifier) with raw `args`.
     fn call_with(xid: u32, proc_: u32, args: &[u8]) -> Vec<u8> {
@@ -423,6 +569,28 @@ mod tests {
                 paths_json: String::from_utf8_lossy(json).into_owned()
             })
         );
+
+        assert_eq!(
+            parse_lenovo_call(&call_with(7, PROC_GETATTRPATH, &xdr_opaque(b"/foo.pdf"))),
+            Some(LenovoCall::GetAttrPath {
+                xid: 7,
+                path: "/foo.pdf".into()
+            })
+        );
+
+        let mut read_args = xdr_opaque(b"/foo.pdf");
+        read_args.extend_from_slice(&100u64.to_be_bytes()); // offset
+        read_args.extend_from_slice(&4096u32.to_be_bytes()); // count
+        assert_eq!(
+            parse_lenovo_call(&call_with(8, PROC_READPATH, &read_args)),
+            Some(LenovoCall::ReadPath {
+                xid: 8,
+                path: "/foo.pdf".into(),
+                offset: 100,
+                count: 4096,
+            })
+        );
+
         // A standard procedure is left to nfs3_server.
         assert!(parse_lenovo_call(&call_with(1, 17, &xdr_opaque(&[0; 64]))).is_none());
     }

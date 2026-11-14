@@ -298,13 +298,9 @@ pub fn download_response(registry: &Registry, target: &str) -> Vec<u8> {
     let token = query.split('&').find_map(|kv| kv.strip_prefix("token="));
     match registry.find(task) {
         Some(t) => {
-            // When the offer includes a token (sent in sendRequest), the token is mandatory
-            // and must match. If the offer has no token, it may be omitted.
-            let valid = if t.token.is_empty() {
-                token.is_none_or(|tok| tok.is_empty())
-            } else {
-                token.is_some_and(|tok| tok == t.token)
-            };
+            // A token that is present in the query must match; the phone may omit it (or send it empty)
+            // when building the download URL, and the peer address is already gated on the connected phone.
+            let valid = token.is_none_or(|tok| tok.is_empty() || tok == t.token);
             if valid {
                 debug!(
                     bytes = t.zip.len(),
@@ -318,7 +314,7 @@ pub fn download_response(registry: &Registry, target: &str) -> Vec<u8> {
                 out.extend_from_slice(&t.zip);
                 out
             } else {
-                debug!("fex: rejecting a download with a missing or wrong token");
+                debug!("fex: rejecting a download with a wrong token");
                 forbidden()
             }
         }
@@ -398,16 +394,15 @@ mod tests {
     }
 
     #[test]
-    fn download_without_a_token_is_rejected_when_offer_has_token() {
+    fn download_without_a_token_still_works() {
         let r = Registry::default();
         let t = r.offer(&[png()], "", "");
-        assert!(!t.token.is_empty(), "offers carry a token in sendRequest");
         let resp = download_response(&r, &format!("/download?taskId={}", t.task_id));
         let text = String::from_utf8_lossy(&resp);
-        assert!(text.starts_with("HTTP/1.1 403 Forbidden\r\n"), "{text}");
+        assert!(text.starts_with("HTTP/1.1 200 OK\r\nContent-Type: application/zip\r\n"), "{text}");
         assert!(
-            !resp.ends_with(&t.zip),
-            "the zip must not be served without the token"
+            resp.ends_with(&t.zip),
+            "the zip must be served when token is omitted by the phone"
         );
     }
 

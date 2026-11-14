@@ -319,15 +319,14 @@ async fn main() -> Result<()> {
         }
 
         if let Cmd::Send { device: _, paths } = &cmd {
-            let line_cmd = format!(
-                "send_file {}",
-                paths
+            let req = serde_json::json!({
+                "cmd": "send_file",
+                "paths": paths
                     .iter()
                     .map(|p| p.to_string_lossy().to_string())
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            );
-            match smartconnect::control::query(&line_cmd).await {
+                    .collect::<Vec<_>>(),
+            });
+            match smartconnect::control::query(&req.to_string()).await {
                 Ok(reply) => {
                     let ok = reply
                         .get("ok")
