@@ -241,7 +241,9 @@ async fn handle(daemon: Arc<Daemon>, stream: UnixStream) -> Result<()> {
                 } else if std::path::Path::new(rest).exists() {
                     vec![std::path::PathBuf::from(rest)]
                 } else {
-                    rest.split_whitespace().map(std::path::PathBuf::from).collect()
+                    rest.split_whitespace()
+                        .map(std::path::PathBuf::from)
+                        .collect()
                 };
                 if paths.is_empty() {
                     json!({ "ok": false, "message": "usage: send_file <path>..." }).to_string()
