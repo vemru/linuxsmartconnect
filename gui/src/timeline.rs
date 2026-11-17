@@ -233,8 +233,8 @@ impl TimelinePage {
 
         for item in items {
             let row = adw::ActionRow::builder()
-                .title(&item.title)
-                .subtitle(&item.detail)
+                .title(crate::markup::escape(&item.title))
+                .subtitle(crate::markup::escape(&item.detail))
                 .build();
 
             let icon_name = match item.kind.as_str() {

@@ -1344,7 +1344,7 @@ impl Ui {
         };
         let output_row = adw::ActionRow::builder()
             .title("Output device")
-            .subtitle(&output_sub)
+            .subtitle(crate::markup::escape(&output_sub))
             .build();
         output_row.add_prefix(&gtk::Image::from_icon_name("camera-web-symbolic"));
         if output_info.is_none() {

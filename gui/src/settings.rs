@@ -61,8 +61,9 @@ impl SettingsPage {
         header.append(&subtitle);
         root.append(&header);
 
+        // PreferencesGroup titles are Pango markup; a bare '&' would be rejected and blank the title.
         let group = adw::PreferencesGroup::builder()
-            .title("Connectivity & Sync")
+            .title("Connectivity &amp; Sync")
             .build();
 
         let clipboard_row = adw::SwitchRow::builder()
@@ -82,7 +83,7 @@ impl SettingsPage {
         root.append(&group);
 
         let group_media = adw::PreferencesGroup::builder()
-            .title("Screen & Video")
+            .title("Screen &amp; Video")
             .build();
 
         let mirror_row = adw::SwitchRow::builder()
@@ -116,7 +117,7 @@ impl SettingsPage {
         root.append(&group_media);
 
         let group_sensitive = adw::PreferencesGroup::builder()
-            .title("Advanced & File Access (Sensitive)")
+            .title("Advanced &amp; File Access (Sensitive)")
             .description("These features allow remote input injection or filesystem exposure.")
             .build();
 

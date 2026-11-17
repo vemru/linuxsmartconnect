@@ -82,8 +82,10 @@ impl DiagnosticsPage {
             .hscrollbar_policy(gtk::PolicyType::Never)
             .build();
 
+        // PreferencesGroup titles are Pango markup, so a bare '&' is invalid and leaves the title
+        // empty; escape it.
         let group = adw::PreferencesGroup::builder()
-            .title("System & Network Checks")
+            .title("System &amp; Network Checks")
             .build();
 
         scrolled.set_child(Some(&group));
@@ -178,8 +180,8 @@ impl DiagnosticsPage {
 
         for check in &report.checks {
             let row = adw::ActionRow::builder()
-                .title(&check.title)
-                .subtitle(&check.detail)
+                .title(crate::markup::escape(&check.title))
+                .subtitle(crate::markup::escape(&check.detail))
                 .build();
 
             let (icon_name, css) = match check.status {
