@@ -9,6 +9,7 @@ mod files;
 mod icons;
 mod lastdevice;
 mod lifecycle;
+mod markup;
 mod mirror;
 mod palette;
 mod photos;

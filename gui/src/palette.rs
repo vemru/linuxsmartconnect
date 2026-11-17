@@ -310,8 +310,8 @@ impl CommandPalette {
         let mut visible = Vec::new();
         for (_, action) in matches {
             let row = adw::ActionRow::builder()
-                .title(action.title)
-                .subtitle(action.subtitle)
+                .title(crate::markup::escape(action.title))
+                .subtitle(crate::markup::escape(action.subtitle))
                 .build();
             let icon = gtk::Image::from_icon_name(action.icon);
             row.add_prefix(&icon);

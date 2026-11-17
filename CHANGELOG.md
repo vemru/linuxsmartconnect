@@ -10,6 +10,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). The READM
 
 ### Fixed
 
+- **Blank section and row titles when the text contained `&`:** libadwaita parses group titles, row titles and row subtitles as Pango markup, and a bare ampersand makes that parse fail, leaving the label empty. Five section headers ("System & Network Checks", "Connectivity & Sync", "Screen & Video", "Advanced & File Access (Sensitive)") and the Connection Doctor's "Bluetooth adapter & service" check rendered blank. Dynamic text now goes through a shared `markup::escape` helper, so literal `&`, `<` and `>` display correctly with no GTK markup warnings.
 - **Connection Doctor froze the whole app:** Re-rendering the Diagnostics page cleared its rows by walking `AdwPreferencesGroup.first_child()`, which returns the group's internal list box rather than an added row. libadwaita rejected every removal ("tried to remove non-child"), so the clear loop never ended and pinned the GTK main loop at 100% CPU — the window never appeared and launcher/tray activation did nothing. The page now tracks the rows it adds and removes exactly those, so diagnostics render once and the app stays responsive.
 
 ## [0.3.2] - 2026-11-10
