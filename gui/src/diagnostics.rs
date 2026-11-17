@@ -13,6 +13,9 @@ use crate::daemon::{self, CheckStatus, DoctorReport};
 pub struct DiagnosticsPage {
     toasts: adw::ToastOverlay,
     group: adw::PreferencesGroup,
+    /// Rows added to `group`, so a re-render removes exactly those (a tree walk would find the
+    /// group's internal box instead).
+    rows: RefCell<Vec<adw::ActionRow>>,
     summary_label: gtk::Label,
     refresh_btn: gtk::Button,
     copy_btn: gtk::Button,
@@ -89,6 +92,7 @@ impl DiagnosticsPage {
         let page = Rc::new(Self {
             toasts: toasts.clone(),
             group,
+            rows: RefCell::new(Vec::new()),
             summary_label,
             refresh_btn,
             copy_btn,
@@ -143,10 +147,11 @@ impl DiagnosticsPage {
     }
 
     fn render_report(self: &Rc<Self>, report: DoctorReport) {
-        // Clear previous rows
-        while let Some(child) = self.group.first_child() {
-            // adw::PreferencesGroup wraps children
-            self.group.remove(&child);
+        // Clear previous rows. `PreferencesGroup::first_child()` returns the group's internal box,
+        // not an added row, and `remove()` refuses anything that wasn't added through it — so it
+        // has to be our own row list, not a walk of the widget tree.
+        for row in std::mem::take(&mut *self.rows.borrow_mut()) {
+            self.group.remove(&row);
         }
 
         let fails = report
@@ -209,6 +214,7 @@ impl DiagnosticsPage {
             }
 
             self.group.add(&row);
+            self.rows.borrow_mut().push(row);
         }
 
         *self.last_report.borrow_mut() = Some(report);
