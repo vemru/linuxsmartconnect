@@ -399,7 +399,10 @@ mod tests {
         let t = r.offer(&[png()], "", "");
         let resp = download_response(&r, &format!("/download?taskId={}", t.task_id));
         let text = String::from_utf8_lossy(&resp);
-        assert!(text.starts_with("HTTP/1.1 200 OK\r\nContent-Type: application/zip\r\n"), "{text}");
+        assert!(
+            text.starts_with("HTTP/1.1 200 OK\r\nContent-Type: application/zip\r\n"),
+            "{text}"
+        );
         assert!(
             resp.ends_with(&t.zip),
             "the zip must be served when token is omitted by the phone"

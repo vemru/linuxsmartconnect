@@ -463,7 +463,10 @@ fn getattr_path_reply(
 
 fn read_path_reply(
     xid: u32,
-    result: Result<(nfs3_server::nfs3_types::nfs3::fattr3, Vec<u8>, bool), nfs3_server::nfs3_types::nfs3::nfsstat3>,
+    result: Result<
+        (nfs3_server::nfs3_types::nfs3::fattr3, Vec<u8>, bool),
+        nfs3_server::nfs3_types::nfs3::nfsstat3,
+    >,
 ) -> Vec<u8> {
     let mut body = reply_header(xid);
     let put32 = |b: &mut Vec<u8>, v: u32| b.extend_from_slice(&v.to_be_bytes());
