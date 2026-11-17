@@ -102,16 +102,12 @@ fn image_ext(mime: &str) -> &'static str {
 pub fn is_otp_or_sensitive(text: &str) -> bool {
     let t = text.trim();
     // 6-8 digit numeric codes, optionally with a single space or dash (e.g. 123456, 123 456, 123-456, 12345678)
-    if (t.len() == 6 || t.len() == 7 || t.len() == 8 || t.len() == 9)
+    (t.len() == 6 || t.len() == 7 || t.len() == 8 || t.len() == 9)
         && (t.chars().all(|c| c.is_ascii_digit())
             || ((t.len() == 7 || t.len() == 9)
                 && (t.contains(' ') || t.contains('-'))
                 && t.chars()
                     .all(|c| c.is_ascii_digit() || c == ' ' || c == '-')))
-    {
-        return true;
-    }
-    false
 }
 
 /// Per-connection state: after a CLOSE the phone ignores us until it negotiates again.
