@@ -8,6 +8,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). The READM
 
 ### [Unreleased]
 
+## [0.3.3] - 2026-11-17
+
 ### Fixed
 
 - **Blank section and row titles when the text contained `&`:** libadwaita parses group titles, row titles and row subtitles as Pango markup, and a bare ampersand makes that parse fail, leaving the label empty. Five section headers ("System & Network Checks", "Connectivity & Sync", "Screen & Video", "Advanced & File Access (Sensitive)") and the Connection Doctor's "Bluetooth adapter & service" check rendered blank. Dynamic text now goes through a shared `markup::escape` helper, so literal `&`, `<` and `>` display correctly with no GTK markup warnings.
