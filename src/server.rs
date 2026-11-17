@@ -440,10 +440,10 @@ impl Daemon {
             "totalSize": offer.request.total_size,
             "mimeType": offer.request.mime_type,
         });
-        if let Some(ip) = self.status.pc_address() {
-            if let Some(obj) = frame.as_object_mut() {
-                obj.insert("ip".to_string(), json!(ip));
-            }
+        if let Some(ip) = self.status.pc_address()
+            && let Some(obj) = frame.as_object_mut()
+        {
+            obj.insert("ip".to_string(), json!(ip));
         }
 
         let _ = self.to_phone.send((2, frame));
