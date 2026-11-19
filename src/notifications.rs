@@ -19,6 +19,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -39,6 +40,8 @@ const TYPE_CUSTOM_VIEW: i64 = 7;
 const BODY_MAX_CHARS: usize = 600;
 /// At most one desktop update per key in this window; the latest frame wins.
 const UPDATE_MIN_INTERVAL: Duration = Duration::from_millis(1000);
+/// Give the GTK call window this long to announce its presence before a call banner is shown.
+const CALL_PRESENCE_GRACE: Duration = Duration::from_millis(200);
 
 #[zbus::proxy(
     interface = "org.freedesktop.Notifications",
@@ -95,6 +98,12 @@ pub struct Notifier {
     /// The daemon's `watch` stream (`Daemon::from_phone`): clicks are announced there as
     /// [`click_event`]s on [`crate::proto::SERVICE_LOCAL_EVENTS`] for the stream host.
     local_events: broadcast::Sender<PhoneCommand>,
+    /// True while the GTK call window is visible: CallStyle banners are suppressed then.
+    call_ui_visible: AtomicBool,
+    /// Notification keys whose desktop banner is a CallStyle call.
+    call_keys: Mutex<HashSet<String>>,
+    /// Bumped when a notification is removed, so a delayed call post can detect cancellation.
+    frame_generation: Mutex<HashMap<String, u64>>,
 }
 
 impl Notifier {
@@ -114,6 +123,9 @@ impl Notifier {
             last: Mutex::default(),
             pending: Mutex::default(),
             local_events,
+            call_ui_visible: AtomicBool::new(false),
+            call_keys: Mutex::default(),
+            frame_generation: Mutex::default(),
         });
         tokio::spawn(me.clone().follow_signals());
         Ok(me)
@@ -139,6 +151,48 @@ impl Notifier {
         }
     }
 
+    /// Presence from the GTK call window. While it is visible, CallStyle banners are suppressed;
+    /// any call banner already on the desktop is closed.
+    pub fn set_call_ui_visible(self: &Arc<Self>, visible: bool) {
+        self.call_ui_visible.store(visible, Ordering::SeqCst);
+        if visible {
+            let keys: Vec<String> = self.call_keys.lock().unwrap().drain().collect();
+            if !keys.is_empty() {
+                let me = self.clone();
+                tokio::spawn(async move {
+                    me.close_call_banners(&keys).await;
+                });
+            }
+        }
+    }
+
+    async fn close_call_banners(&self, keys: &[String]) {
+        let ids = {
+            let mut shown = self.shown.lock().unwrap();
+            let ids: Vec<u32> = keys
+                .iter()
+                .filter_map(|key| shown.by_key.remove(key))
+                .collect();
+            for id in &ids {
+                shown.by_id.remove(id);
+            }
+            ids
+        };
+        // A later, identical repost must not be dropped by fingerprint coalescing once the window
+        // is hidden again.
+        {
+            let mut last = self.last.lock().unwrap();
+            let mut pending = self.pending.lock().unwrap();
+            for key in keys {
+                last.remove(key);
+                pending.remove(key);
+            }
+        }
+        for id in ids {
+            let _ = self.proxy.close_notification(id).await;
+        }
+    }
+
     /// Handles one svc 5/37 frame from the phone.
     pub async fn handle(self: &Arc<Self>, service_id: i64, n: &Value) {
         let Some(key) = n.get("key").and_then(Value::as_str) else {
@@ -146,6 +200,18 @@ impl Notifier {
         };
         match n.get("event").and_then(Value::as_i64) {
             Some(0 | 1) => {
+                let is_call =
+                    n.get("type").and_then(Value::as_i64) == Some(crate::calls::TYPE_CALL);
+                if is_call && self.call_ui_visible.load(Ordering::SeqCst) {
+                    return; // the GTK call window owns the UI while it is visible
+                }
+                let generation = self
+                    .frame_generation
+                    .lock()
+                    .unwrap()
+                    .get(key)
+                    .copied()
+                    .unwrap_or(0);
                 if n.get("type").and_then(Value::as_i64) == Some(TYPE_CUSTOM_VIEW) {
                     return; // custom RemoteViews: no usable text (Windows drops these too)
                 }
@@ -179,6 +245,10 @@ impl Notifier {
                             let (me, key) = (self.clone(), key.to_owned());
                             tokio::spawn(async move {
                                 tokio::time::sleep(UPDATE_MIN_INTERVAL - elapsed).await;
+                                if me.call_ui_visible.load(Ordering::SeqCst) {
+                                    me.pending.lock().unwrap().remove(&key);
+                                    return;
+                                }
                                 let next = me.pending.lock().unwrap().remove(&key);
                                 if let Some((svc, frame)) = next {
                                     me.show_now(svc, &key, &frame).await;
@@ -186,10 +256,44 @@ impl Notifier {
                             });
                         }
                     }
+                    _ if is_call => {
+                        // The GUI declares presence on the same status update that opens its window.
+                        // Wait briefly so a call arriving while the app runs does not double-show.
+                        let (me, svc, key, frame) =
+                            (self.clone(), service_id, key.to_owned(), n.clone());
+                        tokio::spawn(async move {
+                            tokio::time::sleep(CALL_PRESENCE_GRACE).await;
+                            let still_live = me
+                                .frame_generation
+                                .lock()
+                                .unwrap()
+                                .get(&key)
+                                .copied()
+                                .unwrap_or(0)
+                                == generation;
+                            if !still_live || me.call_ui_visible.load(Ordering::SeqCst) {
+                                return;
+                            }
+                            me.show_now(svc, &key, &frame).await;
+                        });
+                    }
                     _ => self.show_now(service_id, key, n).await,
                 }
             }
             Some(2) => {
+                // Invalidate any delayed call post for this key so a short ring cannot leave a
+                // phantom banner after the phone has already removed the notification.
+                {
+                    let mut generations = self.frame_generation.lock().unwrap();
+                    let generation = generations.entry(key.to_owned()).or_insert(0);
+                    *generation += 1;
+                }
+                let (me, removed) = (self.clone(), key.to_owned());
+                tokio::spawn(async move {
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    me.frame_generation.lock().unwrap().remove(&removed);
+                });
+                self.call_keys.lock().unwrap().remove(key);
                 self.pending.lock().unwrap().remove(key);
                 self.last.lock().unwrap().remove(key);
                 self.shown_text.lock().unwrap().remove(key);
@@ -211,6 +315,9 @@ impl Notifier {
     }
 
     async fn show_now(&self, service_id: i64, key: &str, n: &Value) {
+        if n.get("type").and_then(Value::as_i64) == Some(crate::calls::TYPE_CALL) {
+            self.call_keys.lock().unwrap().insert(key.to_owned());
+        }
         self.last
             .lock()
             .unwrap()

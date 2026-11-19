@@ -111,6 +111,49 @@ pub struct Status {
     pub pairing_qr: Option<String>,
     pub notifications: Vec<Notification>,
     pub capabilities: Option<Capabilities>,
+    /// The published call: the active one, else the one being answered, else the newest ringing
+    /// one. Absent when there is no call.
+    pub call: Option<Call>,
+    /// A second live call (call waiting), ranked below `call`.
+    pub waiting: Option<Call>,
+}
+
+/// One live call, mirroring `smartconnectd`'s `CallStatus` (see `src/calls.rs`).
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Call {
+    /// Notification key; `call_answer` / `call_end` target it.
+    pub key: String,
+    pub phase: CallPhase,
+    pub name: Option<String>,
+    /// The notification's free-text line (often the number).
+    pub detail: Option<String>,
+    /// The calling app, e.g. "Phone" or "WhatsApp".
+    pub app: Option<String>,
+    pub video: bool,
+    /// Seconds since the call became active; 0 while ringing.
+    pub elapsed: u64,
+    /// Answer is valid now (ringing, an action was resolved, nothing pending).
+    pub can_answer: bool,
+    /// Decline/Hang Up is valid now.
+    pub can_end: bool,
+    pub answer_label: Option<String>,
+    pub end_label: Option<String>,
+    /// Set when a pending action timed out; cleared by the next frame for this call.
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum CallPhase {
+    Ringing,
+    Answering,
+    Active,
+    Ending,
+    /// A phase this build does not know; the buttons follow `canAnswer` / `canEnd`.
+    #[default]
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
@@ -253,6 +296,39 @@ pub fn command(line: &str) -> Result<Reply, String> {
 /// `{"cmd":"reply","key":K,"text":T}`
 pub fn reply_line(key: &str, text: &str) -> String {
     serde_json::json!({ "cmd": "reply", "key": key, "text": text }).to_string()
+}
+
+/// `{"cmd":"call_answer","key":K}`. The key pins the action to the call shown in the window.
+pub fn call_answer_line(key: &str) -> String {
+    serde_json::json!({ "cmd": "call_answer", "key": key }).to_string()
+}
+
+/// `{"cmd":"call_end","key":K}`: Decline while ringing, Hang Up while active.
+pub fn call_end_line(key: &str) -> String {
+    serde_json::json!({ "cmd": "call_end", "key": key }).to_string()
+}
+
+/// `{"cmd":"call_window","visible":B}`: tells the daemon the GTK call window is showing, so it
+/// suppresses the desktop banner for the call.
+pub fn call_window_line(visible: bool) -> String {
+    serde_json::json!({ "cmd": "call_window", "visible": visible }).to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::call_window_line;
+
+    #[test]
+    fn call_window_presence_line() {
+        assert_eq!(
+            call_window_line(true),
+            r#"{"cmd":"call_window","visible":true}"#
+        );
+        assert_eq!(
+            call_window_line(false),
+            r#"{"cmd":"call_window","visible":false}"#
+        );
+    }
 }
 
 /// "Open on phone": forward a notification click (phone event 2) for `key` on its service, which

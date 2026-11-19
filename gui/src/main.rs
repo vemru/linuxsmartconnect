@@ -1,6 +1,7 @@
 //! Smart Connect for Linux: GTK4/libadwaita front-end for `smartconnectd`.
 
 mod apps;
+mod callwindow;
 mod crosscontrol;
 mod daemon;
 mod diagnostics;

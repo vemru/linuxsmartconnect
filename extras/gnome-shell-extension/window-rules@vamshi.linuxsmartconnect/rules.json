@@ -1,0 +1,15 @@
+{
+  "rules": [
+    {
+      "name": "smartconnect-call",
+      "match": {
+        "wmClass": ["dev.smartconnect.Linux"],
+        "titleFile": "call-token.txt"
+      },
+      "actions": {
+        "alwaysOnTop": true,
+        "position": { "corner": "top-right", "marginX": 16, "marginY": 48 }
+      }
+    }
+  ]
+}

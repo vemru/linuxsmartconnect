@@ -1,0 +1,8 @@
+{
+  "name": "Window Rules",
+  "description": "Generic per-window rules for position, always-on-top and size. Ships one rule for the Smart Connect call window.",
+  "uuid": "window-rules@vamshi.linuxsmartconnect",
+  "shell-version": ["51"],
+  "version": 1,
+  "session-modes": ["user"]
+}

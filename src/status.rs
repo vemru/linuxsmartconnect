@@ -4,6 +4,7 @@
 
 use std::path::PathBuf;
 use std::sync::Mutex;
+use std::time::Instant;
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
@@ -11,6 +12,8 @@ use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::broadcast;
 use tracing::{info, warn};
+
+use crate::calls::{CallAction, CallCommand, CallStatus, CallTracker};
 
 #[derive(Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -39,6 +42,12 @@ pub struct PhoneStatus {
     pub phone_address: Option<String>,
     /// Recent phone notifications, newest first (memory only, never written to disk).
     pub notifications: Vec<PhoneNotification>,
+    /// The main live call (Active, else Answering, else Ringing), if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub call: Option<CallStatus>,
+    /// A second call (call waiting), if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub waiting: Option<CallStatus>,
     /// Dynamic feature capability matrix.
     pub capabilities: Option<crate::capabilities::Capabilities>,
 }
@@ -61,6 +70,7 @@ const MAX_NOTIFICATIONS: usize = 30;
 
 pub struct StatusHub {
     state: Mutex<PhoneStatus>,
+    calls: Mutex<CallTracker>,
     wallpaper_md5: Mutex<Option<String>>,
     changes: broadcast::Sender<String>,
 }
@@ -78,6 +88,7 @@ impl StatusHub {
         };
         Self {
             state: Mutex::new(state),
+            calls: Mutex::default(),
             wallpaper_md5: Mutex::new(None),
             changes: broadcast::channel(32).0,
         }
@@ -142,9 +153,65 @@ impl StatusHub {
             (
                 crate::notifications::SERVICE_NOTIFY | crate::notifications::SERVICE_NOTIFY_WIDGET,
                 _,
-            ) => self.apply_notification(service_id, data),
+            ) => self.apply_notify_frame(service_id, data),
             _ => {}
         }
+    }
+
+    /// Calls (`type 6`) and the removals of calls the tracker knows go to the call state; every
+    /// other notification stays in the desktop list.
+    fn apply_notify_frame(&self, service_id: i64, frame: &Value) {
+        let key = frame.get("key").and_then(Value::as_str).unwrap_or_default();
+        let is_call = frame.get("type").and_then(Value::as_i64) == Some(crate::calls::TYPE_CALL)
+            || (frame.get("event").and_then(Value::as_i64) == Some(2)
+                && self.calls.lock().unwrap().knows(key));
+        if is_call {
+            let changed = {
+                let mut calls = self.calls.lock().unwrap();
+                calls.apply(service_id, frame, Instant::now())
+            };
+            if changed {
+                self.publish_calls();
+            }
+        } else {
+            self.apply_notification(service_id, frame);
+        }
+    }
+
+    fn publish_calls(&self) {
+        let (call, waiting) = {
+            let calls = self.calls.lock().unwrap();
+            calls.snapshot(Instant::now())
+        };
+        self.update(|s| {
+            s.call = call;
+            s.waiting = waiting;
+        });
+    }
+
+    /// Fires due removal graces and pending-action timeouts. Called from a small background task.
+    pub fn tick(&self) {
+        let changed = {
+            let mut calls = self.calls.lock().unwrap();
+            calls.tick(Instant::now())
+        };
+        if changed {
+            self.publish_calls();
+        }
+    }
+
+    /// Starts a pending Answer/End. The caller sends the returned action to the phone.
+    pub fn call_command(
+        &self,
+        command: CallCommand,
+        key: Option<&str>,
+    ) -> Result<CallAction, String> {
+        let action = {
+            let mut calls = self.calls.lock().unwrap();
+            calls.command(command, key, Instant::now())?
+        };
+        self.publish_calls();
+        Ok(action)
     }
 
     fn apply_notification(&self, service_id: i64, n: &Value) {
@@ -152,7 +219,7 @@ impl StatusHub {
             return;
         };
         match n.get("event").and_then(Value::as_i64) {
-            Some(0 | 1) if n.get("type").and_then(Value::as_i64) != Some(7) => {
+            Some(0 | 1) if !matches!(n.get("type").and_then(Value::as_i64), Some(6 | 7)) => {
                 let d = n.get("data").cloned().unwrap_or(Value::Null);
                 let s = |k: &str| {
                     d.get(k)

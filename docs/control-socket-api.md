@@ -129,6 +129,9 @@ for line in watch:
 | [`watch`](#watch) | JSON | no (frames flow while connected) | `{"ok":true,"message":"watching"}`, then frames and local events (stream) |
 | [`send`](#send) | JSON | yes, except service 25 `cap` updates | `ok` + `message` |
 | [`reply`](#reply) | JSON | yes | `ok` + `message` |
+| [`call_answer`](#call_answer) | JSON | yes | `ok` + `message` |
+| [`call_end`](#call_end) | JSON | yes | `ok` + `message` |
+| [`call_window`](#call_window) | JSON | no | `ok` + `message` |
 | [`notif_mute`](#notif_mute) | JSON | no | `ok` + `muted` |
 | [`sms_state`](#sms_state) | JSON | no | SMS snapshot |
 | [`sms_threads`](#sms_threads) | JSON | yes | `ok` + `enabled` + `threads` |
@@ -380,6 +383,61 @@ Replies to a phone notification through the app's own reply action on the phone.
 The daemon sends the reply on the service the notification came from (5 or 37, defaulting to 5 for
 unknown keys). Only notifications with `"replyable":true` can be answered.
 
+### `call_answer`
+
+Answers the ringing call through the phone's own Answer action.
+
+```
+→ {"cmd":"call_answer"}
+← {"message":"sent","ok":true}
+→ {"cmd":"call_answer","key":"0|com.google.android.dialer|7|null|10123"}
+← {"message":"sent","ok":true}
+```
+
+| Request field | Type | Meaning |
+|---|---|---|
+| `key` | string, optional | A `key` from the status object's `call` or `waiting`. Defaults to `call`. |
+
+The call must be in phase `ringing` and `canAnswer` must be true. The status switches to
+`answering` at once, then to `active` when the phone confirms (2.5–3.1 s observed). If the phone
+does not confirm within 10 s, the phase reverts to `ringing` and the call object carries
+`"error":"the answer could not be confirmed (the call may still have connected)"`.
+
+### `call_end`
+
+Declines a ringing call or hangs up an active one, through the phone's own Decline / Hang Up action.
+
+```
+→ {"cmd":"call_end"}
+← {"message":"sent","ok":true}
+```
+
+Takes the same optional `key` as [`call_answer`](#call_answer) and requires `canEnd`. The status
+switches to `ending`; the call leaves `call` / `waiting` when the phone removes the notification
+(about 0.4 s after Hang Up, about 0.55 s after Decline — both observed). A pending action that never
+lands reverts after 10 s with `"error":"the end could not be confirmed"`. See
+[notifications.md](protocol/notifications.md#calls-type-6).
+
+### `call_window`
+
+Declares whether the GTK call window is on screen. While it is visible, the daemon does not mirror
+CallStyle (`type 6`) notifications to the desktop, and closes a call banner that was already shown.
+
+```
+→ {"cmd":"call_window","visible":true}
+← {"message":"sent","ok":true}
+→ {"cmd":"call_window","visible":false}
+← {"message":"sent","ok":true}
+```
+
+| Request field | Type | Meaning |
+|---|---|---|
+| `visible` | bool, required | `true` when the call window opens, `false` when it closes. |
+
+The GUI sends this silently on window visibility changes. A call arriving while the app runs is held
+for 200 ms before the desktop banner is shown, so the window can declare presence first. When no GUI
+is running the desktop notification remains the fallback.
+
 ### `notif_mute`
 
 Lists, adds or removes apps whose notifications don't pop up on the desktop. They still appear in
@@ -511,6 +569,8 @@ when unknown.
 | `pcAddress` | string or null | This PC's address on the phone's network: the local address of the last verified phone connection. `null` until the first one; kept after a disconnect. The stream host and the phone display offer the phone WebRTC candidates on this address only (unless `SMARTCONNECT_ICE_ADDRESSES` is set). |
 | `phoneAddress` | string or null | The phone's IP address on the last verified connection (the WebSocket peer). `null` until the first one; kept after a disconnect. `smartconnect-fex fetch-app-icons` pulls the app icons from this address. |
 | `notifications` | array | Up to 30 recent phone notifications, newest first (see below). Kept in memory only. |
+| `call` | object, omitted when none | The main live call: the active one, else the one being answered, else the newest ringing one. |
+| `waiting` | object, omitted when none | A second live call (call waiting), same shape. |
 | `capabilities` | object or null | Local feature availability matrix evaluated across 9 features (see [`capabilities`](#capabilities)). Embedded in live status and pushed on change. |
 
 Each entry of `notifications`:
@@ -525,7 +585,28 @@ Each entry of `notifications`:
 | `body` | string | Readable body. Chat notifications show the last messages, one per line, with senders in group chats. |
 | `replyable` | bool | The app accepts free-text replies. |
 
-Notifications from muted apps are included. Custom-layout notifications aren't.
+Notifications from muted apps are included. Custom-layout notifications aren't. Calls (`type 6`)
+aren't listed; they appear in `call` / `waiting` instead.
+
+Each entry of `call` / `waiting`:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `key` | string | The phone's notification key. Pass it to [`call_answer`](#call_answer) or [`call_end`](#call_end). |
+| `phase` | string | `ringing`, `answering`, `active` or `ending`. `answering` and `ending` are pending PC actions and last at most 10 s. |
+| `name` | string or null | Caller name (`person_name`, else `title`). Personal data: don't log it. |
+| `detail` | string or null | The notification's free-text line (often the number). Personal data: don't log it. |
+| `app` | string or null | App name (`apk_name`), e.g. `Phone`. |
+| `video` | bool | `isVideo` from the phone. Always `false` in captures; video calls are untested. |
+| `elapsed` | int | Seconds since the call became active; `0` while ringing. The phone sends no periodic updates, so a front-end timer must run locally and use this as its anchor. |
+| `canAnswer` | bool | `call_answer` can be used now: ringing, an Answer action was resolved, and no action is pending. |
+| `canEnd` | bool | `call_end` can be used now: ringing with a Decline action, or active with a Hang Up action, and no action is pending. |
+| `answerLabel` | string or null | The phone's label for the Answer action, when it offered one. |
+| `endLabel` | string or null | The phone's label for the current End action (`Decline` while ringing, `Hang Up` while active). |
+| `error` | string or null | Set when a pending action timed out; cleared by the next frame for that call. |
+
+`canAnswer` and `canEnd` are false when the phone did not offer the matching action or its
+`callStyleActions` index did not resolve; a front-end should disable those buttons.
 
 ## SMS objects
 
@@ -558,7 +639,16 @@ Message (in `messages`):
 | `message` | Commands | Cause |
 |---|---|---|
 | `unknown command "<x>"` | any | Unknown word, unknown `cmd`, or a JSON line without `cmd` (`<x>` is empty then). |
-| `phone not connected` | `send`, `reply`, `sms_threads`, `sms_thread`, `sms_send`, `sms_mark_read` | No phone session. |
+| `phone not connected` | `send`, `reply`, `call_answer`, `call_end`, `sms_threads`, `sms_thread`, `sms_send`, `sms_mark_read` | No phone session. |
+| `no call` | `call_answer`, `call_end` | No live call, and no `key` given. |
+| `unknown call` | `call_answer`, `call_end` | The given `key` is not a live call. |
+| `the call is not ringing` | `call_answer` | The call is active, or an action is already pending. |
+| `the call is not ringing or active` | `call_end` | The call is already ending. |
+| `the previous action is still in progress` | `call_answer`, `call_end` | A pending Answer/End for that call has not settled yet. |
+| `the phone did not offer an Answer action` | `call_answer` | No valid Answer position resolved from `callStyleActions` (changed build). |
+| `the phone did not offer a Decline action` | `call_end` (ringing) | No valid Decline position resolved from `callStyleActions`. |
+| `the phone did not offer a Hang Up action` | `call_end` (active) | No valid Hang Up position resolved from `callStyleActions`. |
+| `call_window needs visible` | `call_window` | `visible` missing or not a boolean. |
 | `not connected` | `disconnect` | No phone session. |
 | `send needs service and data` | `send` | `service` missing or not an integer, or `data` missing. |
 | `empty reply` | `reply` | `key` missing or `text` blank. |

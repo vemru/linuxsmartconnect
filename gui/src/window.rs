@@ -12,6 +12,7 @@ use adw::prelude::*;
 use gtk::{gdk, gio, glib};
 
 use crate::apps::{self, AppsPage};
+use crate::callwindow::CallWindow;
 use crate::crosscontrol::CrossControlPage;
 use crate::daemon::{self, Event, Notification, Reply, Status};
 use crate::display::DisplayPage;
@@ -56,6 +57,8 @@ pub struct Ui {
     files: Rc<FilesPage>,
     diagnostics: Rc<crate::diagnostics::DiagnosticsPage>,
     settings: Rc<crate::settings::SettingsPage>,
+    /// The ringing / active call window (independent of the main window).
+    call_window: Rc<CallWindow>,
     /// The system-tray item, when the desktop has a StatusNotifierHost.
     tray: RefCell<Option<tray::Tray>>,
     /// Tracks how the daemon is running, so Quit stops the right thing.
@@ -938,6 +941,7 @@ impl Ui {
         window.add_breakpoint(narrow);
 
         let pair = PairDialog::build();
+        let call_window = CallWindow::new(app);
 
         let ui = Rc::new(Self {
             window,
@@ -957,6 +961,7 @@ impl Ui {
             files,
             diagnostics,
             settings,
+            call_window,
             tray: RefCell::default(),
             daemon_ctl: RefCell::default(),
             state: RefCell::new(State {
@@ -965,6 +970,22 @@ impl Ui {
             }),
         });
         ui.show_switcher(false);
+        {
+            let weak = Rc::downgrade(&ui);
+            ui.call_window.set_handler(move |line| {
+                if let Some(ui) = weak.upgrade() {
+                    ui.command(line, |ui, result| ui.toast_reply(&result));
+                }
+            });
+        }
+        {
+            let weak = Rc::downgrade(&ui);
+            ui.call_window.set_presence_handler(move |line| {
+                if let Some(ui) = weak.upgrade() {
+                    ui.command(line, |_, _| {});
+                }
+            });
+        }
         // Until the daemon answers, the header and the "not running" page show the cached phone.
         ui.refresh_device_offline();
         ui.refresh_down();
@@ -1569,6 +1590,7 @@ impl Ui {
                 }
             }
         }
+        self.call_window.hide();
         self.root.set_visible_child_name("down");
         self.show_switcher(false);
         self.refresh_down();
@@ -1598,6 +1620,15 @@ impl Ui {
                 self.settings.set_device(Some(dev));
             }
             st.status = Some(status);
+        }
+        {
+            let st = self.state.borrow();
+            if let Some(status) = st.status.as_ref() {
+                self.call_window
+                    .sync(status.call.as_ref(), status.waiting.as_ref());
+            } else {
+                self.call_window.hide();
+            }
         }
         self.remember_device();
         self.root.set_visible_child_name("main");

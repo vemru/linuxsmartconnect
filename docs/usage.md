@@ -44,6 +44,7 @@ Noctalia Shell on Arch Linux. Other phones, app versions and desktops may behave
 | Notification action buttons and "Open" | 🟡 | Action buttons (e.g. "Mark as read") run on the phone through a short background app-streaming session, without a window. |
 | Notification dedupe, coalescing and themed icons | 🟡 | Prevents notification spam and shows native app/themed icons. |
 | Per-app notification mute | 🟡 | A mute toggle on each notification and a *Muted apps* list, in the GTK app and the Noctalia plugin. |
+| Incoming-call control | 🟡 | Calls are tracked in the daemon and published as `call` / `waiting` in the status object; `call_answer` / `call_end` answer, decline or hang up. The GTK call window shows the caller with Answer/Decline, then a timer and End, and suppresses the desktop call notification while visible. Verified with the phone's dialer (answer, decline, hang up); non-dialer apps, call waiting and video calls are untested. |
 | Clipboard text, both ways | ✅ | Password-manager copies are never sent to the phone. |
 | Clipboard images and files | ❌ | Protocol reconstructed ([file-exchange.md](protocol/file-exchange.md), [clipboard.md](protocol/clipboard.md)). |
 | SMS (read threads, send, mark read) | 🟡 | Control socket only, no UI yet. Needs enabling on the phone. |
@@ -309,6 +310,18 @@ which apps it forwards.
   [app streaming](#app-streaming), as on Windows.
 - **Dedupe and coalescing** (🟡): identical re-posts are dropped, and a notification that keeps
   changing (progress bars, timers, calls) updates the desktop at most once per second.
+- **Calls** (🟡): CallStyle notifications (`type 6`) are kept out of the notification list and
+  published as `call` (the active call, else the one being answered, else the newest ringing one)
+  and `waiting` in the status object, with an `elapsed` anchor for a local timer. `call_answer` and
+  `call_end` answer, decline or hang up through the phone's own actions. Verified with the phone's
+  dialer: answering goes active in 2.5–3.1 s, hanging up removes the call in about 0.4 s, declining
+  ends it in about 0.55 s. The GTK call window opens on a call, shows the caller with Answer /
+  Decline, switches to a local timer and End while active, and closes when the call ends; a second
+  call gets a compact "Call waiting" section. While that window is visible the desktop call
+  notification is suppressed; without the GTK window it remains the fallback. An optional GNOME
+  Shell extension under `extras/gnome-shell-extension/` can pin the call window top-right; the app
+  works without it. WhatsApp/Telegram calls, video calls, call waiting with two phones and HFP
+  audio are untested.
 - **App icons** (🟡): the phone's own launcher icon from the app-icon cache
   (`~/.cache/smartconnect-linux/app-icons/`) when it has been downloaded, else an icon from your
   theme matching the app's name or package (searched in `~/.local/share/icons`, Papirus, hicolor,

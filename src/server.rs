@@ -933,7 +933,11 @@ where
                                     n.handle(msg.service_id, d).await;
                                     let title = d.get("title").and_then(Value::as_str).unwrap_or("Notification");
                                     let body = d.get("text").or_else(|| d.get("body")).and_then(Value::as_str).unwrap_or_default();
-                                    if !body.is_empty() || title != "Notification" {
+                                    // CallStyle titles are caller names: keep them in memory only,
+                                    // never write them to the on-disk timeline.
+                                    let is_call = d.get("type").and_then(Value::as_i64)
+                                        == Some(crate::calls::TYPE_CALL);
+                                    if !is_call && (!body.is_empty() || title != "Notification") {
                                         let _ = daemon.timeline.append(phone_id, "notification", title, body, None, "incoming");
                                     }
                                 }

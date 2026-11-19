@@ -3,10 +3,14 @@
 All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
-adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). The README's
-[feature matrix](README.md#feature-status) shows what is verified on a real phone.
+adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). The
+[feature matrix](docs/usage.md#feature-status-matrix) shows what is verified on a real phone.
 
 ### [Unreleased]
+
+### Added
+
+- **Incoming-call control:** the daemon tracks CallStyle notifications (`type 6`) and publishes `call` / `waiting` in the status object, with `call_answer` and `call_end` control-socket commands; the GTK app shows a call window with Answer/Decline, a local timer and End, and suppresses the desktop call banner while that window is visible. Answer, Decline and Hang Up are verified on the phone's dialer; non-dialer apps, call waiting and video calls are untested.
 
 ## [0.3.3] - 2026-11-17
 

@@ -471,6 +471,17 @@ async fn main() -> Result<()> {
         .clipboard
         .set_fex_endpoint(args.port, daemon.identity.fp_hex());
     tokio::spawn(daemon.clone().invite_loop());
+    // Calls: fire the removal grace and the pending-action timeouts without a task per action.
+    tokio::spawn({
+        let daemon = daemon.clone();
+        async move {
+            let mut tick = tokio::time::interval(Duration::from_millis(200));
+            loop {
+                tick.tick().await;
+                daemon.status.tick();
+            }
+        }
+    });
     // Reconnect promptly after a resume, a network change, or Bluetooth being switched on.
     tokio::spawn(smartconnect::reconnect::watch_system(
         daemon.clone(),

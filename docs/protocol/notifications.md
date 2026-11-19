@@ -183,6 +183,52 @@ sequenceDiagram
     P->>PC: svc 5 and svc 37 event 2 (key) when the notification goes away
 ```
 
+## Calls (type 6)
+
+A call is a CallStyle notification: `type 6`, one notification per call, with the same `key` from
+ringing to the end. The phone posts it on service 5 and removes it on services 5 and 37. This
+project folds calls into the status object's `call` and `waiting` objects instead of the front-ends'
+notification list (the desktop notification still appears). Everything below is OBSERVED on a
+motorola edge 50 neo with `com.google.android.dialer` `247.0.1016877637-publicbeta` unless tagged
+otherwise.
+
+| | Ringing | Active |
+|---|---|---|
+| `data.callType` | `1` | `2` |
+| `actions` | `[0 Decline, 1 Answer]` | `[0 Hang Up, 1 Speaker, 2 Mute]` |
+| `data.priority` | `2`, then `1` on the re-post | `1` |
+| `data.callStyleActions` | `[0, 1]` (indices into `actions[]`) | `[0]` |
+
+- **The key is stable, and the dialer reuses it.** Ringing, active and removal all carry the same
+  key, and consecutive calls reused it in the capture. An Active → Ringing transition on one key is
+  therefore a new call, not a state change of the old one.
+- **Answer:** send `{"cmd":0,"event":1,"key":<key>,"version":"1.0","data":{"action_id":1}}` on the
+  service the notification arrived on. The phone then starts app streaming (`svc 15 cmd 2`, then the
+  display commands) and posts `callType 2` **2.5–3.1 s after the click** (OBSERVED three times).
+  Hanging up does not start streaming.
+- **Decline / Hang Up:** the same frame with `action_id 0`. After Hang Up the removal follows in
+  **350–400 ms** with no service 15 frame (OBSERVED). After Decline it follows in **~550 ms** on
+  both services with no `callType 2` frame (OBSERVED 2026-11-19).
+- **Resolve actions by `callType` + `callStyleActions` positions (INFERRED).** `callStyleActions`
+  holds indices into `actions[]`: while ringing the first index is Decline and the last is Answer;
+  while active the first index is Hang Up. `action_name` is only the button label. A PC should check
+  each index against `actions[]` and disable that button when the index is missing, out of range,
+  duplicated, or the entry has no integer `action_id`. In the captures the names happen to agree
+  (`0 Decline, 1 Answer`; `0 Hang Up`), so name-based resolution picked the same ids; the position
+  rule is the one the protocol describes. The click frame carries `action_id`, not the index.
+- **The phone re-ranks every ring.** It removes and re-posts the ringing notification ~150 ms apart
+  (`priority 2` → `1`) on every observed ring. Treat a removal as final only after a grace period
+  (1 s in this project), or the popup flickers.
+- **No periodic updates.** A ringing call and a 10 s active call produced no `event 1` frames, so
+  the PC must run the call timer itself.
+- **Privacy.** `person_icon` was absent in every sample; `person_name == title`; `content` is free
+  text (often the number or call state). Treat all three as personal: keep them in memory, never
+  log or persist them. Call notifications (`type 6`) are excluded from the on-disk timeline.
+- **UNVERIFIED paths.** Missed calls (no notification observed), WhatsApp/Telegram calls, video
+  calls (`isVideo` was always `false`), call waiting (two calls at once), and HFP audio. The daemon
+  infers the phase from `callType`, falls back to the number of `callStyleActions` entries when it
+  is missing, keeps at most two calls, and never assumes an action exists.
+
 ## Pitfalls
 
 1. **Large frames.** Messaging posts with avatars reach about 40 KB, and big-picture posts carry a

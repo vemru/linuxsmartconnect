@@ -22,6 +22,7 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::broadcast::error::RecvError;
 use tracing::warn;
 
+use crate::calls::CallCommand;
 use crate::discovery;
 use crate::server::Daemon;
 
@@ -311,6 +312,52 @@ fn json_command(daemon: &Daemon, v: &serde_json::Value) -> String {
             .unwrap_or_default()
     };
     match s("cmd") {
+        // {"cmd":"call_answer"|"call_end","key":"<notification key, optional>"}: the pending phase
+        // is published at once; the action goes to the phone on the notification's service.
+        "call_answer" | "call_end" => {
+            let command = if s("cmd") == "call_answer" {
+                CallCommand::Answer
+            } else {
+                CallCommand::End
+            };
+            let key = v
+                .get("key")
+                .and_then(serde_json::Value::as_str)
+                .filter(|k| !k.is_empty());
+            if !daemon.is_connected() {
+                return json!({ "ok": false, "message": "phone not connected" }).to_string();
+            }
+            match daemon.status.call_command(command, key) {
+                Ok(action) => {
+                    let cmd = json!({
+                        "cmd": 0,
+                        "event": 1,
+                        "key": action.key,
+                        "version": "1.0",
+                        "data": { "action_id": action.action_id },
+                    });
+                    if let Some(ev) = crate::notifications::click_event(action.service, &cmd) {
+                        let _ = daemon
+                            .from_phone
+                            .send((crate::proto::SERVICE_LOCAL_EVENTS, ev));
+                    }
+                    let _ = daemon.to_phone.send((action.service, cmd));
+                    json!({ "ok": true, "message": "sent" }).to_string()
+                }
+                Err(e) => json!({ "ok": false, "message": e }).to_string(),
+            }
+        }
+        // {"cmd":"call_window","visible":true|false}: GTK call window presence. While visible,
+        // CallStyle notifications are not mirrored to the desktop (the window is the UI).
+        "call_window" => {
+            let Some(visible) = v.get("visible").and_then(serde_json::Value::as_bool) else {
+                return json!({ "ok": false, "message": "call_window needs visible" }).to_string();
+            };
+            if let Some(notifier) = daemon.notifier.get() {
+                notifier.set_call_ui_visible(visible);
+            }
+            json!({ "ok": true, "message": "sent" }).to_string()
+        }
         "reply" => {
             let (key, text) = (s("key"), s("text"));
             if !daemon.is_connected() {
