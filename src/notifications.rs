@@ -154,6 +154,7 @@ impl Notifier {
     /// Presence from the GTK call window. While it is visible, CallStyle banners are suppressed;
     /// any call banner already on the desktop is closed.
     pub fn set_call_ui_visible(self: &Arc<Self>, visible: bool) {
+        debug!(visible, "notifications: call window presence update");
         self.call_ui_visible.store(visible, Ordering::SeqCst);
         if visible {
             let keys: Vec<String> = self.call_keys.lock().unwrap().drain().collect();
@@ -203,6 +204,7 @@ impl Notifier {
                 let is_call =
                     n.get("type").and_then(Value::as_i64) == Some(crate::calls::TYPE_CALL);
                 if is_call && self.call_ui_visible.load(Ordering::SeqCst) {
+                    debug!("notifications: call banner skipped (window visible)");
                     return; // the GTK call window owns the UI while it is visible
                 }
                 let generation = self
@@ -247,6 +249,7 @@ impl Notifier {
                                 tokio::time::sleep(UPDATE_MIN_INTERVAL - elapsed).await;
                                 if me.call_ui_visible.load(Ordering::SeqCst) {
                                     me.pending.lock().unwrap().remove(&key);
+                                    debug!("notifications: coalesced call banner skipped");
                                     return;
                                 }
                                 let next = me.pending.lock().unwrap().remove(&key);
@@ -272,8 +275,10 @@ impl Notifier {
                                 .unwrap_or(0)
                                 == generation;
                             if !still_live || me.call_ui_visible.load(Ordering::SeqCst) {
+                                debug!(still_live, "notifications: delayed call banner skipped");
                                 return;
                             }
+                            debug!("notifications: showing delayed call banner");
                             me.show_now(svc, &key, &frame).await;
                         });
                     }

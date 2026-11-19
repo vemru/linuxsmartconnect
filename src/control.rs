@@ -355,6 +355,8 @@ fn json_command(daemon: &Daemon, v: &serde_json::Value) -> String {
             };
             if let Some(notifier) = daemon.notifier.get() {
                 notifier.set_call_ui_visible(visible);
+            } else {
+                warn!("control: call window presence before notifier was ready");
             }
             json!({ "ok": true, "message": "sent" }).to_string()
         }
