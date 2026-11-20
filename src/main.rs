@@ -514,6 +514,7 @@ async fn main() -> Result<()> {
     match smartconnect::notifications::Notifier::new(
         daemon.to_phone.clone(),
         daemon.from_phone.clone(),
+        daemon.status.clone(),
     )
     .await
     {

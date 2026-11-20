@@ -8,6 +8,7 @@
       },
       "actions": {
         "alwaysOnTop": true,
+        "sticky": true,
         "position": { "corner": "top-right", "marginX": 16, "marginY": 48 }
       }
     }

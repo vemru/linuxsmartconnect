@@ -5,6 +5,10 @@
 //! - `connect`    → `{"ok":bool,"message":…}` (dial the phone's `/readyfor/mdns`)
 //! - `disconnect` → `{"ok":bool,"message":…}`
 //! - `pair`       → `{"ok":bool,"message":…,"qr":"<svg path>"}` (fresh invite for a new phone)
+//! - `{"cmd":"call_ui","role":"extension"|"gtk"}` → `{"ok":true,"id":N,…}`; registers this
+//!   connection as a call-UI presenter until it disconnects. `call_presenter` in the status stream
+//!   names the winner; `call_presenter_id` pins it to one connection.
+//! - `{"cmd":"call_ui_dismiss","key":K}` → GTK's X: hand call K to the notification presenter.
 //! - `{"cmd":"watch","services":[…]}` → `{"service":N,"data":…}` per phone frame of those services;
 //!   an empty list means every phone service. Daemon-local events use the reserved id
 //!   [`crate::proto::SERVICE_LOCAL_EVENTS`] (-1) and are only sent when that id is listed, e.g.
@@ -85,12 +89,67 @@ pub async fn serve(daemon: Arc<Daemon>) -> Result<()> {
     }
 }
 
+/// Unregisters every call-UI role this connection registered, even if the socket dies mid-command,
+/// and reconciles the desktop banner with the newly re-picked presenter.
+struct UiGuard {
+    status: Arc<crate::status::StatusHub>,
+    notifier: Option<Arc<crate::notifications::Notifier>>,
+    ids: Vec<u64>,
+}
+
+impl Drop for UiGuard {
+    fn drop(&mut self) {
+        let had_ids = !self.ids.is_empty();
+        for id in self.ids.drain(..) {
+            self.status.unregister_ui(id);
+        }
+        if !had_ids {
+            return;
+        }
+        if let (Some(notifier), Ok(handle)) =
+            (self.notifier.clone(), tokio::runtime::Handle::try_current())
+        {
+            handle.spawn(async move { notifier.sync_call_presenter().await });
+        }
+    }
+}
+
 async fn handle(daemon: Arc<Daemon>, stream: UnixStream) -> Result<()> {
     let (rd, mut wr) = stream.into_split();
+    let mut ui_guard = UiGuard {
+        status: daemon.status.clone(),
+        notifier: daemon.notifier.get().cloned(),
+        ids: Vec::new(),
+    };
     let mut lines = BufReader::new(rd).lines();
     while let Some(line) = lines.next_line().await? {
         // JSON commands carry arguments: {"cmd":"reply","key":…,"text":…}
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) {
+            if v.get("cmd").and_then(serde_json::Value::as_str) == Some("call_ui") {
+                let role = v
+                    .get("role")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default();
+                let Some((id, presenter)) = daemon.status.register_ui(role) else {
+                    wr.write_all(b"{\"ok\":false,\"message\":\"role must be extension or gtk\"}\n")
+                        .await?;
+                    continue;
+                };
+                ui_guard.ids.push(id);
+                if ui_guard.notifier.is_none() {
+                    ui_guard.notifier = daemon.notifier.get().cloned();
+                }
+                let reply = json!({
+                    "ok": true, "message": "registered", "role": role,
+                    "id": id, "presenter": presenter.as_str(),
+                });
+                wr.write_all(format!("{reply}\n").as_bytes()).await?;
+                if let Some(notifier) = daemon.notifier.get() {
+                    let notifier = notifier.clone();
+                    tokio::spawn(async move { notifier.sync_call_presenter().await });
+                }
+                continue;
+            }
             // {"cmd":"watch","services":[1,15]}: stream {"service":N,"data":…} for those phone services.
             if v.get("cmd").and_then(serde_json::Value::as_str) == Some("watch") {
                 let services: Vec<i64> = v
@@ -347,18 +406,20 @@ fn json_command(daemon: &Daemon, v: &serde_json::Value) -> String {
                 Err(e) => json!({ "ok": false, "message": e }).to_string(),
             }
         }
-        // {"cmd":"call_window","visible":true|false}: GTK call window presence. While visible,
-        // CallStyle notifications are not mirrored to the desktop (the window is the UI).
-        "call_window" => {
-            let Some(visible) = v.get("visible").and_then(serde_json::Value::as_bool) else {
-                return json!({ "ok": false, "message": "call_window needs visible" }).to_string();
-            };
-            if let Some(notifier) = daemon.notifier.get() {
-                notifier.set_call_ui_visible(visible);
-            } else {
-                warn!("control: call window presence before notifier was ready");
+        // {"cmd":"call_ui_dismiss","key":K}: the GTK window's X. The notification takes this call.
+        "call_ui_dismiss" => {
+            let key = s("key");
+            if key.is_empty() {
+                return json!({ "ok": false, "message": "call_ui_dismiss needs key" }).to_string();
             }
-            json!({ "ok": true, "message": "sent" }).to_string()
+            daemon.status.dismiss_call(key);
+            let presenter = daemon.status.presenter();
+            if let Some(notifier) = daemon.notifier.get() {
+                let notifier = notifier.clone();
+                tokio::spawn(async move { notifier.sync_call_presenter().await });
+            }
+            json!({ "ok": true, "message": "dismissed", "presenter": presenter.as_str() })
+                .to_string()
         }
         "reply" => {
             let (key, text) = (s("key"), s("text"));

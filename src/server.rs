@@ -139,7 +139,7 @@ pub struct Daemon {
     ble_wake: std::sync::atomic::AtomicBool,
     /// The paired phone's last LAN address (from its session or mDNS advert), for presence probes.
     phone_ip: Mutex<Option<IpAddr>>,
-    pub status: StatusHub,
+    pub status: std::sync::Arc<StatusHub>,
     /// Desktop-side Disconnect: ends the active session.
     kick: tokio::sync::Notify,
     /// Messages for the phone from desktop-side features (notification clicks…).
@@ -212,7 +212,10 @@ impl Daemon {
             .ok()
             .and_then(|b| serde_json::from_slice(&b).ok())
             .unwrap_or_default();
-        let status = StatusHub::new(!pairing.is_empty(), Some(qr.svg_path.display().to_string()));
+        let status = std::sync::Arc::new(StatusHub::new(
+            !pairing.is_empty(),
+            Some(qr.svg_path.display().to_string()),
+        ));
         let phone_ip = endpoints.values().next().map(SocketAddr::ip);
         Self {
             identity,
@@ -856,6 +859,11 @@ async fn handle(
             s.device_id = None;
             s.capabilities = Some(caps);
         });
+        daemon.status.clear_calls();
+        if let Some(notifier) = daemon.notifier.get() {
+            let notifier = notifier.clone();
+            notifier.clear_call_ui().await;
+        }
         let _ = daemon.timeline.append(
             &stable_id,
             "session",

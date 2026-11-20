@@ -406,6 +406,11 @@ impl CallTracker {
         self.calls.contains_key(key)
     }
 
+    /// Clears all tracked calls, e.g. when the phone disconnects.
+    pub fn clear(&mut self) {
+        self.calls.clear();
+    }
+
     /// The key of the call published as `call` (the Active one, else the newest Ringing one).
     pub fn primary_key(&self) -> Option<String> {
         self.ranked().first().map(|c| c.key.clone())
@@ -978,5 +983,18 @@ mod tests {
         tracker.apply(5, &ringing("b"), t0);
         let action = tracker.command(CallCommand::Answer, None, t0).unwrap();
         assert_eq!(action.key, "b", "the newest ringing call is published");
+    }
+
+    #[test]
+    fn clear_empties_all_calls() {
+        let mut tracker = CallTracker::default();
+        let t0 = Instant::now();
+        tracker.apply(5, &ringing("a"), t0);
+        assert!(tracker.knows("a"));
+        tracker.clear();
+        assert!(!tracker.knows("a"));
+        let (call, waiting) = tracker.snapshot(t0);
+        assert!(call.is_none());
+        assert!(waiting.is_none());
     }
 }

@@ -69,6 +69,7 @@ pub struct Ui {
 #[derive(Default)]
 struct State {
     status: Option<Status>,
+    call_presenter_id: Option<u64>,
     wallpaper: Option<String>,
     busy: bool,
     /// The daemon was just launched; keep the "Starting…" spinner until the socket answers.
@@ -978,14 +979,6 @@ impl Ui {
                 }
             });
         }
-        {
-            let weak = Rc::downgrade(&ui);
-            ui.call_window.set_presence_handler(move |line| {
-                if let Some(ui) = weak.upgrade() {
-                    ui.command(line, |_, _| {});
-                }
-            });
-        }
         // Until the daemon answers, the header and the "not running" page show the cached phone.
         ui.refresh_device_offline();
         ui.refresh_down();
@@ -1040,6 +1033,8 @@ impl Ui {
     /// running on purpose (like the stream host): it is a monitor with windows on it, the phone can
     /// stop it, and the Display page picks it up again when the app is reopened.
     pub fn shutdown(&self) {
+        // Hide the GTK call UI while the app shuts down.
+        self.call_window.hide();
         {
             let mut st = self.state.borrow_mut();
             let st = &mut *st;
@@ -1511,6 +1506,10 @@ impl Ui {
                 let Some(ui) = weak.upgrade() else { break };
                 match event {
                     Event::Status(status) => ui.apply_status(*status),
+                    Event::CallPresenterId(id) => {
+                        ui.state.borrow_mut().call_presenter_id = id;
+                        ui.sync_call_window();
+                    }
                     Event::Down => ui.set_down(),
                     Event::CrossControlRequested => {
                         // The phone's tile: show the three modes (the daemon answers the phone itself).
@@ -1580,6 +1579,7 @@ impl Ui {
         {
             let mut st = self.state.borrow_mut();
             st.status = None;
+            st.call_presenter_id = None;
             st.busy = false;
             st.muted = None; // ask again once the daemon is back
                              // The phone can't be connected without the daemon: it was last seen now.
@@ -1596,6 +1596,19 @@ impl Ui {
         self.refresh_down();
         self.refresh_device_offline();
         self.refresh_tray();
+    }
+
+    fn sync_call_window(&self) {
+        let st = self.state.borrow();
+        if let Some(status) = st.status.as_ref() {
+            let owns_call = st.call_presenter_id.is_some_and(|id| {
+                status.call_presenter.as_deref() == Some("gtk") && status.call_presenter_id == id
+            });
+            self.call_window
+                .sync(owns_call, status.call.as_ref(), status.waiting.as_ref());
+        } else {
+            self.call_window.hide();
+        }
     }
 
     fn apply_status(self: &Rc<Self>, status: Status) {
@@ -1621,15 +1634,7 @@ impl Ui {
             }
             st.status = Some(status);
         }
-        {
-            let st = self.state.borrow();
-            if let Some(status) = st.status.as_ref() {
-                self.call_window
-                    .sync(status.call.as_ref(), status.waiting.as_ref());
-            } else {
-                self.call_window.hide();
-            }
-        }
+        self.sync_call_window();
         self.remember_device();
         self.root.set_visible_child_name("main");
         self.show_switcher(true);

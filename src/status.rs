@@ -11,8 +11,9 @@ use base64::engine::general_purpose::STANDARD as B64;
 use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::broadcast;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
+use crate::call_ui::{CallPresenter, UiRegistry};
 use crate::calls::{CallAction, CallCommand, CallStatus, CallTracker};
 
 #[derive(Clone, Default, Serialize)]
@@ -48,6 +49,13 @@ pub struct PhoneStatus {
     /// A second call (call waiting), if any.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub waiting: Option<CallStatus>,
+    /// The single UI that owns the call: `extension`, `gtk` or `notification`.
+    #[serde(rename = "call_presenter")]
+    pub call_presenter: CallPresenter,
+    /// Control-socket connection id of the presenter; `0` when `call_presenter` is `notification`.
+    /// A registered UI renders only when this equals its own id.
+    #[serde(rename = "call_presenter_id")]
+    pub call_presenter_id: u64,
     /// Dynamic feature capability matrix.
     pub capabilities: Option<crate::capabilities::Capabilities>,
 }
@@ -71,6 +79,7 @@ const MAX_NOTIFICATIONS: usize = 30;
 pub struct StatusHub {
     state: Mutex<PhoneStatus>,
     calls: Mutex<CallTracker>,
+    ui: Mutex<UiRegistry>,
     wallpaper_md5: Mutex<Option<String>>,
     changes: broadcast::Sender<String>,
 }
@@ -83,12 +92,14 @@ impl StatusHub {
         let state = PhoneStatus {
             paired,
             pairing_qr,
+            call_presenter: CallPresenter::Notification,
             capabilities: Some(caps),
             ..Default::default()
         };
         Self {
             state: Mutex::new(state),
             calls: Mutex::default(),
+            ui: Mutex::default(),
             wallpaper_md5: Mutex::new(None),
             changes: broadcast::channel(32).0,
         }
@@ -162,14 +173,23 @@ impl StatusHub {
     /// other notification stays in the desktop list.
     fn apply_notify_frame(&self, service_id: i64, frame: &Value) {
         let key = frame.get("key").and_then(Value::as_str).unwrap_or_default();
-        let is_call = frame.get("type").and_then(Value::as_i64) == Some(crate::calls::TYPE_CALL)
-            || (frame.get("event").and_then(Value::as_i64) == Some(2)
-                && self.calls.lock().unwrap().knows(key));
-        if is_call {
-            let changed = {
-                let mut calls = self.calls.lock().unwrap();
+        let kind = frame.get("type").and_then(Value::as_i64);
+        let event = frame.get("event").and_then(Value::as_i64);
+        let is_call_type = kind == Some(crate::calls::TYPE_CALL);
+        let is_call_removal = event == Some(2);
+
+        let (is_call, changed) = {
+            let mut calls = self.calls.lock().unwrap();
+            let is_call = is_call_type || (is_call_removal && calls.knows(key));
+            let changed = if is_call {
                 calls.apply(service_id, frame, Instant::now())
+            } else {
+                false
             };
+            (is_call, changed)
+        };
+        debug!(is_call, ?event, ?kind, "status: notify frame");
+        if is_call {
             if changed {
                 self.publish_calls();
             }
@@ -178,15 +198,61 @@ impl StatusHub {
         }
     }
 
+    /// Clears all call state and notifies subscribers, e.g. when the phone disconnects.
+    pub fn clear_calls(&self) {
+        {
+            let mut calls = self.calls.lock().unwrap();
+            calls.clear();
+        }
+        self.publish_calls();
+    }
+
     fn publish_calls(&self) {
         let (call, waiting) = {
             let calls = self.calls.lock().unwrap();
             calls.snapshot(Instant::now())
         };
+        let (presenter, presenter_id) = {
+            let mut ui = self.ui.lock().unwrap();
+            ui.set_call_key(call.as_ref().map(|c| c.key.clone()));
+            (ui.presenter(), ui.presenter_id())
+        };
         self.update(|s| {
             s.call = call;
             s.waiting = waiting;
+            s.call_presenter = presenter;
+            s.call_presenter_id = presenter_id;
         });
+    }
+
+    /// Current call presenter, before any further registration changes it.
+    pub fn presenter(&self) -> CallPresenter {
+        self.ui.lock().unwrap().presenter()
+    }
+
+    /// Registers a control-socket connection for `role`; returns `(connection id, presenter)`.
+    pub fn register_ui(&self, role: &str) -> Option<(u64, CallPresenter)> {
+        let result = {
+            let mut ui = self.ui.lock().unwrap();
+            ui.register(role).map(|id| (id, ui.presenter()))
+        };
+        self.publish_calls();
+        result
+    }
+
+    pub fn unregister_ui(&self, id: u64) {
+        {
+            self.ui.lock().unwrap().unregister(id);
+        }
+        self.publish_calls();
+    }
+
+    /// GTK's X button: the notification owns this call until the next call key arrives.
+    pub fn dismiss_call(&self, key: &str) {
+        {
+            self.ui.lock().unwrap().dismiss(key);
+        }
+        self.publish_calls();
     }
 
     /// Fires due removal graces and pending-action timeouts. Called from a small background task.

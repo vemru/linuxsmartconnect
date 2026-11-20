@@ -4,6 +4,7 @@
 pub mod app_icons;
 pub mod ble;
 pub mod ble_connect;
+pub mod call_ui;
 pub mod calls;
 pub mod capabilities;
 pub mod clipboard;

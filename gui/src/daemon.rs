@@ -116,6 +116,12 @@ pub struct Status {
     pub call: Option<Call>,
     /// A second live call (call waiting), ranked below `call`.
     pub waiting: Option<Call>,
+    /// The daemon-selected call UI owner (`extension`, `gtk`, or `notification`).
+    #[serde(rename = "call_presenter")]
+    pub call_presenter: Option<String>,
+    /// Registered control-socket connection id for the selected presenter.
+    #[serde(rename = "call_presenter_id")]
+    pub call_presenter_id: u64,
 }
 
 /// One live call, mirroring `smartconnectd`'s `CallStatus` (see `src/calls.rs`).
@@ -181,6 +187,8 @@ impl Status {
 
 pub enum Event {
     Status(Box<Status>),
+    /// This subscriber connection's GTK presenter registration id, if registration succeeded.
+    CallPresenterId(Option<u64>),
     /// The daemon is not running (or just went away).
     Down,
     /// The phone's Cross Control tile was tapped (service 26 `cmd 0`).
@@ -246,8 +254,22 @@ fn watch_cross_requests(tx: &async_channel::Sender<Event>) -> std::io::Result<()
 /// One `subscribe` session: returns when the daemon hangs up or the socket errors.
 fn stream_status(tx: &async_channel::Sender<Event>, up: &mut Option<bool>) -> std::io::Result<()> {
     let mut stream = UnixStream::connect(socket_path())?;
-    stream.write_all(b"subscribe\n")?;
-    for line in BufReader::new(stream).lines() {
+    stream.write_all(b"{\"cmd\":\"call_ui\",\"role\":\"gtk\"}\n")?;
+    let mut reader = BufReader::new(stream);
+    let mut registration = String::new();
+    reader.read_line(&mut registration)?;
+    let presenter_id = serde_json::from_str::<Value>(registration.trim())
+        .ok()
+        .filter(|reply| reply.get("ok").and_then(Value::as_bool) == Some(true))
+        .and_then(|reply| reply.get("id").and_then(Value::as_u64));
+    if tx
+        .send_blocking(Event::CallPresenterId(presenter_id))
+        .is_err()
+    {
+        return Ok(());
+    }
+    reader.get_mut().write_all(b"subscribe\n")?;
+    for line in reader.lines() {
         let line = line?;
         match serde_json::from_str::<Status>(&line) {
             Ok(status) => {
@@ -308,27 +330,9 @@ pub fn call_end_line(key: &str) -> String {
     serde_json::json!({ "cmd": "call_end", "key": key }).to_string()
 }
 
-/// `{"cmd":"call_window","visible":B}`: tells the daemon the GTK call window is showing, so it
-/// suppresses the desktop banner for the call.
-pub fn call_window_line(visible: bool) -> String {
-    serde_json::json!({ "cmd": "call_window", "visible": visible }).to_string()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::call_window_line;
-
-    #[test]
-    fn call_window_presence_line() {
-        assert_eq!(
-            call_window_line(true),
-            r#"{"cmd":"call_window","visible":true}"#
-        );
-        assert_eq!(
-            call_window_line(false),
-            r#"{"cmd":"call_window","visible":false}"#
-        );
-    }
+/// `{"cmd":"call_ui_dismiss","key":K}` asks the daemon to restore its notification presenter.
+pub fn call_ui_dismiss_line(key: &str) -> String {
+    serde_json::json!({ "cmd": "call_ui_dismiss", "key": key }).to_string()
 }
 
 /// "Open on phone": forward a notification click (phone event 2) for `key` on its service, which

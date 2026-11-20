@@ -2,10 +2,10 @@
 //!
 //! Driven entirely by the daemon's `call` / `waiting` objects (see `daemon.rs`): the window never
 //! guesses a phase, and a button is disabled whenever the daemon says the matching action is not
-//! available (`canAnswer` / `canEnd`). Closing the window only hides it; the next phase change or
-//! a new call brings it back, so the X is never a decline.
+//! available (`canAnswer` / `canEnd`). Closing the window asks the daemon to hand the call back to
+//! its notification presenter, so the X is never a decline.
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Instant;
 
@@ -45,13 +45,6 @@ pub struct CallWindow {
     key: RefCell<Option<String>>,
     waiting_key: RefCell<Option<String>>,
     handler: RefCell<Option<CommandHandler>>,
-    /// Silent presence handler, used to suppress the desktop call banner.
-    presence_handler: RefCell<Option<CommandHandler>>,
-    /// Whether the window is currently on screen (drives the presence command).
-    visible: Cell<bool>,
-    /// The (key, phase) the window was last presented for. A status with the same pair does not
-    /// re-present it, so closing the window while a call rings keeps it closed.
-    shown_for: RefCell<Option<(String, CallPhase)>>,
     timer_state: RefCell<Option<TimerState>>,
 }
 
@@ -66,6 +59,7 @@ impl CallWindow {
         let header_title = gtk::Label::new(None);
         header_title.add_css_class("title-4");
         let header = adw::HeaderBar::new();
+        header.set_decoration_layout(Some(":close"));
         header.set_title_widget(Some(&header_title));
 
         let app_label = gtk::Label::builder()
@@ -201,17 +195,16 @@ impl CallWindow {
             key: RefCell::default(),
             waiting_key: RefCell::default(),
             handler: RefCell::default(),
-            presence_handler: RefCell::default(),
-            visible: Cell::new(false),
-            shown_for: RefCell::default(),
             timer_state: RefCell::default(),
         });
 
-        // The X hides the window without declining the call. Restore the notification fallback by
-        // dropping presence, exactly as when the call window closes on its own.
+        // The X restores the daemon's notification fallback without declining the call.
         let weak = Rc::downgrade(&me);
         me.window.connect_close_request(move |_| {
             if let Some(cw) = weak.upgrade() {
+                if let Some(key) = cw.key.borrow().clone() {
+                    cw.send(daemon::call_ui_dismiss_line(&key));
+                }
                 cw.hide();
             }
             glib::Propagation::Stop
@@ -270,34 +263,26 @@ impl CallWindow {
         *self.handler.borrow_mut() = Some(Box::new(handler));
     }
 
-    /// Routes the silent call-window presence command to the app.
-    pub fn set_presence_handler(&self, handler: impl Fn(String) + 'static) {
-        *self.presence_handler.borrow_mut() = Some(Box::new(handler));
-    }
-
     /// Folds a status snapshot into the window. `call` is the daemon's published call, `waiting`
-    /// the second one. No call hides the window.
-    pub fn sync(&self, call: Option<&Call>, waiting: Option<&Call>) {
+    /// the second one. Only the registered GTK presenter may render it.
+    pub fn sync(&self, owns_call: bool, call: Option<&Call>, waiting: Option<&Call>) {
+        if !owns_call {
+            self.hide();
+            return;
+        }
         let Some(call) = call else {
             self.hide();
             return;
         };
         self.render(call, waiting);
-        let signature = (call.key.clone(), call.phase);
-        let changed = self.shown_for.borrow().as_ref() != Some(&signature);
-        self.shown_for.replace(Some(signature));
-        if changed {
-            self.present_window();
+        if !self.window.is_visible() {
+            self.window.present();
         }
     }
 
     /// Hides the window and forgets the call, e.g. when the daemon goes away.
     pub fn hide(&self) {
-        if self.visible.replace(false) {
-            self.send_presence(false);
-        }
         self.window.set_visible(false);
-        self.shown_for.replace(None);
         self.timer_state.replace(None);
         self.key.replace(None);
         self.waiting_key.replace(None);
@@ -306,19 +291,6 @@ impl CallWindow {
     fn send(&self, line: String) {
         if let Some(handler) = self.handler.borrow().as_ref() {
             handler(line);
-        }
-    }
-
-    fn present_window(&self) {
-        if !self.visible.replace(true) {
-            self.send_presence(true);
-        }
-        self.window.present();
-    }
-
-    fn send_presence(&self, visible: bool) {
-        if let Some(handler) = self.presence_handler.borrow().as_ref() {
-            handler(crate::daemon::call_window_line(visible));
         }
     }
 

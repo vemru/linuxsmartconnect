@@ -44,7 +44,7 @@ Noctalia Shell on Arch Linux. Other phones, app versions and desktops may behave
 | Notification action buttons and "Open" | 🟡 | Action buttons (e.g. "Mark as read") run on the phone through a short background app-streaming session, without a window. |
 | Notification dedupe, coalescing and themed icons | 🟡 | Prevents notification spam and shows native app/themed icons. |
 | Per-app notification mute | 🟡 | A mute toggle on each notification and a *Muted apps* list, in the GTK app and the Noctalia plugin. |
-| Incoming-call control | 🟡 | Calls are tracked in the daemon and published as `call` / `waiting` in the status object; `call_answer` / `call_end` answer, decline or hang up. The GTK call window shows the caller with Answer/Decline, then a timer and End, and suppresses the desktop call notification while visible. Verified with the phone's dialer (answer, decline, hang up); non-dialer apps, call waiting and video calls are untested. |
+| Incoming-call control | 🟡 | Calls are tracked in the daemon and published as `call` / `waiting` in the status object; `call_answer` / `call_end` answer, decline or hang up. Exactly one UI owns a call: `call_presenter` is `extension`, `gtk` or `notification`, chosen by long-lived registration (extension > gtk > notification). The GTK window has no minimize button; its X falls back to the notification. Verified with the phone's dialer (answer, decline, hang up); non-dialer apps, call waiting and video calls are untested. |
 | Clipboard text, both ways | ✅ | Password-manager copies are never sent to the phone. |
 | Clipboard images and files | ❌ | Protocol reconstructed ([file-exchange.md](protocol/file-exchange.md), [clipboard.md](protocol/clipboard.md)). |
 | SMS (read threads, send, mark read) | 🟡 | Control socket only, no UI yet. Needs enabling on the phone. |
@@ -317,10 +317,14 @@ which apps it forwards.
   dialer: answering goes active in 2.5–3.1 s, hanging up removes the call in about 0.4 s, declining
   ends it in about 0.55 s. The GTK call window opens on a call, shows the caller with Answer /
   Decline, switches to a local timer and End while active, and closes when the call ends; a second
-  call gets a compact "Call waiting" section. While that window is visible the desktop call
-  notification is suppressed; without the GTK window it remains the fallback. An optional GNOME
-  Shell extension under `extras/gnome-shell-extension/` can pin the call window top-right; the app
-  works without it. WhatsApp/Telegram calls, video calls, call waiting with two phones and HFP
+  call gets a compact "Call waiting" section. Only the presenter named by the daemon renders: while
+  the GTK window owns the call, the desktop banner is suppressed. Pressing X hands the call to the
+  notification presenter. An optional GNOME
+  Shell extension under `extras/gnome-shell-extension/` renders a ringing call as a top-right card
+  and an active call as a panel pill. The daemon publishes `call_presenter` (`extension`, `gtk` or
+  `notification`) and `call_presenter_id` so exactly one of them owns the call; closing the GTK
+  window with X hands the call to the desktop notification until the next call. The app works
+  without the extension. WhatsApp/Telegram calls, video calls, call waiting with two phones and HFP
   audio are untested.
 - **App icons** (🟡): the phone's own launcher icon from the app-icon cache
   (`~/.cache/smartconnect-linux/app-icons/`) when it has been downloaded, else an icon from your

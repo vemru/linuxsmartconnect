@@ -8,6 +8,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). The
 
 ### [Unreleased]
 
+### Changed
+
+- **One presenter per call:** the daemon now picks exactly one call UI (`call_presenter` in the status stream, priority extension > GTK > notification) from long-lived `call_ui` registrations, instead of letting each UI infer visibility. Duplicate call UIs (extension card, GTK window and desktop banner at once) are gone. GTK's X hands the call to the notification via `call_ui_dismiss` until the next call.
+
 ### Added
 
 - **Incoming-call control:** the daemon tracks CallStyle notifications (`type 6`) and publishes `call` / `waiting` in the status object, with `call_answer` and `call_end` control-socket commands; the GTK app shows a call window with Answer/Decline, a local timer and End, and suppresses the desktop call banner while that window is visible. Answer, Decline and Hang Up are verified on the phone's dialer; non-dialer apps, call waiting and video calls are untested.

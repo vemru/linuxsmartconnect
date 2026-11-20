@@ -131,7 +131,8 @@ for line in watch:
 | [`reply`](#reply) | JSON | yes | `ok` + `message` |
 | [`call_answer`](#call_answer) | JSON | yes | `ok` + `message` |
 | [`call_end`](#call_end) | JSON | yes | `ok` + `message` |
-| [`call_window`](#call_window) | JSON | no | `ok` + `message` |
+| [`call_ui`](#call_ui) | JSON | no (registration lives while connected) | `ok` + `id` + `presenter` |
+| [`call_ui_dismiss`](#call_ui_dismiss) | JSON | yes | `ok` + `presenter` |
 | [`notif_mute`](#notif_mute) | JSON | no | `ok` + `muted` |
 | [`sms_state`](#sms_state) | JSON | no | SMS snapshot |
 | [`sms_threads`](#sms_threads) | JSON | yes | `ok` + `enabled` + `threads` |
@@ -418,25 +419,42 @@ switches to `ending`; the call leaves `call` / `waiting` when the phone removes 
 lands reverts after 10 s with `"error":"the end could not be confirmed"`. See
 [notifications.md](protocol/notifications.md#calls-type-6).
 
-### `call_window`
+### `call_ui`
 
-Declares whether the GTK call window is on screen. While it is visible, the daemon does not mirror
-CallStyle (`type 6`) notifications to the desktop, and closes a call banner that was already shown.
+Registers the current connection as a call-UI presenter. The registration lasts for the lifetime of
+that socket: disconnecting unregisters immediately and the daemon re-picks the presenter. Send it on
+the same long-lived connection that carries `subscribe`, before the `subscribe` line.
 
 ```
-→ {"cmd":"call_window","visible":true}
-← {"message":"sent","ok":true}
-→ {"cmd":"call_window","visible":false}
-← {"message":"sent","ok":true}
+→ {"cmd":"call_ui","role":"gtk"}
+← {"ok":true,"message":"registered","role":"gtk","id":7,"presenter":"gtk"}
 ```
 
 | Request field | Type | Meaning |
 |---|---|---|
-| `visible` | bool, required | `true` when the call window opens, `false` when it closes. |
+| `role` | string, required | `extension` or `gtk`. Any other value is rejected. |
 
-The GUI sends this silently on window visibility changes. A call arriving while the app runs is held
-for 200 ms before the desktop banner is shown, so the window can declare presence first. When no GUI
-is running the desktop notification remains the fallback.
+The reply's `id` is the connection id. The status stream publishes `call_presenter`
+(`extension` \| `gtk` \| `notification`) and `call_presenter_id`; a UI renders the call only when both
+match itself. Priority is **extension > gtk > notification**. Exactly one presenter exists at a time;
+UIs never infer it from what they see on screen. When the presenter is a registered UI the daemon
+closes any call banner already on the desktop; when no UI is registered it posts the banner itself.
+
+### `call_ui_dismiss`
+
+The GTK window's X button. Hands the current call to the notification presenter without unregistering
+GTK. The dismissal is scoped to the current call key; the next call restores GTK as presenter.
+
+```
+→ {"cmd":"call_ui_dismiss","key":"0|com.android.dialer|1|x|10368"}
+← {"ok":true,"message":"dismissed","presenter":"notification"}
+```
+
+| Request field | Type | Meaning |
+|---|---|---|
+| `key` | string, required | The call's notification key (from `status.call.key`). |
+
+An extension that connects afterwards outranks the dismissal and takes the call back.
 
 ### `notif_mute`
 
@@ -648,7 +666,8 @@ Message (in `messages`):
 | `the phone did not offer an Answer action` | `call_answer` | No valid Answer position resolved from `callStyleActions` (changed build). |
 | `the phone did not offer a Decline action` | `call_end` (ringing) | No valid Decline position resolved from `callStyleActions`. |
 | `the phone did not offer a Hang Up action` | `call_end` (active) | No valid Hang Up position resolved from `callStyleActions`. |
-| `call_window needs visible` | `call_window` | `visible` missing or not a boolean. |
+| `role must be extension or gtk` | `call_ui` | Missing or unknown `role`. |
+| `call_ui_dismiss needs key` | `call_ui_dismiss` | `key` missing or empty. |
 | `not connected` | `disconnect` | No phone session. |
 | `send needs service and data` | `send` | `service` missing or not an integer, or `data` missing. |
 | `empty reply` | `reply` | `key` missing or `text` blank. |

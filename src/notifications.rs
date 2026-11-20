@@ -19,7 +19,6 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -32,7 +31,8 @@ use tokio::sync::broadcast;
 use tracing::{debug, info, warn};
 use zbus::zvariant;
 
-use crate::status::runtime_dir;
+use crate::call_ui::CallPresenter;
+use crate::status::{StatusHub, runtime_dir};
 
 pub const SERVICE_NOTIFY: i64 = 5;
 pub const SERVICE_NOTIFY_WIDGET: i64 = 37;
@@ -40,8 +40,6 @@ const TYPE_CUSTOM_VIEW: i64 = 7;
 const BODY_MAX_CHARS: usize = 600;
 /// At most one desktop update per key in this window; the latest frame wins.
 const UPDATE_MIN_INTERVAL: Duration = Duration::from_millis(1000);
-/// Give the GTK call window this long to announce its presence before a call banner is shown.
-const CALL_PRESENCE_GRACE: Duration = Duration::from_millis(200);
 
 #[zbus::proxy(
     interface = "org.freedesktop.Notifications",
@@ -98,12 +96,14 @@ pub struct Notifier {
     /// The daemon's `watch` stream (`Daemon::from_phone`): clicks are announced there as
     /// [`click_event`]s on [`crate::proto::SERVICE_LOCAL_EVENTS`] for the stream host.
     local_events: broadcast::Sender<PhoneCommand>,
-    /// True while the GTK call window is visible: CallStyle banners are suppressed then.
-    call_ui_visible: AtomicBool,
+    /// The single source of truth for which UI owns the call.
+    status: Arc<StatusHub>,
+    /// The latest CallStyle frame, kept so the notification can take over on disconnect/dismiss.
+    active_call_frame: Mutex<Option<(i64, String, Value)>>,
     /// Notification keys whose desktop banner is a CallStyle call.
     call_keys: Mutex<HashSet<String>>,
-    /// Bumped when a notification is removed, so a delayed call post can detect cancellation.
-    frame_generation: Mutex<HashMap<String, u64>>,
+    /// Keys with a desktop post in flight, so concurrent restores post one banner, not two.
+    posting: Mutex<HashSet<String>>,
 }
 
 impl Notifier {
@@ -112,6 +112,7 @@ impl Notifier {
     pub async fn new(
         to_phone: broadcast::Sender<PhoneCommand>,
         local_events: broadcast::Sender<PhoneCommand>,
+        status: Arc<StatusHub>,
     ) -> Result<Arc<Self>> {
         let conn = zbus::Connection::session().await?;
         let proxy = NotificationsProxy::new(&conn).await?;
@@ -123,9 +124,10 @@ impl Notifier {
             last: Mutex::default(),
             pending: Mutex::default(),
             local_events,
-            call_ui_visible: AtomicBool::new(false),
+            status,
+            active_call_frame: Mutex::default(),
             call_keys: Mutex::default(),
-            frame_generation: Mutex::default(),
+            posting: Mutex::default(),
         });
         tokio::spawn(me.clone().follow_signals());
         Ok(me)
@@ -151,19 +153,75 @@ impl Notifier {
         }
     }
 
-    /// Presence from the GTK call window. While it is visible, CallStyle banners are suppressed;
-    /// any call banner already on the desktop is closed.
-    pub fn set_call_ui_visible(self: &Arc<Self>, visible: bool) {
-        debug!(visible, "notifications: call window presence update");
-        self.call_ui_visible.store(visible, Ordering::SeqCst);
-        if visible {
-            let keys: Vec<String> = self.call_keys.lock().unwrap().drain().collect();
+    /// Reconcile the desktop banner with the daemon's chosen presenter. Called after any
+    /// registration, disconnect or dismissal: closing and posting are both idempotent.
+    pub async fn sync_call_presenter(self: &Arc<Self>) {
+        let presenter = self.status.presenter();
+        debug!(
+            presenter = presenter.as_str(),
+            "notifications: presenter changed"
+        );
+        let keys: Vec<String> = self.call_keys.lock().unwrap().iter().cloned().collect();
+        if presenter != CallPresenter::Notification {
             if !keys.is_empty() {
-                let me = self.clone();
-                tokio::spawn(async move {
-                    me.close_call_banners(&keys).await;
-                });
+                self.close_call_banners(&keys).await;
             }
+        } else {
+            self.restore_fallback_banner().await;
+        }
+    }
+
+    /// Claims a key and posts one call banner. Every call-post path goes through here so a fresh
+    /// phone frame cannot race a presenter-change restore into two banners with different ids.
+    async fn post_call_banner(&self, svc: i64, key: &str, n: &Value) {
+        {
+            let mut posting = self.posting.lock().unwrap();
+            if self.shown.lock().unwrap().by_key.contains_key(key)
+                || !posting.insert(key.to_owned())
+            {
+                return;
+            }
+        }
+        debug!(%key, "notifications: notification is presenter, posting call banner");
+        // Clear any cached fingerprint so show_now will not drop this frame as identical.
+        self.last.lock().unwrap().remove(key);
+        self.show_now(svc, key, n).await;
+        self.posting.lock().unwrap().remove(key);
+        self.close_if_taken_over(key).await;
+    }
+
+    /// Posts the desktop banner for the active call when the notification is the presenter.
+    pub async fn restore_fallback_banner(self: &Arc<Self>) {
+        if self.status.presenter() != CallPresenter::Notification {
+            return;
+        }
+        let frame = self.active_call_frame.lock().unwrap().clone();
+        if let Some((svc, key, n)) = frame {
+            self.post_call_banner(svc, &key, &n).await;
+        }
+    }
+
+    /// Forgets the retained call frame without touching the desktop (used by unit tests).
+    pub fn clear_active_call(&self) {
+        self.active_call_frame.lock().unwrap().take();
+    }
+
+    /// Forgets the active call frame and closes any call banner left on screen. Used on phone
+    /// disconnect, where the phone cannot send a `type 6` event 2 to close it.
+    pub async fn clear_call_ui(self: &Arc<Self>) {
+        *self.active_call_frame.lock().unwrap() = None;
+        let keys: Vec<String> = self.call_keys.lock().unwrap().drain().collect();
+        if !keys.is_empty() {
+            self.close_call_banners(&keys).await;
+        }
+    }
+
+    /// A UI can register while a D-Bus `notify()` is in flight. Recheck after posting so a banner
+    /// posted for the old presenter is not left on screen beside the new one.
+    async fn close_if_taken_over(&self, key: &str) {
+        if self.status.presenter() != CallPresenter::Notification {
+            debug!(%key, "notifications: presenter took over during post, closing banner");
+            self.close_call_banners(&[key.to_owned()]).await;
         }
     }
 
@@ -203,17 +261,17 @@ impl Notifier {
             Some(0 | 1) => {
                 let is_call =
                     n.get("type").and_then(Value::as_i64) == Some(crate::calls::TYPE_CALL);
-                if is_call && self.call_ui_visible.load(Ordering::SeqCst) {
-                    debug!("notifications: call banner skipped (window visible)");
-                    return; // the GTK call window owns the UI while it is visible
+                if is_call {
+                    *self.active_call_frame.lock().unwrap() =
+                        Some((service_id, key.to_owned(), n.clone()));
                 }
-                let generation = self
-                    .frame_generation
-                    .lock()
-                    .unwrap()
-                    .get(key)
-                    .copied()
-                    .unwrap_or(0);
+                let presenter = self.status.presenter();
+                if is_call && presenter != CallPresenter::Notification {
+                    debug!(presenter = presenter.as_str(), %key, "notifications: call banner skipped");
+                    // A UI may have taken over while a banner was still on screen.
+                    self.close_call_banners(&[key.to_owned()]).await;
+                    return;
+                }
                 if n.get("type").and_then(Value::as_i64) == Some(TYPE_CUSTOM_VIEW) {
                     return; // custom RemoteViews: no usable text (Windows drops these too)
                 }
@@ -247,57 +305,34 @@ impl Notifier {
                             let (me, key) = (self.clone(), key.to_owned());
                             tokio::spawn(async move {
                                 tokio::time::sleep(UPDATE_MIN_INTERVAL - elapsed).await;
-                                if me.call_ui_visible.load(Ordering::SeqCst) {
+                                if is_call && me.status.presenter() != CallPresenter::Notification {
                                     me.pending.lock().unwrap().remove(&key);
-                                    debug!("notifications: coalesced call banner skipped");
+                                    debug!(
+                                        "notifications: coalesced call banner skipped (presenter)"
+                                    );
                                     return;
                                 }
                                 let next = me.pending.lock().unwrap().remove(&key);
                                 if let Some((svc, frame)) = next {
-                                    me.show_now(svc, &key, &frame).await;
+                                    if is_call {
+                                        me.post_call_banner(svc, &key, &frame).await;
+                                    } else {
+                                        me.show_now(svc, &key, &frame).await;
+                                    }
                                 }
                             });
                         }
                     }
                     _ if is_call => {
-                        // The GUI declares presence on the same status update that opens its window.
-                        // Wait briefly so a call arriving while the app runs does not double-show.
-                        let (me, svc, key, frame) =
-                            (self.clone(), service_id, key.to_owned(), n.clone());
-                        tokio::spawn(async move {
-                            tokio::time::sleep(CALL_PRESENCE_GRACE).await;
-                            let still_live = me
-                                .frame_generation
-                                .lock()
-                                .unwrap()
-                                .get(&key)
-                                .copied()
-                                .unwrap_or(0)
-                                == generation;
-                            if !still_live || me.call_ui_visible.load(Ordering::SeqCst) {
-                                debug!(still_live, "notifications: delayed call banner skipped");
-                                return;
-                            }
-                            debug!("notifications: showing delayed call banner");
-                            me.show_now(svc, &key, &frame).await;
-                        });
+                        // The daemon already chose the notification: post immediately. A UI that
+                        // registers later gets the banner closed by `sync_call_presenter`.
+                        self.post_call_banner(service_id, key, n).await;
                     }
                     _ => self.show_now(service_id, key, n).await,
                 }
             }
             Some(2) => {
-                // Invalidate any delayed call post for this key so a short ring cannot leave a
-                // phantom banner after the phone has already removed the notification.
-                {
-                    let mut generations = self.frame_generation.lock().unwrap();
-                    let generation = generations.entry(key.to_owned()).or_insert(0);
-                    *generation += 1;
-                }
-                let (me, removed) = (self.clone(), key.to_owned());
-                tokio::spawn(async move {
-                    tokio::time::sleep(Duration::from_secs(1)).await;
-                    me.frame_generation.lock().unwrap().remove(&removed);
-                });
+                self.active_call_frame.lock().unwrap().take();
                 self.call_keys.lock().unwrap().remove(key);
                 self.pending.lock().unwrap().remove(key);
                 self.last.lock().unwrap().remove(key);
@@ -340,7 +375,21 @@ impl Notifier {
                 .unwrap_or_default()
                 .to_owned()
         };
-        let app = s("apk_name");
+        let is_call = n.get("type").and_then(Value::as_i64) == Some(crate::calls::TYPE_CALL);
+        // Call frames often omit `apk_name`; an empty app name makes GNOME label the banner
+        // "Unknown App". Always send a readable name.
+        let app = {
+            let name = s("apk_name");
+            if name.is_empty() {
+                if is_call {
+                    "Phone".to_owned()
+                } else {
+                    "Smart Connect".to_owned()
+                }
+            } else {
+                name
+            }
+        };
         let pkg = s("package_name");
         let title = first_non_empty(&[s("conversation_title"), s("title"), app.clone()]);
         let body = truncate(&body_text(&d), BODY_MAX_CHARS);
@@ -388,13 +437,22 @@ impl Notifier {
         }
         let actions: Vec<&str> = actions.iter().map(String::as_str).collect();
 
-        let urgency: u8 = match d.get("priority").and_then(Value::as_i64).unwrap_or(0) {
-            p if p >= 2 => 2,
-            p if p <= -1 => 0,
-            _ => 1,
+        // Calls are critical: the banner must stay up until the user acts, and GNOME shows it even
+        // when a normal-priority post would be collapsed into the notification list only.
+        let urgency: u8 = if is_call {
+            2
+        } else {
+            match d.get("priority").and_then(Value::as_i64).unwrap_or(0) {
+                p if p >= 2 => 2,
+                p if p <= -1 => 0,
+                _ => 1,
+            }
         };
         let mut hints: HashMap<&str, zvariant::Value<'_>> = HashMap::new();
         hints.insert("urgency", zvariant::Value::U8(urgency));
+        if is_call {
+            hints.insert("category", zvariant::Value::from("call".to_owned()));
+        }
         hints.insert("x-smartconnect-key", zvariant::Value::from(key.to_owned()));
         if let Some(pic) = picture.as_deref() {
             hints.insert("image-path", zvariant::Value::from(pic.to_owned()));
@@ -1121,5 +1179,179 @@ mod tests {
             "long version"
         );
         assert_eq!(body_text(&json!({ "content": "short" })), "short");
+    }
+
+    fn test_status() -> std::sync::Arc<crate::status::StatusHub> {
+        std::sync::Arc::new(crate::status::StatusHub::new(false, None))
+    }
+
+    #[tokio::test]
+    async fn call_banner_only_when_notification_is_presenter() {
+        let (to_phone, _) = broadcast::channel(16);
+        let (local_events, _) = broadcast::channel(16);
+        let status = test_status();
+        let notifier = match Notifier::new(to_phone, local_events, status.clone()).await {
+            Ok(n) => n,
+            Err(_) => return, // No D-Bus daemon available in this test environment
+        };
+        let (gtk_id, _) = status.register_ui("gtk").unwrap();
+        assert_eq!(status.presenter(), crate::call_ui::CallPresenter::Gtk);
+
+        let call_frame = json!({
+            "key": "test_call_presenter",
+            "event": 0,
+            "type": crate::calls::TYPE_CALL,
+            "data": { "title": "Incoming call", "person_name": "Alice" }
+        });
+        status.apply(crate::notifications::SERVICE_NOTIFY, &call_frame);
+        notifier.handle(5, &call_frame).await;
+        assert!(
+            !notifier
+                .shown
+                .lock()
+                .unwrap()
+                .by_key
+                .contains_key("test_call_presenter")
+        );
+
+        // GTK goes away: the daemon re-picks and the banner appears.
+        status.unregister_ui(gtk_id);
+        notifier.sync_call_presenter().await;
+        assert!(
+            notifier
+                .shown
+                .lock()
+                .unwrap()
+                .by_key
+                .contains_key("test_call_presenter")
+        );
+
+        // An extension takes over: the banner is closed immediately.
+        status.register_ui("extension").unwrap();
+        notifier.sync_call_presenter().await;
+        assert!(
+            !notifier
+                .shown
+                .lock()
+                .unwrap()
+                .by_key
+                .contains_key("test_call_presenter")
+        );
+    }
+
+    #[tokio::test]
+    async fn active_call_frame_retained_and_cleared_on_removal_or_disconnect() {
+        let (to_phone, _) = broadcast::channel(16);
+        let (local_events, _) = broadcast::channel(16);
+        let status = test_status();
+        let notifier = match Notifier::new(to_phone, local_events, status.clone()).await {
+            Ok(n) => n,
+            Err(_) => return,
+        };
+
+        let call_frame = json!({
+            "key": "test_call_1",
+            "event": 0,
+            "type": crate::calls::TYPE_CALL,
+            "data": {
+                "title": "Incoming call",
+                "person_name": "Alice"
+            }
+        });
+
+        // A registered UI owns the call; the frame is still retained for failover.
+        status.register_ui("gtk").unwrap();
+        status.apply(crate::notifications::SERVICE_NOTIFY, &call_frame);
+        notifier.handle(5, &call_frame).await;
+
+        // Active call frame should be stored even though banner was skipped
+        let frame = notifier.active_call_frame.lock().unwrap().clone();
+        assert!(frame.is_some());
+        let (svc, key, val) = frame.unwrap();
+        assert_eq!(svc, 5);
+        assert_eq!(key, "test_call_1");
+        assert_eq!(val["data"]["person_name"], "Alice");
+
+        // Clear active call (e.g. disconnect)
+        notifier.clear_active_call();
+        assert!(notifier.active_call_frame.lock().unwrap().is_none());
+
+        // Re-insert call frame
+        notifier.handle(5, &call_frame).await;
+        assert!(notifier.active_call_frame.lock().unwrap().is_some());
+
+        // Event 2 (removal) clears active call frame
+        let removal_frame = json!({
+            "key": "test_call_1",
+            "event": 2,
+            "type": crate::calls::TYPE_CALL
+        });
+        notifier.handle(5, &removal_frame).await;
+        assert!(notifier.active_call_frame.lock().unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn dismiss_then_new_call_key_restores_gtk_presenter() {
+        let (to_phone, _) = broadcast::channel(16);
+        let (local_events, _) = broadcast::channel(16);
+        let status = test_status();
+        let notifier = match Notifier::new(to_phone, local_events, status.clone()).await {
+            Ok(n) => n,
+            Err(_) => return,
+        };
+        status.register_ui("gtk").unwrap();
+
+        let first = json!({
+            "key": "test_call_dismiss",
+            "event": 0,
+            "type": crate::calls::TYPE_CALL,
+            "data": { "title": "Incoming call", "person_name": "Bob" }
+        });
+        status.apply(crate::notifications::SERVICE_NOTIFY, &first);
+        notifier.handle(5, &first).await;
+        assert!(
+            !notifier
+                .shown
+                .lock()
+                .unwrap()
+                .by_key
+                .contains_key("test_call_dismiss")
+        );
+
+        // X on the GTK window: the notification owns this call.
+        status.dismiss_call("test_call_dismiss");
+        assert_eq!(
+            status.presenter(),
+            crate::call_ui::CallPresenter::Notification
+        );
+        notifier.sync_call_presenter().await;
+        assert!(
+            notifier
+                .shown
+                .lock()
+                .unwrap()
+                .by_key
+                .contains_key("test_call_dismiss")
+        );
+
+        // The next call resets the dismissal, so GTK owns it again and the banner is closed.
+        let second = json!({
+            "key": "test_call_next",
+            "event": 0,
+            "type": crate::calls::TYPE_CALL,
+            "data": { "title": "Incoming call", "person_name": "Cara" }
+        });
+        status.apply(crate::notifications::SERVICE_NOTIFY, &second);
+        assert_eq!(status.presenter(), crate::call_ui::CallPresenter::Gtk);
+        notifier.handle(5, &second).await;
+        notifier.sync_call_presenter().await;
+        assert!(
+            !notifier
+                .shown
+                .lock()
+                .unwrap()
+                .by_key
+                .contains_key("test_call_next")
+        );
     }
 }
