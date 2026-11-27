@@ -319,6 +319,19 @@ async fn main() -> Result<()> {
         }
 
         if let Cmd::Send { device: _, paths } = &cmd {
+            // The daemon runs from its own directory (systemd: $HOME), so a relative path from
+            // this shell or a file-manager script would not resolve there.
+            let cwd = std::env::current_dir()?;
+            let paths: Vec<PathBuf> = paths
+                .iter()
+                .map(|p| {
+                    if p.is_absolute() {
+                        p.clone()
+                    } else {
+                        cwd.join(p)
+                    }
+                })
+                .collect();
             let req = serde_json::json!({
                 "cmd": "send_file",
                 "paths": paths

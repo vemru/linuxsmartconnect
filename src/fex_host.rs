@@ -171,6 +171,7 @@ mod tests {
             name: "clipboard.png".into(),
             mime_type: "image/png".into(),
             data: b"\x89PNG\r\n\x1a\nfake".to_vec(),
+            dir: false,
         }
     }
 

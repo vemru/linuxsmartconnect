@@ -40,12 +40,15 @@ const STEP_TIMEOUT: Duration = Duration::from_secs(20);
 /// How long the receiver may take between accepting and reporting the outcome.
 const TRANSFER_TIMEOUT: Duration = Duration::from_secs(120);
 
-/// One file to send.
+/// One entry to send: a file, or a directory (empty `data`, `dir` set, `name` ending in `/`).
 #[derive(Debug, Clone)]
 pub struct OutFile {
+    /// The entry name inside the zip; nested files carry their folder as `folder/file` and
+    /// directories end in `/`.
     pub name: String,
     pub mime_type: String,
     pub data: Vec<u8>,
+    pub dir: bool,
 }
 
 /// An offered transfer: its id, the zip it serves and the `sendRequest` that describes it.
@@ -78,20 +81,43 @@ impl Registry {
     /// Zips `files` and offers them. The phone learns about it from the caller (for the clipboard,
     /// a service 2 message carrying our port and certificate fingerprint).
     pub fn offer(&self, files: &[OutFile], sender_id: &str, sender_name: &str) -> Arc<Transfer> {
-        let entries: Vec<(&str, &[u8])> = files
+        // Zip names for directories must end in `/`; the phone reads that as a directory entry.
+        let entries_owned: Vec<(String, &[u8])> = files
             .iter()
-            .map(|f| (f.name.as_str(), f.data.as_slice()))
+            .map(|f| {
+                let name = if f.dir {
+                    format!("{}/", f.name.trim_end_matches('/'))
+                } else {
+                    f.name.clone()
+                };
+                let data = if f.dir { &[][..] } else { f.data.as_slice() };
+                (name, data)
+            })
+            .collect();
+        let entries: Vec<(&str, &[u8])> = entries_owned
+            .iter()
+            .map(|(name, data)| (name.as_str(), *data))
             .collect();
         let zip = zip::write_stored(&entries);
         let task_id = fresh_id(32);
+        let plain_files = files.iter().filter(|f| !f.dir).count() as u64;
+        let has_dirs = files.iter().any(|f| f.dir);
         let request = SendRequest {
             id: task_id.clone(),
             sender_id: sender_id.to_owned(),
             sender_name: sender_name.to_owned(),
-            file_name: files.first().map(|f| f.name.clone()).unwrap_or_default(),
-            file_count: files.len() as u64,
-            mime_type: if files.len() == 1 {
-                files[0].mime_type.clone()
+            // A folder send is named after the folder, not after the first file inside it.
+            file_name: files
+                .first()
+                .map(|f| f.name.trim_end_matches('/').to_owned())
+                .unwrap_or_default(),
+            file_count: plain_files,
+            mime_type: if plain_files == 1 && !has_dirs {
+                files
+                    .iter()
+                    .find(|f| !f.dir)
+                    .map(|f| f.mime_type.clone())
+                    .unwrap_or_default()
             } else {
                 "*/*".to_owned()
             },
@@ -101,10 +127,10 @@ impl Registry {
                 .iter()
                 .enumerate()
                 .map(|(i, f)| FileEntry {
-                    name: f.name.clone(),
+                    name: f.name.trim_end_matches('/').to_owned(),
                     mime_type: f.mime_type.clone(),
                     size: f.data.len() as u64,
-                    dir: false,
+                    dir: f.dir,
                     index: i as i64,
                 })
                 .collect(),
@@ -342,7 +368,41 @@ mod tests {
             name: "clipboard.png".into(),
             mime_type: "image/png".into(),
             data: b"\x89PNG\r\n\x1a\nfake".to_vec(),
+            dir: false,
         }
+    }
+
+    #[test]
+    fn an_offer_can_carry_a_folder() {
+        let r = Registry::default();
+        let t = r.offer(
+            &[
+                OutFile {
+                    name: "smt/".into(),
+                    mime_type: String::new(),
+                    data: Vec::new(),
+                    dir: true,
+                },
+                OutFile {
+                    name: "smt/a.txt".into(),
+                    mime_type: "text/plain".into(),
+                    data: b"hi".to_vec(),
+                    dir: false,
+                },
+            ],
+            "pc-id",
+            "Linux PC",
+        );
+        assert_eq!(t.request.file_name, "smt");
+        assert_eq!(t.request.file_count, 1);
+        assert_eq!(t.request.mime_type, "*/*");
+        assert!(t.request.files[0].dir);
+        assert!(!t.request.files[1].dir);
+        assert_eq!(t.request.files[1].name, "smt/a.txt");
+        let back = zip::read_all(&t.zip).unwrap();
+        assert_eq!(back.len(), 1, "directory entries are skipped on read");
+        assert_eq!(back[0].name, "smt/a.txt");
+        assert_eq!(back[0].data, b"hi");
     }
 
     #[test]

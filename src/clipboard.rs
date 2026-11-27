@@ -300,6 +300,7 @@ impl LocalClipboard {
             name: image.name.clone(),
             mime_type: image.mime.clone(),
             data: image.data.clone(),
+            dir: false,
         };
         let offer = self.fex.offer(&[file], "", "");
         info!(

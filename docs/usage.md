@@ -1346,6 +1346,10 @@ Go to **System Settings** → **Shortcuts** → **Custom Shortcuts** → **Edit*
 
 Right-click any file or directory to push it directly to your phone's Downloads folder over Smart Connect:
 
+- **Folders keep their name and layout:** selecting `smt/` sends `smt/…`; the phone unpacks the downloaded zip into a folder called `smt`. Symlinks inside a selected folder are skipped.
+- **Relative paths** are resolved from the directory you ran the command in (the folder the file manager shows for the Nautilus script).
+- **Limits:** one selection may carry up to 10 000 entries and 512 MiB of file data (the offer holds its zip in memory).
+
 - **CLI Usage**:
   ```bash
   smartconnect-send file1.jpg video.mp4 folder/

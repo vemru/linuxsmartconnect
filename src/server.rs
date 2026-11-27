@@ -21,7 +21,7 @@ use tokio_rustls::rustls::{self, ServerConfig};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
 use tokio_tungstenite::tungstenite::http::StatusCode;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::clipboard::{self, LocalClipboard};
 use crate::discovery;
@@ -374,7 +374,8 @@ impl Daemon {
         true
     }
 
-    /// Offers file(s) on the PC to the phone over fex and sends the service 2 download request.
+    /// Offers file(s) and folder(s) on the PC to the phone over fex and sends the service 2
+    /// download request. A folder keeps its name on the phone (`smt/…` inside the zip).
     pub fn send_files(&self, paths: &[std::path::PathBuf]) -> anyhow::Result<(String, usize)> {
         if !self.is_connected() {
             anyhow::bail!("phone not connected");
@@ -383,27 +384,24 @@ impl Daemon {
             anyhow::bail!("fex transfer endpoint not available");
         };
         let mut out_files = Vec::new();
+        let mut total_bytes = 0u64;
         for p in paths {
             if !p.exists() {
                 anyhow::bail!("file not found: {}", p.display());
             }
             let name = p
                 .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .to_string();
-            let data = std::fs::read(p).with_context(|| format!("reading {}", p.display()))?;
-            let mime = guess_mime(p);
-            out_files.push(smartconnect_fex::server::OutFile {
-                name,
-                mime_type: mime.to_string(),
-                data,
-            });
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            if name.is_empty() {
+                anyhow::bail!("cannot send {}: it has no name", p.display());
+            }
+            collect_send_entries(p, name, &mut out_files, &mut total_bytes)?;
         }
         if out_files.is_empty() {
             anyhow::bail!("no files to send");
         }
-        let count = out_files.len();
+        let count = out_files.iter().filter(|f| !f.dir).count();
         let offer = self.clipboard.fex().offer(
             &out_files,
             &self.identity.device_id,
@@ -414,7 +412,7 @@ impl Daemon {
             .device_id()
             .unwrap_or_else(|| "phone".to_string());
 
-        for f in &out_files {
+        for f in out_files.iter().filter(|f| !f.dir) {
             let _ = self.timeline.append(
                 &phone_id,
                 "file",
@@ -1321,6 +1319,72 @@ fn pc_battery() -> i64 {
         .unwrap_or(100)
 }
 
+/// A PC → phone send holds the whole zip in memory, so cap what one selection may carry.
+const SEND_MAX_BYTES: u64 = 512 * 1024 * 1024;
+/// The zip format counts entries in 16 bits; stay well below it (and below a phone's patience).
+const SEND_MAX_ENTRIES: usize = 10_000;
+
+/// Adds `path` (and, for a folder, everything below it) to `out`, naming entries under `name`.
+/// Symlinks inside a folder are skipped so a cycle cannot fill memory; the top path is followed.
+fn collect_send_entries(
+    path: &Path,
+    name: String,
+    out: &mut Vec<smartconnect_fex::server::OutFile>,
+    bytes: &mut u64,
+) -> Result<()> {
+    let meta = std::fs::metadata(path).with_context(|| format!("reading {}", path.display()))?;
+    if meta.is_dir() {
+        if out.len() >= SEND_MAX_ENTRIES {
+            bail!("more than {SEND_MAX_ENTRIES} entries to send; pick a smaller folder");
+        }
+        out.push(smartconnect_fex::server::OutFile {
+            name: format!("{}/", name.trim_end_matches('/')),
+            mime_type: String::new(),
+            data: Vec::new(),
+            dir: true,
+        });
+        let mut children: Vec<_> = std::fs::read_dir(path)
+            .with_context(|| format!("listing {}", path.display()))?
+            .collect::<std::io::Result<Vec<_>>>()
+            .with_context(|| format!("listing {}", path.display()))?;
+        children.sort_by_key(|entry| entry.file_name());
+        for child in children {
+            if child
+                .file_type()
+                .with_context(|| format!("reading {}", child.path().display()))?
+                .is_symlink()
+            {
+                debug!(path = %child.path().display(), "send: skipping a symlink inside a folder");
+                continue;
+            }
+            let child_name = format!(
+                "{}/{}",
+                name.trim_end_matches('/'),
+                child.file_name().to_string_lossy()
+            );
+            collect_send_entries(&child.path(), child_name, out, bytes)?;
+        }
+    } else if meta.is_file() {
+        *bytes = (*bytes).saturating_add(meta.len());
+        if *bytes > SEND_MAX_BYTES {
+            bail!(
+                "the selection is larger than {} MiB",
+                SEND_MAX_BYTES / (1024 * 1024)
+            );
+        }
+        let data = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+        out.push(smartconnect_fex::server::OutFile {
+            name,
+            mime_type: guess_mime(path).to_string(),
+            data,
+            dir: false,
+        });
+    } else {
+        bail!("not a regular file: {}", path.display());
+    }
+    Ok(())
+}
+
 fn guess_mime(path: &std::path::Path) -> &'static str {
     match path
         .extension()
@@ -1341,6 +1405,32 @@ fn guess_mime(path: &std::path::Path) -> &'static str {
         "mkv" => "video/x-matroska",
         "mp3" => "audio/mpeg",
         _ => "application/octet-stream",
+    }
+}
+
+#[cfg(test)]
+mod send_tests {
+    use super::*;
+
+    #[test]
+    fn a_folder_keeps_its_name_and_layout() {
+        let dir = std::env::temp_dir().join(format!("sc-send-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("smt/sub")).unwrap();
+        std::fs::write(dir.join("smt/a.txt"), b"hello").unwrap();
+        std::fs::write(dir.join("smt/sub/b.png"), b"\x89PNG").unwrap();
+
+        let mut out = Vec::new();
+        let mut bytes = 0;
+        collect_send_entries(&dir.join("smt"), "smt".into(), &mut out, &mut bytes).unwrap();
+        let names: Vec<_> = out.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, ["smt/", "smt/a.txt", "smt/sub/", "smt/sub/b.png"]);
+        assert_eq!(bytes, 9);
+        assert_eq!(out[1].mime_type, "text/plain");
+        assert_eq!(out[3].mime_type, "image/png");
+        assert!(out[0].dir && out[2].dir);
+        assert!(!out[1].dir && !out[3].dir);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 

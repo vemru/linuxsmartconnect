@@ -195,7 +195,14 @@ if [ -d "$nautilus_scripts" ] || command -v nautilus >/dev/null 2>&1; then
   else
     cat <<'NS' > "$nautilus_scripts/Send to Phone (Smart Connect)"
 #!/usr/bin/env bash
+# Nautilus runs scripts from the shown folder and passes the selected names as arguments; the
+# absolute paths are exported as well. Prefer them: smartconnectd runs from its own directory,
+# so a bare name would not resolve there.
 BIN="$(command -v smartconnect-send 2>/dev/null || echo "$HOME/.local/bin/smartconnect-send")"
+if [ -n "${NAUTILUS_SCRIPT_SELECTED_FILE_PATHS:-}" ]; then
+  mapfile -t paths <<< "${NAUTILUS_SCRIPT_SELECTED_FILE_PATHS%$'\n'}"
+  exec "$BIN" "${paths[@]}"
+fi
 exec "$BIN" "$@"
 NS
     chmod 755 "$nautilus_scripts/Send to Phone (Smart Connect)"

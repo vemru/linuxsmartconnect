@@ -8,6 +8,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). The
 
 ### [Unreleased]
 
+### Fixed
+
+- **"Send to phone" failed for folders and relative paths:** the Nautilus script passed the bare selected name (`smt`), which the daemon resolved against its own working directory (`file not found: smt`), and a directory path then failed with `Is a directory`. Relative paths are now resolved from the caller's directory, and a folder is sent with its name and layout (`Downloads/smt/…`) instead of being read as a file. One selection may carry 10 000 entries and 512 MiB.
+
 ### Changed
 
 - **One presenter per call:** the daemon now picks exactly one call UI (`call_presenter` in the status stream, priority extension > GTK > notification) from long-lived `call_ui` registrations, instead of letting each UI infer visibility. Duplicate call UIs (extension card, GTK window and desktop banner at once) are gone. GTK's X hands the call to the notification via `call_ui_dismiss` until the next call.

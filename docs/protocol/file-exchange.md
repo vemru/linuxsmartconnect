@@ -485,6 +485,12 @@ phone → PC   ack:Client1001:status
 - The zip is written in streaming mode: general-purpose flag bit 3 (sizes and CRC in a data
   descriptor), zeros in the local headers, real sizes in the central directory. Icon entries use
   method 0 (Store) (OBSERVED). Entry names are the plain file names, no directories.
+- **Folder sends (PC → phone, implemented here):** a selected folder keeps its name: files are
+  entries named `folder/sub/file`, directories appear in `sendRequest.file` with `dir: true` and in
+  the zip as `folder/` entries. `fileName` is the folder name, `fileCount` counts files only, and
+  `mimeType` is `*/*`. The phone unpacking nested entries into `Downloads/<folder>/` is
+  **INFERRED** from the phone's own folder layout and from this project's receiver; not yet
+  observed on a device.
 - `status.type` (the phone's `server.Status{TaskId, Type, Reason}`): **0** fires the sender's
   `onProgress` with 0 bytes done, **1** fires `onComplete`, **2** and **3** fire `onFailure` with
   `code` = the type and the `reason` text (all OBSERVED by sending each value). This project sends 1
