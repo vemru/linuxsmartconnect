@@ -8,17 +8,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). The
 
 ### [Unreleased]
 
-### Fixed
+## [0.4.0] - 2026-11-27
 
-- **"Send to phone" failed for folders and relative paths:** the Nautilus script passed the bare selected name (`smt`), which the daemon resolved against its own working directory (`file not found: smt`), and a directory path then failed with `Is a directory`. Relative paths are now resolved from the caller's directory, and a folder is sent with its name and layout (`Downloads/smt/…`) instead of being read as a file. One selection may carry 10 000 entries and 512 MiB.
+### Added
+
+- **Incoming-call control:** the daemon tracks CallStyle notifications (`type 6`) and publishes `call` / `waiting` in the status object, with `call_answer` and `call_end` control-socket commands; the GTK app shows a call window with Answer/Decline, a local timer and End, and suppresses the desktop call banner while that window is visible. Answer, Decline and Hang Up are verified on the phone's dialer; non-dialer apps, call waiting and video calls are untested.
 
 ### Changed
 
 - **One presenter per call:** the daemon now picks exactly one call UI (`call_presenter` in the status stream, priority extension > GTK > notification) from long-lived `call_ui` registrations, instead of letting each UI infer visibility. Duplicate call UIs (extension card, GTK window and desktop banner at once) are gone. GTK's X hands the call to the notification via `call_ui_dismiss` until the next call.
 
-### Added
+### Fixed
 
-- **Incoming-call control:** the daemon tracks CallStyle notifications (`type 6`) and publishes `call` / `waiting` in the status object, with `call_answer` and `call_end` control-socket commands; the GTK app shows a call window with Answer/Decline, a local timer and End, and suppresses the desktop call banner while that window is visible. Answer, Decline and Hang Up are verified on the phone's dialer; non-dialer apps, call waiting and video calls are untested.
+- **"Send to phone" failed for folders and relative paths:** the Nautilus script passed the bare selected name (`smt`), which the daemon resolved against its own working directory (`file not found: smt`), and a directory path then failed with `Is a directory`. Relative paths are now resolved from the caller's directory, and a folder is sent with its name and layout (`Downloads/smt/…`) instead of being read as a file. One selection may carry 10 000 entries and 512 MiB.
 
 ## [0.3.3] - 2026-11-17
 
