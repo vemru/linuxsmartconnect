@@ -1332,11 +1332,11 @@ fn collect_send_entries(
     out: &mut Vec<smartconnect_fex::server::OutFile>,
     bytes: &mut u64,
 ) -> Result<()> {
+    if out.len() >= SEND_MAX_ENTRIES {
+        bail!("more than {SEND_MAX_ENTRIES} entries to send; pick a smaller selection");
+    }
     let meta = std::fs::metadata(path).with_context(|| format!("reading {}", path.display()))?;
     if meta.is_dir() {
-        if out.len() >= SEND_MAX_ENTRIES {
-            bail!("more than {SEND_MAX_ENTRIES} entries to send; pick a smaller folder");
-        }
         out.push(smartconnect_fex::server::OutFile {
             name: format!("{}/", name.trim_end_matches('/')),
             mime_type: String::new(),
@@ -1430,6 +1430,28 @@ mod send_tests {
         assert_eq!(out[3].mime_type, "image/png");
         assert!(out[0].dir && out[2].dir);
         assert!(!out[1].dir && !out[3].dir);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_entry_cap_applies_to_files_too() {
+        let dir = std::env::temp_dir().join(format!("sc-send-cap-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.txt"), b"x").unwrap();
+
+        let mut out: Vec<_> = (0..SEND_MAX_ENTRIES)
+            .map(|_| smartconnect_fex::server::OutFile {
+                name: "x".into(),
+                mime_type: String::new(),
+                data: Vec::new(),
+                dir: false,
+            })
+            .collect();
+        let mut bytes = 0;
+        let err = collect_send_entries(&dir.join("a.txt"), "a.txt".into(), &mut out, &mut bytes)
+            .unwrap_err();
+        assert!(err.to_string().contains("entries"), "{err:#}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
